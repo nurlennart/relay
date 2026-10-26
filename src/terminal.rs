@@ -54,6 +54,13 @@ impl Terminal {
     }
 
     fn spawn(mut command: CommandBuilder, ctx: Option<egui::Context>) -> Result<Self, String> {
+        // portable-pty rebuilds the environment from the registry, and a REG_SZ value with a
+        // trailing NUL ends the block early, dropping variables such as USERPROFILE. Without
+        // them ssh cannot find its home and exits with 255. Pass Relay's own environment.
+        command.env_clear();
+        for (key, value) in std::env::vars_os() {
+            command.env(key, value);
+        }
         command.env("TERM", "xterm-256color");
         let pair = portable_pty::native_pty_system()
             .openpty(PtySize {
@@ -587,6 +594,54 @@ mod tests {
                 "{key:?} moved focus out of the terminal"
             );
         }
+    }
+    fn run(command: CommandBuilder) -> Terminal {
+        let mut terminal = Terminal::spawn(command, None).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while !terminal.ended && std::time::Instant::now() < deadline {
+            terminal.poll();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        // Give the reader thread a moment to drain the final output.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        terminal
+    }
+    #[test]
+    fn child_receives_the_full_environment() {
+        let mut command = CommandBuilder::new(r"C:\Windows\System32\cmd.exe");
+        command.args([
+            "/d",
+            "/c",
+            "echo U=%USERPROFILE%& echo S=%SystemRoot%& where cmd",
+        ]);
+        let terminal = run(command);
+        let screen = terminal.parser.lock().unwrap().screen().contents();
+        let profile = std::env::var("USERPROFILE").unwrap();
+        assert!(screen.contains(&format!("U={profile}")), "{screen}");
+        assert!(!screen.contains("%SystemRoot%"), "{screen}");
+        assert!(
+            screen.to_lowercase().contains(r"system32\cmd.exe"),
+            "PATH lookup failed: {screen}"
+        );
+    }
+    #[test]
+    fn ssh_errors_reach_the_terminal() {
+        let mut c = crate::model::Connection::new();
+        c.protocol = crate::model::Protocol::Ssh;
+        c.port = 22;
+        c.host = "relay-test.invalid".into();
+        let mut terminal = Terminal::ssh(&c, egui::Context::default()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !terminal.ended && std::time::Instant::now() < deadline {
+            terminal.poll();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let screen = terminal.parser.lock().unwrap().screen().contents();
+        assert!(
+            screen.contains("relay-test.invalid"),
+            "ssh output was lost: {screen:?}"
+        );
     }
     #[test]
     fn conpty_runs_and_receives_input() {
