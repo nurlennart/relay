@@ -150,14 +150,14 @@ fn tab_background(ui: &egui::Ui, rect: Rect, selected: bool, hovered: bool) {
     if selected {
         ui.painter().rect(
             rect,
-            6.,
+            RADIUS,
             colors.surface,
             Stroke::new(1_f32, colors.line),
             egui::StrokeKind::Inside,
         );
     } else if hovered {
         ui.painter()
-            .rect_filled(rect, 6., colors.hover.gamma_multiply(0.6));
+            .rect_filled(rect, RADIUS, colors.hover.gamma_multiply(0.6));
     }
 }
 
@@ -184,7 +184,7 @@ pub(super) fn library_tab(ui: &mut egui::Ui, selected: bool) -> egui::Response {
         ui.painter(),
         Icon::Library,
         egui::pos2(rect.left() + 16., rect.center().y),
-        14.,
+        ICON_SIZE,
         if selected {
             colors.accent
         } else {
@@ -229,7 +229,7 @@ pub(super) fn session_tab(
         ui.painter(),
         Icon::protocol(connection.protocol),
         egui::pos2(rect.left() + 16., rect.center().y),
-        14.,
+        ICON_SIZE,
         status,
     );
     let select_rect = Rect::from_min_max(rect.min, rect.max - Vec2::new(30., 0.));
@@ -261,7 +261,8 @@ pub(super) fn session_tab(
     // The close button shows on the selected tab and under the pointer, as in browsers.
     if selected || hovered {
         if close.hovered() {
-            ui.painter().rect_filled(close_rect, 4., colors.hover);
+            ui.painter()
+                .rect_filled(close_rect, RADIUS_SMALL, colors.hover);
         }
         icons::paint_sized(
             ui.painter(),

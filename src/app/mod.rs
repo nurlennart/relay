@@ -512,7 +512,7 @@ impl App {
                 egui::Frame::new()
                     .fill(colors.surface)
                     .stroke(Stroke::new(1_f32, colors.line))
-                    .corner_radius(8)
+                    .corner_radius(RADIUS_LARGE)
                     .shadow(ui.visuals().popup_shadow)
                     .inner_margin(egui::Margin {
                         left: 12,
@@ -811,7 +811,7 @@ impl eframe::App for App {
                     egui::Frame::new()
                         .fill(colors.error_bg)
                         .inner_margin(egui::Margin::symmetric(12, 8))
-                        .corner_radius(6)
+                        .corner_radius(RADIUS)
                         .show(ui, |ui| {
                             ui.horizontal_wrapped(|ui| {
                                 ui.colored_label(ui.visuals().error_fg_color, error);

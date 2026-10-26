@@ -291,7 +291,7 @@ impl App {
                 egui::Frame::new()
                     .fill(colors.panel)
                     .stroke(Stroke::new(1_f32, colors.line))
-                    .corner_radius(10)
+                    .corner_radius(RADIUS_DIALOG)
                     .inner_margin(12.)
                     .shadow(ui.visuals().window_shadow)
                     .show(ui, |ui| {
@@ -328,7 +328,7 @@ impl App {
                                 chosen = Some(i);
                             }
                             if row == palette.selected {
-                                ui.painter().rect_filled(rect, 6., colors.selected);
+                                ui.painter().rect_filled(rect, RADIUS, colors.selected);
                             }
                             let mut text = ui.new_child(
                                 UiBuilder::new()

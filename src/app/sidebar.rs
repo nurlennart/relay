@@ -50,7 +50,7 @@ impl App {
                         ui.painter(),
                         Icon::Sidebar,
                         egui::pos2(header.right() - 12., header.center().y),
-                        14.,
+                        ICON_SIZE,
                         if toggle.hovered() {
                             colors.text
                         } else {
@@ -187,7 +187,7 @@ impl App {
                         if idle { Sense::click() } else { Sense::hover() },
                     );
                     if library.hovered() && idle {
-                        ui.painter().rect_filled(library_rect, 6., colors.hover);
+                        ui.painter().rect_filled(library_rect, RADIUS, colors.hover);
                     }
                     ui.painter().circle_filled(
                         egui::pos2(library_rect.left() + 12., row.center().y),
@@ -246,7 +246,7 @@ pub(super) fn nav_row(
     if selected || response.hovered() {
         ui.painter().rect_filled(
             rect,
-            5.,
+            RADIUS,
             if selected {
                 colors.selected
             } else {
@@ -263,7 +263,7 @@ pub(super) fn nav_row(
         ui.painter(),
         icon,
         egui::pos2(rect.left() + 15., rect.center().y),
-        15.,
+        ICON_SIZE,
         icon_color,
     );
     let text_rect =
@@ -306,7 +306,7 @@ pub(super) fn rail_row(ui: &mut egui::Ui, icon: Icon, tooltip: &str, selected: b
         } else {
             colors.hover
         };
-        ui.painter().rect_filled(rect, 6., fill);
+        ui.painter().rect_filled(rect, RADIUS, fill);
     }
     let color = if selected {
         colors.accent

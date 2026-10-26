@@ -7,7 +7,7 @@ pub(super) fn accent_button(ui: &mut egui::Ui, text: &str, width: f32) -> egui::
         [width, CONTROL_HEIGHT],
         egui::Button::new(RichText::new(text).color(colors.bg).strong())
             .fill(colors.accent)
-            .corner_radius(6),
+            .corner_radius(RADIUS),
     )
 }
 
@@ -38,6 +38,15 @@ pub(super) fn apply_style(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
+/// Corner radii: badges and small inline buttons, controls and rows, cards and menus, dialogs.
+pub(super) const RADIUS_SMALL: u8 = 4;
+pub(super) const RADIUS: u8 = 6;
+pub(super) const RADIUS_LARGE: u8 = 8;
+pub(super) const RADIUS_DIALOG: u8 = 10;
+
+/// The size of icons beside text in rows, tabs and fields.
+pub(super) const ICON_SIZE: f32 = 14.;
+
 /// The size of dialog and page titles.
 pub(super) const TITLE_SIZE: f32 = 17.;
 
@@ -55,7 +64,7 @@ pub(super) fn dialog(id: &'static str, ctx: &egui::Context) -> egui::Modal {
         egui::Frame::new()
             .fill(colors.panel)
             .inner_margin(20.)
-            .corner_radius(10)
+            .corner_radius(RADIUS_DIALOG)
             .stroke(Stroke::new(1_f32, colors.line))
             .shadow(ctx.style().visuals.window_shadow),
     )
@@ -67,15 +76,18 @@ pub(super) fn protocol_badge(ui: &mut egui::Ui, protocol: Protocol) {
         Protocol::Rdp => colors.rdp,
         Protocol::Ssh => colors.accent,
     };
+    // Both labels are three letters, so badges share one width and line up in a column.
     egui::Frame::new()
         .fill(color.gamma_multiply(0.13))
-        .corner_radius(4)
-        .inner_margin(egui::Margin::symmetric(6, 2))
+        .stroke(Stroke::new(1_f32, color.gamma_multiply(0.22)))
+        .corner_radius(RADIUS_SMALL)
+        .inner_margin(egui::Margin::symmetric(6, 1))
         .show(ui, |ui| {
             ui.label(
                 RichText::new(protocol.label())
-                    .monospace()
                     .size(10.)
+                    .strong()
+                    .extra_letter_spacing(0.4)
                     .color(color),
             );
         });
@@ -123,19 +135,19 @@ pub(super) fn outline_button(ui: &mut egui::Ui, label: &str, width: f32) -> egui
         egui::Button::new(RichText::new(label).size(13.))
             .fill(colors.surface)
             .stroke(Stroke::new(1_f32, colors.line))
-            .corner_radius(6),
+            .corner_radius(RADIUS),
     )
+}
+
+/// Small letter-spaced capitals for section and column headings.
+pub(super) fn caption(text: &str) -> RichText {
+    RichText::new(text).size(10.).extra_letter_spacing(0.6)
 }
 
 pub(super) fn section_label(ui: &mut egui::Ui, text: &str) {
     let colors = theme::palette(ui.ctx());
     ui.add_space(2.);
-    ui.label(
-        RichText::new(text)
-            .size(10.)
-            .extra_letter_spacing(0.6)
-            .color(colors.muted),
-    );
+    ui.label(caption(text).color(colors.muted));
     ui.add_space(4.);
 }
 
@@ -168,7 +180,7 @@ pub(super) fn search_field(
         ui.painter(),
         icons::Icon::Search,
         egui::pos2(rect.left() + 16., rect.center().y),
-        14.,
+        ICON_SIZE,
         colors.muted,
     );
     if empty && !response.has_focus() && !shortcut.is_empty() {

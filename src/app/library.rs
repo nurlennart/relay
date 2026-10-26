@@ -266,20 +266,21 @@ impl App {
         let colors = theme::palette(ui.ctx());
         egui::Frame::new()
             .fill(colors.panel)
-            .corner_radius(8)
+            .corner_radius(RADIUS_LARGE)
             .stroke(Stroke::new(1_f32, colors.line))
             .inner_margin(Margin::symmetric(8, 2))
             .show(ui, |ui| {
                 let width = ui.available_width();
                 let columns = table_columns(width);
                 ui.spacing_mut().item_spacing.y = 0.;
-                let (header, _) = ui.allocate_exact_size(Vec2::new(width, 30.), Sense::hover());
+                let (header, _) = ui.allocate_exact_size(Vec2::new(width, 32.), Sense::hover());
                 let mut x = header.min.x;
                 for (column, w) in &columns {
-                    let galley = ui.painter().layout_no_wrap(
-                        column.title().into(),
-                        FontId::proportional(10.),
-                        colors.muted,
+                    let galley = egui::WidgetText::from(caption(column.title())).into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Truncate),
+                        *w,
+                        egui::TextStyle::Small,
                     );
                     ui.painter().galley(
                         egui::pos2(x, header.center().y - galley.size().y / 2.),
@@ -348,8 +349,8 @@ impl App {
             } else {
                 colors.hover
             };
-            ui.painter()
-                .rect_filled(rect.shrink2(Vec2::new(0., 2.)), 5., fill);
+            let band = rect.shrink2(Vec2::new(0., 2.));
+            ui.painter().rect_filled(band, RADIUS, fill);
         }
         if response.clicked() {
             self.selected = Some(c.id);
@@ -362,28 +363,31 @@ impl App {
             .metadata
             .get("ConnectionDescription")
             .filter(|d| !d.trim().is_empty());
+        let line = |ui: &egui::Ui, font: FontId| ui.fonts_mut(|f| f.row_height(&font));
         let mut x = rect.min.x;
         for (column, w) in columns {
-            let cell =
-                Rect::from_min_size(egui::pos2(x, rect.min.y + 4.), Vec2::new(*w, height - 8.));
+            let cell = Rect::from_min_size(egui::pos2(x, rect.min.y), Vec2::new(*w, height));
             x += w + gap;
-            // A child ui does not move the row cursor, so rows keep their exact height.
-            let align = match column {
-                Column::Star => Align::Center,
-                _ => Align::LEFT,
+            // Single-line cells center on the row; two-line cells center as a block.
+            let layout = match column {
+                Column::Star => Layout::left_to_right(Align::Center).with_main_align(Align::Center),
+                Column::Actions => Layout::right_to_left(Align::Center),
+                Column::Group => Layout::left_to_right(Align::Center),
+                Column::Name | Column::Host | Column::Protocol => Layout::top_down(Align::LEFT),
             };
-            let ui = &mut ui.new_child(
-                UiBuilder::new()
-                    .max_rect(cell)
-                    .layout(Layout::top_down(align)),
-            );
+            // A child ui does not move the row cursor, so rows keep their exact height.
+            let ui = &mut ui.new_child(UiBuilder::new().max_rect(cell).layout(layout));
             // Leave room for hover outlines, which extend slightly past a widget.
             ui.set_clip_rect(cell.expand(4.).intersect(ui.clip_rect()));
-            ui.spacing_mut().item_spacing.y = 2.;
+            ui.spacing_mut().item_spacing = Vec2::new(4., SUBLINE_GAP);
+            let center_block = |ui: &mut egui::Ui, lines: &[&FontId]| {
+                let block = lines.iter().map(|&f| line(ui, f.clone())).sum::<f32>()
+                    + SUBLINE_GAP * (lines.len() - 1) as f32;
+                ui.add_space(((height - block) / 2.).floor());
+            };
             match column {
                 Column::Star => {
-                    ui.add_space(3.);
-                    let (star, response) = ui.allocate_exact_size(Vec2::splat(26.), Sense::click());
+                    let (star, response) = ui.allocate_exact_size(Vec2::splat(24.), Sense::click());
                     response.widget_info(|| {
                         egui::WidgetInfo::selected(
                             egui::WidgetType::Checkbox,
@@ -397,7 +401,7 @@ impl App {
                         (false, true) => (Icon::Star, colors.text),
                         (false, false) => (Icon::Star, colors.muted.gamma_multiply(0.7)),
                     };
-                    icons::paint_sized(ui.painter(), icon, star.center(), 15., color);
+                    icons::paint_sized(ui.painter(), icon, star.center(), ICON_SIZE, color);
                     if response
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .on_hover_text("Toggle favorite")
@@ -411,11 +415,15 @@ impl App {
                     }
                 }
                 Column::Name => {
-                    if description.is_none() {
-                        ui.add_space(7.);
+                    let name_font = FontId::proportional(13.);
+                    let sub_font = FontId::proportional(11.);
+                    if description.is_some() {
+                        center_block(ui, &[&name_font, &sub_font]);
+                    } else {
+                        center_block(ui, &[&name_font]);
                     }
                     let name = ui.add(
-                        egui::Label::new(RichText::new(&c.name).size(13.).strong())
+                        egui::Label::new(RichText::new(&c.name).font(name_font).strong())
                             .truncate()
                             .sense(Sense::click()),
                     );
@@ -429,39 +437,43 @@ impl App {
                     if let Some(description) = description {
                         ui.add(
                             egui::Label::new(
-                                RichText::new(description).size(11.).color(colors.muted),
+                                RichText::new(description)
+                                    .font(sub_font)
+                                    .color(colors.muted),
                             )
                             .truncate(),
                         );
                     }
                 }
                 Column::Protocol => {
-                    ui.add_space(6.);
+                    // The badge adds a point of padding and a point of outline on each side.
+                    ui.add_space(
+                        ((height - line(ui, FontId::proportional(10.)) - 4.) / 2.).floor(),
+                    );
                     protocol_badge(ui, c.protocol);
                 }
                 Column::Host => {
+                    let host_font = FontId::monospace(12.);
+                    let sub_font = FontId::proportional(11.);
+                    center_block(ui, &[&host_font, &sub_font]);
+                    // The address sits between the name and the muted user in weight.
                     ui.add(
                         egui::Label::new(
                             RichText::new(c.address())
-                                .monospace()
-                                .size(12.)
-                                .color(colors.text),
+                                .font(host_font)
+                                .color(colors.text.lerp_to_gamma(colors.muted, 0.35)),
                         )
                         .truncate(),
                     )
                     .on_hover_text(c.address());
                     let user = if c.username.is_empty() {
-                        "Ask on connect"
+                        RichText::new("Ask on connect").italics()
                     } else {
-                        &c.username
+                        RichText::new(&c.username)
                     };
-                    ui.add(
-                        egui::Label::new(RichText::new(user).size(11.).color(colors.muted))
-                            .truncate(),
-                    );
+                    ui.add(egui::Label::new(user.font(sub_font).color(colors.muted)).truncate());
                 }
                 Column::Group => {
-                    ui.add_space(7.);
                     ui.add(
                         egui::Label::new(RichText::new(&c.group).size(12.).color(colors.muted))
                             .truncate(),
@@ -469,22 +481,19 @@ impl App {
                     .on_hover_text(&c.group);
                 }
                 Column::Actions => {
-                    ui.add_space(3.);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 4.;
-                        let more = icon_button(ui, Icon::More, 26., "More actions");
-                        egui::Popup::menu(&more).show(|ui| self.connection_menu(ui, c));
-                        // Connect appears where the pointer or keyboard is; double-click and
-                        // Enter connect any row.
-                        if selected || hovered {
-                            ui.spacing_mut().button_padding = Vec2::new(10., 3.);
-                            let connect = egui::Button::new(RichText::new("Connect").size(12.))
-                                .corner_radius(5);
-                            if ui.add_sized([68., 26.], connect).clicked() {
-                                self.request_connect(c.clone());
-                            }
+                    let more = icon_button(ui, Icon::More, ACTION_SIZE, "More actions");
+                    egui::Popup::menu(&more).show(|ui| self.connection_menu(ui, c));
+                    // Connect appears where the pointer or keyboard is; double-click and
+                    // Enter connect any row.
+                    if selected || hovered {
+                        let connect = egui::Button::new(RichText::new("Connect").size(12.))
+                            .fill(colors.surface)
+                            .stroke(Stroke::new(1_f32, colors.line))
+                            .corner_radius(RADIUS);
+                        if ui.add_sized([68., ACTION_SIZE], connect).clicked() {
+                            self.request_connect(c.clone());
                         }
-                    });
+                    }
                 }
             }
         }
@@ -541,6 +550,12 @@ pub(super) const ROW: f32 = 40.;
 
 pub(super) const GAP: f32 = 16.;
 
+/// The space between a cell's main line and the muted line under it.
+const SUBLINE_GAP: f32 = 2.;
+
+/// The height of the buttons at the end of a row.
+const ACTION_SIZE: f32 = 26.;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Column {
     Star,
@@ -568,7 +583,7 @@ pub(super) fn table_columns(width: f32) -> Vec<(Column, f32)> {
     // Widths above 1 are fixed pixels; the rest are shares of the flexible space.
     let mut columns = vec![(Column::Star, 28.), (Column::Name, 0.41)];
     if width >= 560. {
-        columns.push((Column::Protocol, 56.));
+        columns.push((Column::Protocol, 64.));
     }
     columns.push((Column::Host, 0.35));
     if width >= 720. {

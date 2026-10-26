@@ -161,8 +161,15 @@ pub(super) fn icon_button(
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tooltip)
     });
     let hovered = response.hovered() || response.has_focus();
+    // An outline keeps the hover visible on rows that are already highlighted.
     if hovered || response.is_pointer_button_down_on() {
-        ui.painter().rect_filled(rect, 5., colors.hover);
+        ui.painter().rect(
+            rect,
+            RADIUS,
+            colors.hover,
+            Stroke::new(1_f32, colors.line),
+            egui::StrokeKind::Inside,
+        );
     }
     let color = if !ui.is_enabled() {
         colors.muted.gamma_multiply(0.5)
