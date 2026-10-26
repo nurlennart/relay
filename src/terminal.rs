@@ -17,8 +17,6 @@ pub struct Terminal {
     pub error: Option<String>,
     /// The ssh exit code once the session has ended.
     pub exit_code: Option<u32>,
-    /// What runs in the terminal, shown in its title bar.
-    label: &'static str,
     started: std::time::Instant,
     /// A mouse selection between two visible cells, in drag order.
     selection: Option<((u16, u16), (u16, u16))>,
@@ -72,18 +70,12 @@ impl Terminal {
             "ServerAliveCountMax=3",
         ]);
         command.args(["--", &c.host]);
-        Self::spawn(command, "SSH", Some(ctx)).map_err(|e| {
+        Self::spawn(command, Some(ctx)).map_err(|e| {
             format!(
                 "Cannot start ssh. Install an OpenSSH client (on Windows, the OpenSSH Client \
                  optional feature): {e}"
             )
         })
-    }
-
-    /// FreeRDP, which opens the remote desktop in its own window and asks for credentials here.
-    pub fn rdp(c: &Connection, ctx: egui::Context) -> Result<Self, String> {
-        let command = crate::rdp::freerdp_command(c)?;
-        Self::spawn(command, "RDP", Some(ctx)).map_err(|e| format!("Cannot start FreeRDP: {e}"))
     }
 
     /// A quiet process whose screen shows `transcript`, for rendering checks.
@@ -94,7 +86,7 @@ impl Terminal {
         } else {
             "sleep 60"
         };
-        let terminal = Self::spawn(shell(quiet), "SSH", None).unwrap();
+        let terminal = Self::spawn(shell(quiet), None).unwrap();
         let parser = terminal.parser.clone();
         std::thread::spawn(move || {
             // Let the pseudo-terminal's startup output settle first.
@@ -104,11 +96,7 @@ impl Terminal {
         terminal
     }
 
-    fn spawn(
-        mut command: CommandBuilder,
-        label: &'static str,
-        ctx: Option<egui::Context>,
-    ) -> Result<Self, String> {
+    fn spawn(mut command: CommandBuilder, ctx: Option<egui::Context>) -> Result<Self, String> {
         // portable-pty rebuilds the environment from the registry, and a REG_SZ value with a
         // trailing NUL ends the block early, dropping variables such as USERPROFILE. Without
         // them ssh cannot find its home and exits with 255. Pass Relay's own environment.
@@ -192,7 +180,6 @@ impl Terminal {
             focused: false,
             error: None,
             exit_code: None,
-            label,
             started: std::time::Instant::now(),
             selection: None,
             focus_requested: true,
@@ -360,7 +347,7 @@ impl Terminal {
                 ui.visuals().error_fg_color,
             )
         } else {
-            (format!("{} · {cols}×{rows}", self.label), RUNNING)
+            (format!("SSH · {cols}×{rows}"), RUNNING)
         };
         painter.circle_filled(Pos2::new(bar.min.x + 16., text_y), 4., dot);
         painter.text(
@@ -906,7 +893,7 @@ mod tests {
         }
     }
     fn run(command: CommandBuilder) -> Terminal {
-        let mut terminal = Terminal::spawn(command, "Test", None).unwrap();
+        let mut terminal = Terminal::spawn(command, None).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
         while !terminal.ended && std::time::Instant::now() < deadline {
             terminal.poll();
@@ -962,7 +949,7 @@ mod tests {
         } else {
             "sleep 10"
         };
-        let mut terminal = Terminal::spawn(shell(quiet), "Test", None).unwrap();
+        let mut terminal = Terminal::spawn(shell(quiet), None).unwrap();
         let parser = terminal.parser.clone();
         let ctx = egui::Context::default();
         let mut frame = |events: Vec<egui::Event>, modifiers| {
@@ -1033,7 +1020,7 @@ mod tests {
         } else {
             CommandBuilder::new("/bin/sh")
         };
-        let mut terminal = Terminal::spawn(command, "Test", None).unwrap();
+        let mut terminal = Terminal::spawn(command, None).unwrap();
         let ready = std::time::Instant::now() + std::time::Duration::from_secs(8);
         while terminal
             .parser

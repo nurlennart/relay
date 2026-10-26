@@ -1,7 +1,7 @@
 use crate::{
     model::{Connection, Protocol},
     platform::Window,
-    rdp::{self, RdpClient},
+    rdp::RdpClient,
     terminal::Terminal,
 };
 use std::time::{Duration, Instant};
@@ -15,7 +15,7 @@ pub enum TabState {
     Waiting,
 }
 
-/// An open tab: an SSH or FreeRDP terminal, or an embedded Windows remote desktop.
+/// An open tab: an SSH terminal or a remote desktop.
 pub struct Session {
     pub connection: Connection,
     pub terminal: Option<Terminal>,
@@ -102,12 +102,9 @@ impl Session {
         }
         if let Some(terminal) = &mut self.terminal {
             terminal.poll();
-            // FreeRDP reconnects by itself; only SSH sessions are restarted.
-            let ssh = self.connection.protocol == Protocol::Ssh;
             if terminal.ended && !self.ended && self.retry.is_none() {
                 if let Some(delay) =
                     retry_delay(terminal.exit_code, terminal.uptime(), self.attempts)
-                        .filter(|_| ssh)
                 {
                     self.retry = Some(Instant::now() + delay);
                     self.attempts += 1;
@@ -243,14 +240,13 @@ impl Session {
     }
 }
 
-/// The terminal a connection runs in: ssh, or FreeRDP where remote desktops are not embedded.
+/// The terminal a connection runs in: ssh for SSH, none for remote desktops.
 fn terminal_for(
     connection: &Connection,
     ctx: &eframe::egui::Context,
 ) -> Result<Option<Terminal>, String> {
     match connection.protocol {
         Protocol::Ssh => Terminal::ssh(connection, ctx.clone()).map(Some),
-        Protocol::Rdp if !rdp::EMBEDDED => Terminal::rdp(connection, ctx.clone()).map(Some),
         Protocol::Rdp => Ok(None),
     }
 }

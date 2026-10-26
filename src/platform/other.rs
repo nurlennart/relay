@@ -1,5 +1,5 @@
-//! macOS and Linux. Remote desktops open in their own FreeRDP window, so there are no native
-//! child windows to place, find, or take focus from.
+//! macOS and Linux. Remote desktops are drawn by egui, so there are no native child windows
+//! to place, find, or take focus from.
 use super::{Command, Window};
 use std::path::PathBuf;
 
