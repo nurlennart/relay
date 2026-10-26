@@ -205,7 +205,12 @@ impl App {
                         .on_hover_text("Saved commands · Ctrl+Shift+P")
                         .clicked();
                 }
-                if desktop && s.is_running() && s.error.is_none() && !s.full_screen() {
+                if desktop
+                    && s.can_full_screen()
+                    && s.is_running()
+                    && s.error.is_none()
+                    && !s.full_screen()
+                {
                     full_screen = ui
                         .button("Full screen")
                         .on_hover_text("Ctrl+Alt+Break leaves and re-enters full screen")
@@ -280,7 +285,7 @@ impl App {
             if let Some(warning) = s.display_warning() {
                 ui.colored_label(ui.visuals().warn_fg_color, warning);
             }
-            return Some(ui.available_rect_before_wrap());
+            return self.sessions[index].show_desktop(ui);
         }
         None
     }

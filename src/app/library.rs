@@ -480,7 +480,7 @@ impl App {
                                 self.notify(format!("Copied {}", c.address()));
                                 ui.close();
                             }
-                            if rdp::EMBEDDED
+                            if rdp::SAVES_PASSWORDS
                                 && c.protocol == Protocol::Rdp
                                 && ui
                                     .button("Forget saved password")

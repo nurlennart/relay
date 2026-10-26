@@ -420,6 +420,19 @@ impl RdpClient {
     pub fn enter_full_screen(&self) -> Result<(), String> {
         self.set("FullScreen", &VARIANT::from(true))
     }
+    pub fn can_full_screen(&self) -> bool {
+        true
+    }
+    /// The control takes the keyboard natively; its shortcuts arrive through a hook instead.
+    pub fn focused(&self) -> bool {
+        false
+    }
+    /// The control reports through callbacks, so there is nothing to collect.
+    pub fn poll(&mut self) {}
+    /// Leaves the rest of `ui` to the control's native window, which `place` positions there.
+    pub fn show(&mut self, ui: &mut egui::Ui) -> egui::Rect {
+        ui.available_rect_before_wrap()
+    }
     /// Sets the scale the session starts with; later changes go through display updates.
     fn set_scale(&self, scale: u32) -> Result<(), String> {
         let settings: IMsRdpExtendedSettings = self
@@ -581,6 +594,13 @@ fn device_scale(scale: u32) -> u32 {
         _ => 100,
     }
 }
+
+/// Windows offers to remember credentials in Credential Manager.
+pub const SAVES_PASSWORDS: bool = true;
+
+/// How signing in works, for the connection editor.
+pub const SIGN_IN_HELP: &str = "Windows asks for credentials; tick “Remember me” to skip the \
+    prompt next time.\nWindows keeps them in Credential Manager. Relay never sees passwords.";
 
 /// Removes Windows-saved credentials for an RDP host. Returns whether any existed.
 pub fn forget_credentials(host: &str) -> Result<bool, String> {
