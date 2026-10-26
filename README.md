@@ -30,11 +30,11 @@ The personal library is `%LOCALAPPDATA%\Relay\connections.json`. Writes use atom
 
 ## CSV import and export
 
-Open **Settings → Import CSV** and review the preview before committing. The importer supports the supplied `export.csv` schema, including semicolon delimiters, quoted fields, UTF-8, UTF-16, and Windows-1252. A simpler `Name,Host,Protocol,Port,Username,Group,Favorite` schema also works. Blank ports use protocol defaults. Blank destinations fall back to `ConnectionIpAddress`.
+Open **Settings → Import CSV** and review the preview before committing. The importer supports the full export schema (see [tests/fixtures/export-sample.csv](tests/fixtures/export-sample.csv)), including semicolon delimiters, quoted fields, UTF-8, UTF-16, and Windows-1252. A simpler `Name,Host,Protocol,Port,Username,Group,Favorite` schema also works. Blank ports use protocol defaults. Blank destinations fall back to `ConnectionIpAddress`.
 
-The supplied export contains **69 RDP, 2 SSH, and 8 VNC records**. RDP and SSH can be imported; VNC is explicitly listed as unsupported in the preview. Duplicates are skipped using source IDs, or an endpoint/name/group identity when an ID is absent. Existing profiles are not modified by import.
+RDP and SSH records can be imported; VNC and other protocols are listed as unsupported in the preview. Duplicates are skipped using source IDs, or an endpoint/name/group identity when an ID is absent. Existing profiles are not modified by import.
 
-**Settings → Export CSV** writes the whole current library as semicolon-delimited CSV. Known source metadata (description, external ID, image ID, URL, IP/MAC, and custom fields) is retained; credential columns are not imported. Cells starting with spreadsheet formula characters are prefixed with an apostrophe for safety. That prefix remains literal on reimport. Exports replace files atomically after the save dialog confirms an overwrite.
+**Settings → Export CSV** writes the whole current library as semicolon-delimited CSV. Known source metadata (description, external ID, image ID, URL, IP/MAC, and custom fields) is retained; credential columns are not imported. Cells starting with spreadsheet formula characters (`= + - @`, tab, carriage return) are prefixed with an apostrophe for safety. Relay removes that prefix on reimport, so exported values round-trip exactly. Exports replace files atomically after the save dialog confirms an overwrite.
 
 ## Shared team libraries
 
@@ -86,7 +86,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --check
 ```
 
-Tests cover the supplied CSV, duplicate detection, validation, serialization, atomic saves, corrupt-file preservation, SQLite stale-write rejection, MSSQL configuration, terminal parsing/keys, and real ConPTY input/output/resize. The native RDP check creates the actual installed ActiveX control, verifies credential prompting and both host/control dimensions at two viewport sizes, and never contacts a remote host. Live MSSQL access, RDP/SSH authentication, server display negotiation, and SMB locking require your infrastructure.
+Tests cover a sample CSV in the export schema (including UTF-16), formula-guard round trips, duplicate detection, validation, serialization, atomic saves, corrupt-file preservation, SQLite stale-write rejection, MSSQL configuration, terminal parsing/keys and focus, and real ConPTY input/output/resize. The native RDP check creates the actual installed ActiveX control, verifies credential prompting and both host/control dimensions at two viewport sizes, and never contacts a remote host. Live MSSQL access, RDP/SSH authentication, server display negotiation, and SMB locking require your infrastructure.
 
 An optional `ui-check` feature captures rendered screens without writing profiles:
 
@@ -95,7 +95,7 @@ $env:RELAY_UI_CHECK = "$PWD\target\preview.png"
 cargo run --features ui-check
 ```
 
-Use `RELAY_UI_FIXTURE=1` to render the supplied CSV, `RELAY_UI_IMPORT=1` for its preview, `RELAY_UI_EDITOR=1` for the editor, or `RELAY_UI_DATABASE=1` for database setup. Fixtures are excluded from the normal build.
+Use `RELAY_UI_FIXTURE=1` to render the sample CSV, `RELAY_UI_IMPORT=1` for its preview, `RELAY_UI_EDITOR=1` for the editor, or `RELAY_UI_DATABASE=1` for database setup. Fixtures are excluded from the normal build.
 
 Set `RELAY_UI_THEME=Midnight` (or another theme name) with `ui-check` to preview a palette without changing the saved preference.
 

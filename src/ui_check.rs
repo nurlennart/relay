@@ -69,7 +69,7 @@ pub fn seed(app: &mut App) {
     if std::env::var_os("RELAY_UI_IMPORT").is_some() {
         app.import = Some(
             csv_io::read(
-                &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("export.csv"),
+                &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(csv_io::FIXTURE),
                 &[],
             )
             .unwrap(),
@@ -77,7 +77,7 @@ pub fn seed(app: &mut App) {
     }
     if std::env::var_os("RELAY_UI_FIXTURE").is_some() {
         app.connections = csv_io::read(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("export.csv"),
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(csv_io::FIXTURE),
             &[],
         )
         .unwrap()

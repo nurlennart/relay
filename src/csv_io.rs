@@ -21,6 +21,10 @@ const COLUMNS: [&str; 17] = [
     "Favorite",
 ];
 
+/// A synthetic CSV in the full export schema, used by tests and UI previews.
+#[cfg(any(test, feature = "ui-check"))]
+pub const FIXTURE: &str = "tests/fixtures/export-sample.csv";
+
 pub struct Import {
     pub connections: Vec<Connection>,
     pub skipped: Vec<String>,
@@ -51,6 +55,26 @@ pub fn read(path: &Path, existing: &[Connection]) -> Result<Import, String> {
             .to_string_lossy()
             .into(),
     )
+}
+
+// Cells starting with these characters can run as spreadsheet formulas.
+const FORMULA: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
+
+/// Prefixes an apostrophe to formula-like cells, and to cells already starting with one so that
+/// `unguard` can restore every value exactly.
+fn guard(s: String) -> String {
+    if s.starts_with(FORMULA) || s.starts_with('\'') {
+        format!("'{s}")
+    } else {
+        s
+    }
+}
+
+fn unguard(s: &str) -> &str {
+    match s.strip_prefix('\'') {
+        Some(rest) if rest.starts_with(FORMULA) || rest.starts_with('\'') => rest,
+        _ => s,
+    }
 }
 
 fn identity(c: &Connection) -> String {
@@ -112,7 +136,8 @@ fn parse(text: &str, existing: &[Connection], filename: String) -> Result<Import
                 continue;
             }
         };
-        let value = |idx: Option<usize>| idx.and_then(|i| record.get(i)).unwrap_or("").to_string();
+        let value =
+            |idx: Option<usize>| unguard(idx.and_then(|i| record.get(i)).unwrap_or("")).to_string();
         let raw_protocol = value(Some(protocol));
         let protocol = match raw_protocol.to_uppercase().as_str() {
             "RDP" => Protocol::Rdp,
@@ -195,17 +220,9 @@ pub fn export(path: &Path, connections: &[Connection]) -> Result<(), String> {
         ] {
             values.insert(key.into(), value);
         }
-        // Keep exports safe when opened in spreadsheet software.
         let cells: Vec<_> = COLUMNS
             .iter()
-            .map(|key| {
-                let s = values.get(*key).cloned().unwrap_or_default();
-                if s.starts_with(['=', '+', '-', '@']) {
-                    format!("'{s}")
-                } else {
-                    s
-                }
-            })
+            .map(|key| guard(values.get(*key).cloned().unwrap_or_default()))
             .collect();
         writer.write_record(cells).map_err(|e| e.to_string())?;
     }
@@ -218,31 +235,73 @@ mod tests {
     use super::*;
     #[test]
     fn imports_export_fixture_and_deduplicates() {
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("export.csv");
-        if !fixture.exists() {
-            return;
-        }
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE);
         let first = read(&fixture, &[]).unwrap();
-        assert_eq!(
+        let count = |protocol| {
             first
                 .connections
                 .iter()
-                .filter(|c| c.protocol == Protocol::Rdp)
-                .count(),
-            69
-        );
+                .filter(|c| c.protocol == protocol)
+                .count()
+        };
+        assert_eq!((count(Protocol::Rdp), count(Protocol::Ssh)), (4, 2));
+        assert_eq!(first.skipped.len(), 1, "{:?}", first.skipped);
+        assert!(first.skipped[0].contains("VNC"));
+        assert_eq!(first.duplicates, 1);
+        let find = |name: &str| first.connections.iter().find(|c| c.name == name).unwrap();
+        let lab = find("Lab node");
         assert_eq!(
-            first
-                .connections
-                .iter()
-                .filter(|c| c.protocol == Protocol::Ssh)
-                .count(),
-            2
+            (lab.host.as_str(), lab.port, lab.favorite),
+            ("192.0.2.77", 3389, true)
         );
-        assert_eq!(first.skipped.len(), 8);
+        assert_eq!(find("Reception; front desk").port, 3389);
+        assert_eq!(find("Design workstation").username, "STUDIO\\alex");
+        assert_eq!(
+            find("Archive").metadata["ConnectionDescription"],
+            "Old \"cold\" storage"
+        );
         let second = read(&fixture, &first.connections).unwrap();
-        assert_eq!(second.duplicates, 71);
+        assert_eq!(second.duplicates, 7);
         assert!(second.connections.is_empty());
+
+        let mut utf16 = vec![0xff, 0xfe];
+        for unit in std::fs::read_to_string(&fixture).unwrap().encode_utf16() {
+            utf16.extend(unit.to_le_bytes());
+        }
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("utf16-test-{}.csv", std::process::id()));
+        std::fs::write(&path, utf16).unwrap();
+        let decoded = read(&path, &[]);
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(decoded.unwrap().connections.len(), first.connections.len());
+    }
+    #[test]
+    fn formula_guard_roundtrips_exactly() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("guard-test-{}.csv", std::process::id()));
+        let names = [
+            "-backup", "+test", "=SUM(1)", "@home", "'quoted", "''twice", "plain",
+        ];
+        let connections: Vec<_> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let mut c = Connection::new();
+                c.id = i as u64 + 1;
+                c.name = (*name).into();
+                c.host = format!("host{i}.example");
+                c
+            })
+            .collect();
+        export(&path, &connections).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(";'-backup;") && text.contains(";'=SUM(1);"));
+        let import = read(&path, &[]).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let imported: Vec<_> = import.connections.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(imported, names);
     }
     #[test]
     fn quoted_fields_defaults_and_rejected_rows() {

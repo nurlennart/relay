@@ -1,0 +1,9 @@
+ConnectionId;ConnectionName;ConnectionDestination;ConnectionDescription;ConnectionExternalId;ConnectionImageId;ConnectionPort;ConnectionUrl;ConnectionIpAddress;ConnectionMACAddress;ConnectionProtocol;ConnectionCustom1;ConnectionCustom2;ConnectionCustom3;FolderName;Username;Favorite
+1001;Design workstation;192.0.2.24;Studio PC;;;3389;;192.0.2.24;;RDP;;;;Studio;STUDIO\alex;False
+1002;"Reception; front desk";reception.example.com;;;;;;;;RDP;;;;Office;;False
+1003;Lab node;;;;;;;192.0.2.77;;RDP;;;;Lab;;True
+1004;Build server;build.example.com;;;;22;;;;SSH;;;;Infrastructure;deploy;True
+1005;Kiosk screen;192.0.2.90;;;;5900;;;;VNC;;;;Office;;False
+1001;Design workstation copy;192.0.2.24;;;;3389;;;;RDP;;;;Studio;;False
+1006;Archive;archive.example.com;"Old ""cold"" storage";EXT-7;;3390;;;;RDP;Rack 4;;;Lab;;False
+1007;Staging gateway;staging.example.com;;;;2222;;;;SSH;;;;Infrastructure;ops;False
