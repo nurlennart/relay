@@ -687,7 +687,8 @@ impl App {
             );
         }
         let selected = self.selected == Some(c.id);
-        if selected || response.hovered() {
+        // The star, name and buttons take the hover from the row itself, so use the pointer.
+        if selected || ui.rect_contains_pointer(rect) {
             let fill = if selected {
                 colors.selected
             } else {
