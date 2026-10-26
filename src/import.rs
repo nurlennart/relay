@@ -5,16 +5,16 @@ use crate::{
 };
 use std::path::{Path, PathBuf};
 
-/// The user's OpenSSH configuration, `%USERPROFILE%\.ssh\config`.
+/// The user's OpenSSH configuration, `~/.ssh/config`.
 pub fn ssh_config_path() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".ssh").join("config"))
+    crate::platform::home_dir().map(|home| home.join(".ssh").join("config"))
 }
 
 pub fn read_ssh_config(path: &Path, existing: &[Connection]) -> Result<Import, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-    let home = std::env::var("USERPROFILE").unwrap_or_default();
-    ssh_config(&text, &home, existing)
+    let home = crate::platform::home_dir().unwrap_or_default();
+    ssh_config(&text, &home.to_string_lossy(), existing)
 }
 
 struct Block {

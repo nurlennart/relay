@@ -109,7 +109,7 @@ pub enum Audio {
     Off,
 }
 
-/// Where Windows key combinations such as Alt+Tab apply.
+/// Where system key combinations such as Alt+Tab apply.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Keys {
     Local,
@@ -357,11 +357,7 @@ impl Connection {
 }
 
 pub fn data_path() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Relay")
-        .join("connections.json")
+    crate::platform::data_dir().join("connections.json")
 }
 
 pub fn load(path: &Path) -> Result<Vec<Connection>, String> {
@@ -412,21 +408,15 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     file.write_all(bytes)
         .and_then(|_| file.sync_all())
         .map_err(|e| e.to_string())?;
-    // MoveFileEx replaces atomically on Windows, including when the destination already exists.
-    use std::os::windows::ffi::OsStrExt;
-    let from: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
-    let to: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     drop(file);
-    unsafe {
-        if windows_sys::Win32::Storage::FileSystem::MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING
-                | windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH,
-        ) == 0
-        {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
+    // Renaming replaces the destination atomically, on Windows through MoveFileEx.
+    fs::rename(&temp, path).map_err(|e| e.to_string())?;
+    // On Unix the new directory entry is durable only once the directory is synced.
+    #[cfg(unix)]
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
     }
     Ok(())
 }

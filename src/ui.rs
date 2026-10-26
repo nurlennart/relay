@@ -516,14 +516,14 @@ impl App {
             && (alt || connections.is_empty())
             && let Some(target) = &quick
         {
-            self.connect(target.clone());
+            self.request_connect(target.clone());
             return;
         }
         if (submitted || enter_idle)
             && let Some(c) = connections.get(index.unwrap_or(0))
         {
             self.selected = Some(c.id);
-            self.connect(c.clone());
+            self.request_connect(c.clone());
             return;
         }
         ui.add_space(14.);
@@ -535,7 +535,7 @@ impl App {
                         .on_hover_text("Enter")
                         .clicked()
                     {
-                        self.connect(target.clone());
+                        self.request_connect(target.clone());
                     }
                     ui.label(
                         RichText::new(
@@ -701,7 +701,7 @@ impl App {
             self.selected = Some(c.id);
         }
         if response.double_clicked() {
-            self.connect(c.clone());
+            self.request_connect(c.clone());
         }
         let description = c
             .metadata
@@ -761,7 +761,7 @@ impl App {
                         self.selected = Some(c.id);
                     }
                     if name.double_clicked() {
-                        self.connect(c.clone());
+                        self.request_connect(c.clone());
                     }
                     name.on_hover_text(&c.name);
                     if let Some(description) = description {
@@ -813,7 +813,7 @@ impl App {
                         let connect =
                             egui::Button::new(RichText::new("Connect").size(12.)).corner_radius(5);
                         if ui.add_sized([72., 28.], connect).clicked() {
-                            self.connect(c.clone());
+                            self.request_connect(c.clone());
                         }
                         ui.menu_button("···", |ui| {
                             if ui.button("Edit connection").clicked() {
@@ -833,7 +833,8 @@ impl App {
                                 self.notify(format!("Copied {}", c.address()));
                                 ui.close();
                             }
-                            if c.protocol == Protocol::Rdp
+                            if rdp::EMBEDDED
+                                && c.protocol == Protocol::Rdp
                                 && ui
                                     .button("Forget saved password")
                                     .on_hover_text(
@@ -950,13 +951,8 @@ impl App {
         for s in &mut self.sessions {
             s.place(None);
         }
-        match file_dialog::choose(self.parent, file_dialog::Kind::ImportCsv) {
-            Ok(paths) => {
-                if let Some(path) = paths.first() {
-                    self.review(csv_io::read(path, &self.connections));
-                }
-            }
-            Err(e) => self.error = Some(e),
+        if let Some(path) = file_dialog::choose(self.parent, file_dialog::Kind::ImportCsv).first() {
+            self.review(csv_io::read(path, &self.connections));
         }
     }
 
@@ -978,14 +974,10 @@ impl App {
         for s in &mut self.sessions {
             s.place(None);
         }
-        let paths = match file_dialog::choose(self.parent, file_dialog::Kind::RdpFiles) {
-            Ok(paths) if paths.is_empty() => return,
-            Ok(paths) => paths,
-            Err(e) => {
-                self.error = Some(e);
-                return;
-            }
-        };
+        let paths = file_dialog::choose(self.parent, file_dialog::Kind::RdpFiles);
+        if paths.is_empty() {
+            return;
+        }
         let files: Result<Vec<_>, String> = paths
             .iter()
             .map(|path| {
@@ -1013,29 +1005,26 @@ impl App {
         for s in &mut self.sessions {
             s.place(None);
         }
-        match file_dialog::choose(self.parent, file_dialog::Kind::ExportCsv)
-            .map(|paths| paths.into_iter().next())
+        if let Some(path) = file_dialog::choose(self.parent, file_dialog::Kind::ExportCsv)
+            .into_iter()
+            .next()
         {
-            Ok(Some(path)) => {
-                let connections = if recovery {
-                    self.recovery.as_deref().unwrap_or(&self.connections)
-                } else {
-                    &self.connections
-                };
-                match csv_io::export(&path, connections) {
-                    Ok(()) => {
-                        let text = format!(
-                            "Exported {} connections to {}",
-                            connections.len(),
-                            path.display()
-                        );
-                        self.notify(text);
-                    }
-                    Err(e) => self.error = Some(e),
+            let connections = if recovery {
+                self.recovery.as_deref().unwrap_or(&self.connections)
+            } else {
+                &self.connections
+            };
+            match csv_io::export(&path, connections) {
+                Ok(()) => {
+                    let text = format!(
+                        "Exported {} connections to {}",
+                        connections.len(),
+                        path.display()
+                    );
+                    self.notify(text);
                 }
+                Err(e) => self.error = Some(e),
             }
-            Ok(None) => {}
-            Err(e) => self.error = Some(e),
         }
     }
     pub fn settings(&mut self, ctx: &egui::Context) {
@@ -1125,7 +1114,7 @@ impl App {
                                 import = Some(Source::Csv);
                             }
                             if outline_button(ui, "Import SSH config", button_width)
-                                .on_hover_text("Reads %USERPROFILE%\\.ssh\\config")
+                                .on_hover_text("Reads ~/.ssh/config")
                                 .clicked()
                             {
                                 import = Some(Source::SshConfig);
@@ -1236,16 +1225,18 @@ impl App {
                             &mut self.db_path,
                             "\\\\server\\share\\relay.sqlite",
                         );
-                        if ui.button("Browse…").clicked() {
-                            match file_dialog::choose(self.parent, file_dialog::Kind::Database) {
-                                Ok(paths) => {
-                                    if let Some(path) = paths.first() {
-                                        self.db_path = path.display().to_string();
-                                    }
+                        ui.horizontal(|ui| {
+                            for (label, kind) in [
+                                ("Open existing…", file_dialog::Kind::Database),
+                                ("Create new…", file_dialog::Kind::NewDatabase),
+                            ] {
+                                if ui.button(label).clicked()
+                                    && let Some(path) = file_dialog::choose(self.parent, kind).first()
+                                {
+                                    self.db_path = path.display().to_string();
                                 }
-                                Err(e) => self.error = Some(e),
                             }
-                        }
+                        });
                         ui.label(
                             RichText::new(
                                 "Creates a new database if the file does not exist. Existing \
@@ -1282,18 +1273,22 @@ impl App {
                         });
                         ui.checkbox(
                             &mut self.db_remember,
-                            "Remember on this computer (encrypted for your Windows account)",
+                            "Remember on this computer (in your system credential store)",
                         );
                         let storage = if self.db_remember {
-                            "Saved with Windows DPAPI after the library opens."
+                            "Saved to your credential store after the library opens."
                         } else {
                             "Held in memory for this session only. \
                              Opening without this option removes a saved string."
                         };
                         ui.label(
                             RichText::new(format!(
-                                "Windows integrated authentication and SQL logins are supported. \
-                                 TLS is required. {storage}"
+                                "{} TLS is required. {storage}",
+                                if cfg!(windows) {
+                                    "Windows integrated authentication and SQL logins are supported."
+                                } else {
+                                    "SQL logins are supported."
+                                }
                             ))
                             .size(12.)
                             .color(colors.muted),
@@ -1410,13 +1405,12 @@ impl App {
 
     /// Stores or removes the encrypted connection string after it opened successfully.
     fn remember_mssql(&self, connection: &str) -> Result<(), String> {
-        let path = secret::path();
         if self.db_remember {
-            secret::save(&path, connection).map_err(|e| {
+            secret::save(connection).map_err(|e| {
                 format!("The library opened, but the connection string could not be saved: {e}")
             })
         } else {
-            secret::forget(&path).map_err(|e| {
+            secret::forget().map_err(|e| {
                 format!(
                     "The library opened, but the saved connection string could not be removed: {e}"
                 )
@@ -1994,13 +1988,12 @@ mod tests {
                 c
             })
             .collect();
-        // A null window makes connect() report an error instead of opening a session.
         App::with(
             ctx.clone(),
             PathBuf::from("unused.json"),
             Ok(connections),
             None,
-            std::ptr::null_mut(),
+            None,
             state::State::default(),
         )
     }
@@ -2044,9 +2037,9 @@ mod tests {
         library_frame(&mut app, &ctx, vec![press(egui::Key::Enter)]);
         assert_eq!(app.selected, Some(3));
         assert_eq!(
-            app.error.as_deref(),
-            Some("Cannot obtain the native application window."),
-            "Enter did not try to connect"
+            app.connect_request.map(|c| c.name).as_deref(),
+            Some("Charlie"),
+            "Enter did not ask to connect"
         );
     }
 
@@ -2064,10 +2057,16 @@ mod tests {
         library_frame(&mut app, &ctx, vec![]);
         assert!(app.filtered().is_empty());
         library_frame(&mut app, &ctx, vec![press(egui::Key::Enter)]);
+        let request = app
+            .connect_request
+            .expect("Enter did not ask to quick connect");
         assert_eq!(
-            app.error.as_deref(),
-            Some("Cannot obtain the native application window."),
-            "Enter did not try to quick connect"
+            (
+                request.protocol,
+                request.username.as_str(),
+                request.host.as_str()
+            ),
+            (Protocol::Ssh, "deploy", "10.0.0.9")
         );
     }
 
@@ -2093,9 +2092,13 @@ mod tests {
         // With nothing focused, arrows and Enter still drive the list.
         library_frame(&mut app, &ctx, vec![press(egui::Key::ArrowUp)]);
         assert_eq!(app.selected, Some(1));
-        assert!(app.error.is_none());
+        assert!(app.connect_request.is_none());
         library_frame(&mut app, &ctx, vec![press(egui::Key::Enter)]);
-        assert!(app.error.is_some(), "Enter did not try to connect");
+        assert_eq!(
+            app.connect_request.map(|c| c.id),
+            Some(1),
+            "Enter did not ask to connect"
+        );
     }
 
     #[test]
@@ -2149,7 +2152,7 @@ mod tests {
             PathBuf::from("unused.json"),
             Ok(vec![]),
             None,
-            std::ptr::null_mut(),
+            None,
             state,
         );
         app.restore_tabs();

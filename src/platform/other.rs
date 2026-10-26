@@ -1,0 +1,51 @@
+//! macOS and Linux. Remote desktops open in their own FreeRDP window, so there are no native
+//! child windows to place, find, or take focus from.
+use super::{Command, Window};
+use std::path::PathBuf;
+
+#[cfg(target_os = "macos")]
+pub const PROPORTIONAL_FONTS: &[&str] = &[
+    "/System/Library/Fonts/SFNS.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+];
+#[cfg(target_os = "macos")]
+pub const MONOSPACE_FONTS: &[&str] = &[
+    "/System/Library/Fonts/SFNSMono.ttf",
+    "/System/Library/Fonts/Menlo.ttc",
+];
+#[cfg(target_os = "macos")]
+pub const EXTRA_PROGRAM_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
+
+#[cfg(not(target_os = "macos"))]
+pub const PROPORTIONAL_FONTS: &[&str] = &[
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+];
+#[cfg(not(target_os = "macos"))]
+pub const MONOSPACE_FONTS: &[&str] = &[
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+    "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+];
+#[cfg(not(target_os = "macos"))]
+pub const EXTRA_PROGRAM_DIRS: &[&str] = &["/usr/local/bin", "/snap/bin"];
+
+pub fn ssh_program() -> PathBuf {
+    super::find_program("ssh").unwrap_or_else(|| "ssh".into())
+}
+
+pub fn install_shortcuts(_main: Window, _ctx: eframe::egui::Context) {}
+
+pub fn take_command() -> Option<Command> {
+    None
+}
+
+pub fn find_window(_title: &str, _known: &[Window]) -> Option<Window> {
+    None
+}
+
+pub fn focus(_window: Window) {}

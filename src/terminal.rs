@@ -17,6 +17,8 @@ pub struct Terminal {
     pub error: Option<String>,
     /// The ssh exit code once the session has ended.
     pub exit_code: Option<u32>,
+    /// What runs in the terminal, shown in its title bar.
+    label: &'static str,
     started: std::time::Instant,
     /// A mouse selection between two visible cells, in drag order.
     selection: Option<((u16, u16), (u16, u16))>,
@@ -48,9 +50,7 @@ impl vt100::Callbacks for Replies {
 
 impl Terminal {
     pub fn ssh(c: &Connection, ctx: egui::Context) -> Result<Self, String> {
-        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-        let mut command =
-            CommandBuilder::new(std::path::PathBuf::from(root).join("System32\\OpenSSH\\ssh.exe"));
+        let mut command = CommandBuilder::new(crate::platform::ssh_program());
         command.args(["-p", &c.port.to_string()]);
         if !c.username.is_empty() {
             command.args(["-l", &c.username]);
@@ -72,25 +72,43 @@ impl Terminal {
             "ServerAliveCountMax=3",
         ]);
         command.args(["--", &c.host]);
-        Self::spawn(command, Some(ctx))
+        Self::spawn(command, "SSH", Some(ctx)).map_err(|e| {
+            format!(
+                "Cannot start ssh. Install an OpenSSH client (on Windows, the OpenSSH Client \
+                 optional feature): {e}"
+            )
+        })
+    }
+
+    /// FreeRDP, which opens the remote desktop in its own window and asks for credentials here.
+    pub fn rdp(c: &Connection, ctx: egui::Context) -> Result<Self, String> {
+        let command = crate::rdp::freerdp_command(c)?;
+        Self::spawn(command, "RDP", Some(ctx)).map_err(|e| format!("Cannot start FreeRDP: {e}"))
     }
 
     /// A quiet process whose screen shows `transcript`, for rendering checks.
     #[cfg(feature = "ui-check")]
     pub fn demo(transcript: &'static [u8]) -> Self {
-        let mut command = CommandBuilder::new(r"C:\Windows\System32\cmd.exe");
-        command.args(["/d", "/c", "ping -n 60 127.0.0.1 >nul"]);
-        let terminal = Self::spawn(command, None).unwrap();
+        let quiet = if cfg!(windows) {
+            "ping -n 60 127.0.0.1 >nul"
+        } else {
+            "sleep 60"
+        };
+        let terminal = Self::spawn(shell(quiet), "SSH", None).unwrap();
         let parser = terminal.parser.clone();
         std::thread::spawn(move || {
-            // Let ConPTY's startup output settle first.
+            // Let the pseudo-terminal's startup output settle first.
             std::thread::sleep(std::time::Duration::from_millis(500));
             parser.lock().unwrap().process(transcript);
         });
         terminal
     }
 
-    fn spawn(mut command: CommandBuilder, ctx: Option<egui::Context>) -> Result<Self, String> {
+    fn spawn(
+        mut command: CommandBuilder,
+        label: &'static str,
+        ctx: Option<egui::Context>,
+    ) -> Result<Self, String> {
         // portable-pty rebuilds the environment from the registry, and a REG_SZ value with a
         // trailing NUL ends the block early, dropping variables such as USERPROFILE. Without
         // them ssh cannot find its home and exits with 255. Pass Relay's own environment.
@@ -111,9 +129,10 @@ impl Terminal {
         let writer = Arc::new(Mutex::new(
             pair.master.take_writer().map_err(|e| e.to_string())?,
         ));
-        let child = pair.slave.spawn_command(command).map_err(|e| {
-            format!("Cannot start terminal. Check that Windows OpenSSH Client is installed: {e}")
-        })?;
+        let child = pair
+            .slave
+            .spawn_command(command)
+            .map_err(|e| e.to_string())?;
         drop(pair.slave);
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             24,
@@ -173,6 +192,7 @@ impl Terminal {
             focused: false,
             error: None,
             exit_code: None,
+            label,
             started: std::time::Instant::now(),
             selection: None,
             focus_requested: true,
@@ -340,7 +360,7 @@ impl Terminal {
                 ui.visuals().error_fg_color,
             )
         } else {
-            (format!("SSH · {cols}×{rows}"), RUNNING)
+            (format!("{} · {cols}×{rows}", self.label), RUNNING)
         };
         painter.circle_filled(Pos2::new(bar.min.x + 16., text_y), 4., dot);
         painter.text(
@@ -511,6 +531,20 @@ impl Terminal {
     }
 }
 
+/// Runs `script` with the system shell, for tests and rendering checks.
+#[cfg(any(test, feature = "ui-check"))]
+fn shell(script: &str) -> CommandBuilder {
+    let mut command;
+    if cfg!(windows) {
+        command = CommandBuilder::new(r"C:\Windows\System32\cmd.exe");
+        command.args(["/d", "/c", script]);
+    } else {
+        command = CommandBuilder::new("/bin/sh");
+        command.args(["-c", script]);
+    }
+    command
+}
+
 // The terminal keeps its own dark palette in every app theme.
 const TERMINAL_BG: Color32 = Color32::from_rgb(14, 17, 22);
 const TITLE_BG: Color32 = Color32::from_rgb(22, 26, 33);
@@ -584,8 +618,8 @@ struct Mode {
 fn translate(events: &[egui::Event], modifiers: egui::Modifiers, mode: Mode) -> (Vec<u8>, bool) {
     let mut input = vec![];
     let mut copy = false;
-    // egui-winit reports Ctrl+C/X and Shift+Delete only as Copy/Cut, and sends the text of an
-    // Alt combination after its key event.
+    // egui-winit reports Ctrl+C/X (Cmd+C/X on macOS) and Shift+Delete only as Copy/Cut, and
+    // sends the text of an Alt combination after its key event. On macOS Ctrl+C stays a key.
     let mut meta = false;
     for event in events {
         match event {
@@ -604,8 +638,9 @@ fn translate(events: &[egui::Event], modifiers: egui::Modifiers, mode: Mode) -> 
                     input.extend(b"\x1b[201~");
                 }
             }
-            egui::Event::Copy if modifiers.shift => copy = true,
+            egui::Event::Copy if modifiers.shift || modifiers.mac_cmd => copy = true,
             egui::Event::Copy => input.push(0x03),
+            egui::Event::Cut if modifiers.mac_cmd => copy = true,
             egui::Event::Cut if modifiers.ctrl => input.push(0x18),
             egui::Event::Cut => input.extend(b"\x1b[3;2~"),
             egui::Event::Key {
@@ -864,7 +899,7 @@ mod tests {
         }
     }
     fn run(command: CommandBuilder) -> Terminal {
-        let mut terminal = Terminal::spawn(command, None).unwrap();
+        let mut terminal = Terminal::spawn(command, "Test", None).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
         while !terminal.ended && std::time::Instant::now() < deadline {
             terminal.poll();
@@ -876,19 +911,21 @@ mod tests {
     }
     #[test]
     fn child_receives_the_full_environment() {
-        let mut command = CommandBuilder::new(r"C:\Windows\System32\cmd.exe");
-        command.args([
-            "/d",
-            "/c",
-            "echo U=%USERPROFILE%& echo S=%SystemRoot%& where cmd",
-        ]);
-        let terminal = run(command);
+        let (script, home, lookup) = if cfg!(windows) {
+            (
+                "echo H=%USERPROFILE%& where cmd",
+                "USERPROFILE",
+                r"system32\cmd.exe",
+            )
+        } else {
+            ("echo H=$HOME; command -v sh", "HOME", "/sh")
+        };
+        let terminal = run(shell(script));
         let screen = terminal.parser.lock().unwrap().screen().contents();
-        let profile = std::env::var("USERPROFILE").unwrap();
-        assert!(screen.contains(&format!("U={profile}")), "{screen}");
-        assert!(!screen.contains("%SystemRoot%"), "{screen}");
+        let home = std::env::var(home).unwrap();
+        assert!(screen.contains(&format!("H={home}")), "{screen}");
         assert!(
-            screen.to_lowercase().contains(r"system32\cmd.exe"),
+            screen.to_lowercase().contains(lookup),
             "PATH lookup failed: {screen}"
         );
     }
@@ -913,9 +950,12 @@ mod tests {
     }
     #[test]
     fn dragging_selects_and_ctrl_shift_c_copies_it() {
-        let mut command = CommandBuilder::new(r"C:\Windows\System32\cmd.exe");
-        command.args(["/d", "/c", "ping -n 10 127.0.0.1 >nul"]);
-        let mut terminal = Terminal::spawn(command, None).unwrap();
+        let quiet = if cfg!(windows) {
+            "ping -n 10 127.0.0.1 >nul"
+        } else {
+            "sleep 10"
+        };
+        let mut terminal = Terminal::spawn(shell(quiet), "Test", None).unwrap();
         let parser = terminal.parser.clone();
         let ctx = egui::Context::default();
         let mut frame = |events: Vec<egui::Event>, modifiers| {
@@ -934,7 +974,7 @@ mod tests {
             )
         };
         frame(vec![], egui::Modifiers::NONE);
-        // Let ConPTY's startup and resize output settle, then show known text.
+        // Let the pseudo-terminal's startup and resize output settle, then show known text.
         std::thread::sleep(std::time::Duration::from_millis(700));
         parser
             .lock()
@@ -978,10 +1018,15 @@ mod tests {
         assert_eq!(copied, ["world\nsecond"]);
     }
     #[test]
-    fn conpty_runs_and_receives_input() {
-        let mut command = CommandBuilder::new("C:\\Windows\\System32\\cmd.exe");
-        command.args(["/d", "/q"]);
-        let mut terminal = Terminal::spawn(command, None).unwrap();
+    fn pty_runs_and_receives_input() {
+        let command = if cfg!(windows) {
+            let mut command = CommandBuilder::new(r"C:\Windows\System32\cmd.exe");
+            command.args(["/d", "/q"]);
+            command
+        } else {
+            CommandBuilder::new("/bin/sh")
+        };
+        let mut terminal = Terminal::spawn(command, "Test", None).unwrap();
         let ready = std::time::Instant::now() + std::time::Duration::from_secs(8);
         while terminal
             .parser
@@ -993,7 +1038,7 @@ mod tests {
         {
             assert!(
                 std::time::Instant::now() < ready,
-                "ConPTY startup handshake did not complete"
+                "the pseudo-terminal did not start"
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -1018,7 +1063,7 @@ mod tests {
             terminal.poll();
             assert!(
                 std::time::Instant::now() < deadline,
-                "ConPTY did not return terminal output; screen={:?}, status={:?}",
+                "the pseudo-terminal did not return output; screen={:?}, status={:?}",
                 terminal.parser.lock().unwrap().screen().contents(),
                 terminal.error
             );

@@ -5,7 +5,7 @@ mod database;
 mod file_dialog;
 mod import;
 mod model;
-mod native_host;
+mod platform;
 mod rdp;
 mod secret;
 mod session;
@@ -18,13 +18,11 @@ mod ui_check;
 
 use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
 use model::{Connection, Protocol};
-use raw_window_handle::HasWindowHandle;
 use session::Session;
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
-use windows_sys::Win32::Foundation::HWND;
 
 fn main() -> eframe::Result {
     // Rendering checks start from defaults and never touch the user's saved state.
@@ -83,8 +81,14 @@ enum LibraryKind {
     Mssql,
 }
 
-const MSSQL_EXAMPLE: &str = "Server=tcp:sql.example.com,1433;Database=Relay;\
-    Integrated Security=true;Encrypt=true;TrustServerCertificate=false";
+/// Integrated authentication needs Windows; elsewhere the example uses an SQL login.
+const MSSQL_EXAMPLE: &str = if cfg!(windows) {
+    "Server=tcp:sql.example.com,1433;Database=Relay;\
+     Integrated Security=true;Encrypt=true;TrustServerCertificate=false"
+} else {
+    "Server=tcp:sql.example.com,1433;Database=Relay;\
+     User ID=relay;Password=;Encrypt=true;TrustServerCertificate=false"
+};
 
 struct App {
     connections: Vec<Connection>,
@@ -99,7 +103,8 @@ struct App {
     error: Option<String>,
     storage_ok: bool,
     path: PathBuf,
-    parent: HWND,
+    /// Relay's main window, which pickers and embedded remote desktops attach to.
+    parent: Option<platform::Window>,
     search_focus: bool,
     ctx: egui::Context,
     location: database::Location,
@@ -111,7 +116,7 @@ struct App {
     db_kind: LibraryKind,
     db_path: String,
     db_mssql: String,
-    /// Keep the MSSQL connection string in DPAPI storage after it opens successfully.
+    /// Keep the MSSQL connection string in the credential store after it opens successfully.
     db_remember: bool,
     db_reveal: bool,
     /// A short confirmation shown as a toast until it expires.
@@ -131,7 +136,7 @@ struct App {
     /// Sessions shown in their own windows, by session key.
     detached: Vec<u64>,
     /// Native windows found for detached sessions, which remote desktops are moved into.
-    windows: Vec<(u64, HWND)>,
+    windows: Vec<(u64, platform::Window)>,
     /// The session shown beside the active one in split view.
     split: Option<usize>,
     /// Where the split divider sits, as a fraction of the width.
@@ -141,6 +146,8 @@ struct App {
     /// A snippet being added (no index) or edited in Settings.
     snippet_draft: Option<(Option<usize>, state::Snippet)>,
     pending_save: bool,
+    /// A connection to open at the start of the next frame, outside any dialog or list.
+    connect_request: Option<Connection>,
 }
 
 const NOTICE_SECONDS: u64 = 4;
@@ -157,31 +164,20 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
         let mut fonts = egui::FontDefinitions::default();
-        if let Ok(bytes) = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf") {
-            fonts
-                .font_data
-                .insert("segoe".into(), egui::FontData::from_owned(bytes).into());
-            fonts
-                .families
-                .get_mut(&egui::FontFamily::Proportional)
-                .unwrap()
-                .insert(0, "segoe".into());
-        }
-        // A real terminal font for SSH sessions and addresses; egui's own is the fallback.
-        for (name, file) in [
-            ("cascadia", "CascadiaMono.ttf"),
-            ("consolas", "consola.ttf"),
+        // Prefer the system's own fonts; a real terminal font matters for SSH sessions.
+        for (family, monospace) in [
+            (egui::FontFamily::Proportional, false),
+            (egui::FontFamily::Monospace, true),
         ] {
-            if let Ok(bytes) = std::fs::read(format!(r"C:\Windows\Fonts\{file}")) {
+            if let Some((path, bytes)) = platform::fonts(monospace)
+                .iter()
+                .find_map(|path| Some((path, std::fs::read(path).ok()?)))
+            {
+                let name = path.to_string();
                 fonts
                     .font_data
-                    .insert(name.into(), egui::FontData::from_owned(bytes).into());
-                fonts
-                    .families
-                    .get_mut(&egui::FontFamily::Monospace)
-                    .unwrap()
-                    .insert(0, name.into());
-                break;
+                    .insert(name.clone(), egui::FontData::from_owned(bytes).into());
+                fonts.families.entry(family).or_default().insert(0, name);
             }
         }
         cc.egui_ctx.set_fonts(fonts);
@@ -189,17 +185,16 @@ impl App {
         apply_style(&cc.egui_ctx);
         let path = model::data_path();
         let loaded = model::load(&path);
-        let parent = match cc.window_handle().map(|h| h.as_raw()) {
-            Ok(raw_window_handle::RawWindowHandle::Win32(h)) => h.hwnd.get() as HWND,
-            _ => std::ptr::null_mut(),
-        };
-        native_host::install_shortcuts(parent, cc.egui_ctx.clone());
+        let parent = platform::Window::of(cc);
+        if let Some(parent) = parent {
+            platform::install_shortcuts(parent, cc.egui_ctx.clone());
+        }
         let state_path = state::path();
         let mut app = Self::with(
             cc.egui_ctx.clone(),
             path,
             loaded,
-            secret::load(&secret::path()),
+            secret::load(),
             parent,
             state::load(&state_path),
         );
@@ -214,7 +209,7 @@ impl App {
         path: PathBuf,
         loaded: Result<Vec<Connection>, String>,
         saved_mssql: Option<String>,
-        parent: HWND,
+        parent: Option<platform::Window>,
         state: state::State,
     ) -> Self {
         let location = database::Location::Local(path.clone());
@@ -263,6 +258,7 @@ impl App {
             palette: None,
             snippet_draft: None,
             pending_save: false,
+            connect_request: None,
         }
     }
 
@@ -437,13 +433,13 @@ impl App {
                 self.attach(key);
                 continue;
             }
-            // A remote desktop moves into the window once Windows has created it.
+            // An embedded remote desktop moves into the window once it exists.
             let window = match self.windows.iter().find(|(k, _)| *k == key) {
                 Some((_, window)) => Some(*window),
                 None => {
-                    let mut known: Vec<HWND> = self.windows.iter().map(|(_, w)| *w).collect();
-                    known.push(self.parent);
-                    let found = native_host::find_window(&title, &known);
+                    let mut known: Vec<_> = self.windows.iter().map(|(_, w)| *w).collect();
+                    known.extend(self.parent);
+                    let found = platform::find_window(&title, &known);
                     if let Some(window) = found {
                         self.windows.push((key, window));
                         self.sessions[index].set_host(Some(window), self.parent);
@@ -542,11 +538,13 @@ impl App {
         true
     }
 
+    /// Opens `connection` in a new tab on the next frame.
+    fn request_connect(&mut self, connection: Connection) {
+        self.connect_request = Some(connection);
+        self.ctx.request_repaint();
+    }
+
     fn connect(&mut self, connection: Connection) {
-        if self.parent.is_null() {
-            self.error = Some("Cannot obtain the native application window.".into());
-            return;
-        }
         let id = connection.id;
         match Session::start(connection, self.ctx.clone()) {
             Ok(session) => {
@@ -707,12 +705,19 @@ impl App {
                     }
                 });
             ui.add_space(8.);
-            let help = if rdp {
-                "Windows asks for credentials; tick “Remember me” to skip the prompt next time.\n\
-                 Windows keeps them in Credential Manager. Relay never sees passwords."
-            } else {
-                "Uses Windows OpenSSH, including your SSH config and agent.\n\
-                 Host verification and password prompts appear in the terminal."
+            let help = match (rdp, rdp::EMBEDDED) {
+                (true, true) => {
+                    "Windows asks for credentials; tick “Remember me” to skip the prompt next \
+                     time.\nWindows keeps them in Credential Manager. Relay never sees passwords."
+                }
+                (true, false) => {
+                    "Opens in a FreeRDP window. Certificate and password prompts appear in the \
+                     tab.\nRelay never stores passwords."
+                }
+                (false, _) => {
+                    "Uses your OpenSSH client, including your SSH config and agent.\n\
+                     Host verification and password prompts appear in the terminal."
+                }
             };
             ui.label(RichText::new(help).size(12.).color(colors.muted));
             if !self.editor_error.is_empty() {
@@ -783,7 +788,7 @@ impl App {
                     .size(12.)
                     .color(colors.muted),
             );
-            let desktop = s.terminal.is_none() && !s.window.is_null();
+            let desktop = s.has_desktop();
             // Quick connections are not in the library until saved.
             let unsaved = s.connection.id == 0
                 && !self
@@ -813,7 +818,8 @@ impl App {
                         .clicked();
                 }
                 // The snippet palette opens over the main window's active tab.
-                if s.terminal.is_some() && s.is_running() && pane != Pane::Window {
+                let ssh = s.connection.protocol == Protocol::Ssh;
+                if ssh && s.terminal.is_some() && s.is_running() && pane != Pane::Window {
                     snippets = ui
                         .button("Snippets")
                         .on_hover_text("Saved commands · Ctrl+Shift+P")
@@ -876,7 +882,7 @@ impl App {
             if ui.button("Reconnect").clicked() {
                 self.reconnect(index);
             }
-        } else if s.window.is_null() {
+        } else if !s.has_desktop() {
             ui.add_space(50.);
             ui.spinner();
             ui.heading("Opening your session…");
@@ -1050,6 +1056,9 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let colors = theme::palette(ctx);
         self.poll_storage();
+        if let Some(connection) = self.connect_request.take() {
+            self.connect(connection);
+        }
         // Remember the restored window size; a maximized window keeps the size it returns to.
         let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized));
         if let Some(maximized) = maximized {
@@ -1078,18 +1087,19 @@ impl eframe::App for App {
             .filter_map(|s| s.terminal.as_ref())
             .any(|t| t.focused);
         let shortcut = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
-        let ctrl = egui::Modifiers::CTRL;
+        // Cmd on macOS, Ctrl elsewhere.
+        let ctrl = egui::Modifiers::COMMAND;
         // Remote desktops take the keyboard, so their shortcuts arrive through a native hook.
-        let native = native_host::take_command();
+        let native = platform::take_command();
         if !self.covered() {
-            use native_host::Command;
+            use platform::Command;
             if shortcut(ctrl, egui::Key::Backslash) {
                 self.toggle_split();
             }
             let ssh = self
                 .active
                 .and_then(|i| self.sessions.get(i))
-                .is_some_and(|s| s.terminal.is_some());
+                .is_some_and(|s| s.connection.protocol == Protocol::Ssh && s.terminal.is_some());
             if ssh && shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::P) {
                 self.palette = Some(Palette::default());
             }
@@ -1114,11 +1124,11 @@ impl eframe::App for App {
                 Some(Command::NextTab) => self.select_tab((current + 1) % tabs),
                 Some(Command::Release) | None => {}
             }
-            if native.is_some() {
+            if native.is_some()
+                && let Some(parent) = self.parent
+            {
                 // Take the keyboard back from the remote desktop.
-                unsafe {
-                    windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(self.parent);
-                }
+                platform::focus(parent);
             }
         }
         if !terminal_focused && !self.covered() {
@@ -1188,7 +1198,7 @@ impl eframe::App for App {
                 terminal.focus();
             }
         }
-        // Hide native children before painting overlays; native child HWNDs sit above GPU content.
+        // Hide native children before painting overlays; embedded remote desktops sit above GPU content.
         let covered = self.covered();
         for (i, s) in self.sessions.iter_mut().enumerate() {
             let detached = self.detached.contains(&s.key);
@@ -1459,7 +1469,11 @@ fn protocol_badge(ui: &mut egui::Ui, protocol: Protocol) {
             );
         });
 }
-fn ssh_options(ui: &mut egui::Ui, options: &mut model::SshOptions, parent: HWND) {
+fn ssh_options(
+    ui: &mut egui::Ui,
+    options: &mut model::SshOptions,
+    parent: Option<platform::Window>,
+) {
     egui::CollapsingHeader::new("SSH options")
         .id_salt("ssh-options")
         .default_open(*options != model::SshOptions::default())
@@ -1483,8 +1497,8 @@ fn ssh_options(ui: &mut egui::Ui, options: &mut model::SshOptions, parent: HWND)
                     let button =
                         egui::Button::new("Browse…").min_size(Vec2::new(browse, CONTROL_HEIGHT));
                     if ui.add(button).clicked()
-                        && let Ok(paths) = file_dialog::choose(parent, file_dialog::Kind::Key)
-                        && let Some(path) = paths.first()
+                        && let Some(path) =
+                            file_dialog::choose(parent, file_dialog::Kind::Key).first()
                     {
                         options.identity = path.display().to_string();
                     }
@@ -1540,7 +1554,7 @@ fn rdp_options(ui: &mut egui::Ui, options: &mut model::RdpOptions) {
                             }
                         });
                     ui.end_row();
-                    ui.label("Windows key combinations");
+                    ui.label("System key combinations");
                     egui::ComboBox::from_id_salt("rdp-keys")
                         .width(220.)
                         .selected_text(options.keys.label())

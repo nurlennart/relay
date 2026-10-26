@@ -1,10 +1,10 @@
 use crate::{
     model::{Connection, Protocol},
-    rdp::RdpClient,
+    platform::Window,
+    rdp::{self, RdpClient},
     terminal::Terminal,
 };
 use std::time::{Duration, Instant};
-use windows_sys::Win32::Foundation::HWND;
 
 /// How a session's tab presents it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -15,11 +15,11 @@ pub enum TabState {
     Waiting,
 }
 
+/// An open tab: an SSH or FreeRDP terminal, or an embedded Windows remote desktop.
 pub struct Session {
     pub connection: Connection,
     pub terminal: Option<Terminal>,
     rdp: Option<RdpClient>,
-    pub window: HWND,
     pub error: Option<String>,
     pub started: Instant,
     ctx: eframe::egui::Context,
@@ -33,7 +33,7 @@ pub struct Session {
     /// Identifies the session while tabs move, for its detached window.
     pub key: u64,
     /// The window a detached remote desktop lives in, instead of Relay's main window.
-    host: Option<HWND>,
+    host: Option<Window>,
 }
 
 /// Automatic SSH reconnection gives up after this many attempts in a row.
@@ -58,7 +58,6 @@ impl Session {
             connection,
             terminal,
             rdp: None,
-            window: std::ptr::null_mut(),
             error: None,
             started: Instant::now(),
             ctx,
@@ -75,11 +74,7 @@ impl Session {
     }
     pub fn start(mut connection: Connection, ctx: eframe::egui::Context) -> Result<Self, String> {
         connection.validate()?;
-        let terminal = if connection.protocol == Protocol::Ssh {
-            Some(Terminal::ssh(&connection, ctx.clone())?)
-        } else {
-            None
-        };
+        let terminal = terminal_for(&connection, &ctx)?;
         Ok(Self::new(connection, terminal, ctx))
     }
     /// A tab from the last run that connects when it is first shown.
@@ -101,15 +96,18 @@ impl Session {
         }
         Ok(())
     }
-    pub fn poll(&mut self, parent: HWND) {
+    pub fn poll(&mut self, parent: Option<Window>) {
         if self.waiting {
             return;
         }
         if let Some(terminal) = &mut self.terminal {
             terminal.poll();
+            // FreeRDP reconnects by itself; only SSH sessions are restarted.
+            let ssh = self.connection.protocol == Protocol::Ssh;
             if terminal.ended && !self.ended && self.retry.is_none() {
                 if let Some(delay) =
                     retry_delay(terminal.exit_code, terminal.uptime(), self.attempts)
+                        .filter(|_| ssh)
                 {
                     self.retry = Some(Instant::now() + delay);
                     self.attempts += 1;
@@ -130,12 +128,8 @@ impl Session {
             return;
         }
         if self.rdp.is_none() {
-            let parent = self.host.unwrap_or(parent);
-            match RdpClient::new(parent, &self.connection, self.ctx.clone()) {
-                Ok(rdp) => {
-                    self.window = rdp.window();
-                    self.rdp = Some(rdp);
-                }
+            match RdpClient::new(self.host.or(parent), &self.connection, self.ctx.clone()) {
+                Ok(rdp) => self.rdp = Some(rdp),
                 Err(error) => {
                     self.error = Some(error);
                     self.ended = true;
@@ -162,10 +156,10 @@ impl Session {
         }
     }
     /// Hosts a remote desktop in `window`, or back in the main window with `None`.
-    pub fn set_host(&mut self, window: Option<HWND>, main: HWND) {
+    pub fn set_host(&mut self, window: Option<Window>, main: Option<Window>) {
         self.host = window;
-        if let Some(rdp) = &mut self.rdp {
-            rdp.set_parent(window.unwrap_or(main));
+        if let (Some(rdp), Some(parent)) = (&mut self.rdp, window.or(main)) {
+            rdp.set_parent(parent);
         }
     }
     /// Restarts the session in place, using `connection` as it is saved now.
@@ -177,13 +171,8 @@ impl Session {
     }
     fn restart(&mut self, mut connection: Connection) -> Result<(), String> {
         connection.validate()?;
-        self.terminal = if connection.protocol == Protocol::Ssh {
-            Some(Terminal::ssh(&connection, self.ctx.clone())?)
-        } else {
-            None
-        };
+        self.terminal = terminal_for(&connection, &self.ctx)?;
         self.rdp = None;
-        self.window = std::ptr::null_mut();
         self.connection = connection;
         self.error = None;
         self.ended = false;
@@ -195,7 +184,7 @@ impl Session {
         self.retry = None;
     }
     pub fn display_warning(&self) -> Option<&str> {
-        self.rdp.as_ref().and_then(|r| r.display_warning.as_deref())
+        self.rdp.as_ref().and_then(|r| r.display_warning())
     }
     /// A transient connection state worth showing above the session.
     pub fn status(&self) -> Option<String> {
@@ -220,6 +209,10 @@ impl Session {
             None => Err("The remote desktop is not ready yet.".into()),
         }
     }
+    /// Whether an embedded remote desktop has been created for this session.
+    pub fn has_desktop(&self) -> bool {
+        self.rdp.is_some()
+    }
     pub fn is_running(&self) -> bool {
         !self.ended
     }
@@ -231,6 +224,18 @@ impl Session {
         } else {
             TabState::Open
         }
+    }
+}
+
+/// The terminal a connection runs in: ssh, or FreeRDP where remote desktops are not embedded.
+fn terminal_for(
+    connection: &Connection,
+    ctx: &eframe::egui::Context,
+) -> Result<Option<Terminal>, String> {
+    match connection.protocol {
+        Protocol::Ssh => Terminal::ssh(connection, ctx.clone()).map(Some),
+        Protocol::Rdp if !rdp::EMBEDDED => Terminal::rdp(connection, ctx.clone()).map(Some),
+        Protocol::Rdp => Ok(None),
     }
 }
 
@@ -265,6 +270,6 @@ mod tests {
         let session = Session::restored(c, eframe::egui::Context::default());
         assert!(!session.is_running());
         assert_eq!(session.tab_state(), TabState::Waiting);
-        assert!(session.terminal.is_none() && session.window.is_null());
+        assert!(session.terminal.is_none() && !session.has_desktop());
     }
 }
