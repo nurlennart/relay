@@ -1,0 +1,300 @@
+//! The dialog that creates and edits a connection.
+use super::*;
+
+impl App {
+    pub(super) fn editor(&mut self, ctx: &egui::Context) {
+        let colors = theme::palette(ctx);
+        let Modal::Editor(c) = &self.modal else {
+            return;
+        };
+        let mut c = c.clone();
+        let mut save = false;
+        let mut cancel = false;
+        let rdp = c.protocol == Protocol::Rdp;
+        let groups: std::collections::BTreeSet<_> =
+            self.connections.iter().map(|c| c.group.clone()).collect();
+        let fields_height = (ctx.content_rect().height() - 300.).max(200.);
+        let parent = self.parent;
+        dialog("edit-connection", ctx).show(ctx, |ui| {
+            ui.set_width(440.);
+            ui.add_space(8.);
+            let title = if c.id == 0 {
+                "New connection"
+            } else {
+                "Edit connection"
+            };
+            ui.label(RichText::new(title).size(25.).strong());
+            ui.label(RichText::new("A familiar name. A machine to reach.").color(colors.muted));
+            ui.add_space(15.);
+            egui::ScrollArea::vertical()
+                .id_salt("editor-fields")
+                .max_height(fields_height)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let half = (ui.available_width() - ui.spacing().item_spacing.x) / 2.;
+                        for protocol in [Protocol::Rdp, Protocol::Ssh] {
+                            let button = egui::Button::new(protocol.label())
+                                .selected(c.protocol == protocol);
+                            if ui.add_sized([half, 40.], button).clicked() {
+                                if c.port == c.protocol.port() {
+                                    c.port = protocol.port();
+                                }
+                                c.protocol = protocol;
+                            }
+                        }
+                    });
+                    ui.add_space(10.);
+                    field(
+                        ui,
+                        "Connection name",
+                        &mut c.name,
+                        "e.g. Office workstation",
+                    );
+                    ui.horizontal_top(|ui| {
+                        let port_width = 96.;
+                        let host_width =
+                            ui.available_width() - port_width - ui.spacing().item_spacing.x;
+                        labeled(ui, "Host / IP address", |ui| {
+                            ui.add_sized(
+                                [host_width, CONTROL_HEIGHT],
+                                input(&mut c.host, "e.g. 192.168.1.20"),
+                            );
+                        });
+                        labeled(ui, "Port", |ui| {
+                            // Digits only; an empty field reads as 0, which validation rejects.
+                            let mut port = if c.port == 0 {
+                                String::new()
+                            } else {
+                                c.port.to_string()
+                            };
+                            let response =
+                                ui.add_sized([port_width, CONTROL_HEIGHT], input(&mut port, ""));
+                            if response.changed() {
+                                let digits: String =
+                                    port.chars().filter(char::is_ascii_digit).collect();
+                                c.port = digits.parse().unwrap_or(if digits.is_empty() {
+                                    0
+                                } else {
+                                    c.port
+                                });
+                            }
+                        });
+                    });
+                    let user_hint = if rdp { "DOMAIN\\username" } else { "username" };
+                    field(ui, "Username (optional)", &mut c.username, user_hint);
+                    labeled(ui, "Group", |ui| {
+                        ui.horizontal(|ui| {
+                            let button = CONTROL_HEIGHT;
+                            ui.add_sized(
+                                [
+                                    ui.available_width() - button - ui.spacing().item_spacing.x,
+                                    CONTROL_HEIGHT,
+                                ],
+                                input(&mut c.group, "Personal"),
+                            );
+                            let choose = ui
+                                .add_enabled(
+                                    !groups.is_empty(),
+                                    egui::Button::new(RichText::new("▼").size(10.))
+                                        .min_size(Vec2::splat(button)),
+                                )
+                                .on_hover_text("Choose an existing group");
+                            egui::Popup::menu(&choose).show(|ui| {
+                                for group in &groups {
+                                    if ui.button(group).clicked() {
+                                        c.group = group.clone();
+                                    }
+                                }
+                            });
+                        });
+                    });
+                    ui.checkbox(&mut c.favorite, "Add to favorites");
+                    ui.add_space(4.);
+                    if c.protocol == Protocol::Rdp {
+                        rdp_options(ui, &mut c.rdp);
+                    } else {
+                        ssh_options(ui, &mut c.ssh, parent);
+                    }
+                });
+            ui.add_space(8.);
+            let help = match (rdp, rdp::EMBEDDED) {
+                (true, true) => {
+                    "Windows asks for credentials; tick “Remember me” to skip the prompt next \
+                     time.\nWindows keeps them in Credential Manager. Relay never sees passwords."
+                }
+                (true, false) => {
+                    "Opens in a FreeRDP window. Certificate and password prompts appear in the \
+                     tab.\nRelay never stores passwords."
+                }
+                (false, _) => {
+                    "Uses your OpenSSH client, including your SSH config and agent.\n\
+                     Host verification and password prompts appear in the terminal."
+                }
+            };
+            ui.label(RichText::new(help).size(12.).color(colors.muted));
+            if !self.editor_error.is_empty() {
+                ui.colored_label(ui.visuals().error_fg_color, &self.editor_error);
+            }
+            ui.add_space(14.);
+            ui.horizontal(|ui| {
+                save = accent_button(ui, "Save connection", 175.).clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+            ui.label(
+                RichText::new("Enter saves · Esc cancels")
+                    .size(11.)
+                    .color(colors.muted),
+            );
+        });
+        let (enter, escape) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if cancel || escape {
+            self.modal = Modal::None;
+            return;
+        }
+        save |= enter;
+        if save && let Err(e) = c.validate() {
+            self.editor_error = e;
+            save = false;
+        }
+        self.modal = Modal::Editor(c.clone());
+        if save {
+            let mut next = self.connections.clone();
+            if c.id == 0 {
+                c.id = next
+                    .iter()
+                    .map(|c| c.id)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_add(1);
+                next.push(c);
+            } else if let Some(existing) = next.iter_mut().find(|v| v.id == c.id) {
+                *existing = c;
+            }
+            if self.persist(next) {
+                self.modal = Modal::None;
+            }
+        }
+    }
+}
+
+pub(super) fn ssh_options(
+    ui: &mut egui::Ui,
+    options: &mut model::SshOptions,
+    parent: Option<platform::Window>,
+) {
+    egui::CollapsingHeader::new("SSH options")
+        .id_salt("ssh-options")
+        .default_open(*options != model::SshOptions::default())
+        .show(ui, |ui| {
+            field(
+                ui,
+                "Jump host (optional)",
+                &mut options.jump,
+                "user@bastion.example.com:22",
+            );
+            labeled(ui, "Identity file (optional)", |ui| {
+                ui.horizontal(|ui| {
+                    let browse = 80.;
+                    ui.add_sized(
+                        [
+                            ui.available_width() - browse - ui.spacing().item_spacing.x,
+                            CONTROL_HEIGHT,
+                        ],
+                        input(&mut options.identity, "Uses your SSH config and agent"),
+                    );
+                    let button =
+                        egui::Button::new("Browse…").min_size(Vec2::new(browse, CONTROL_HEIGHT));
+                    if ui.add(button).clicked()
+                        && let Some(path) =
+                            file_dialog::choose(parent, file_dialog::Kind::Key).first()
+                    {
+                        options.identity = path.display().to_string();
+                    }
+                });
+            });
+            field(
+                ui,
+                "Port forwards (optional)",
+                &mut options.forwards,
+                "L8080:localhost:80, R9000:localhost:9000, D1080",
+            );
+            ui.label(
+                RichText::new(
+                    "L forwards a local port to the remote side, R the reverse, and D opens a \
+                     SOCKS proxy.",
+                )
+                .size(11.)
+                .color(theme::palette(ui.ctx()).muted),
+            );
+        });
+}
+
+pub(super) fn rdp_options(ui: &mut egui::Ui, options: &mut model::RdpOptions) {
+    use model::{Audio, Display, Keys};
+    egui::CollapsingHeader::new("Remote desktop options")
+        .id_salt("rdp-options")
+        .default_open(*options != model::RdpOptions::default())
+        .show(ui, |ui| {
+            field(
+                ui,
+                "RD Gateway (optional)",
+                &mut options.gateway,
+                "gateway.example.com",
+            );
+            ui.label("Use on the remote computer");
+            ui.horizontal_wrapped(|ui| {
+                ui.checkbox(&mut options.clipboard, "Clipboard");
+                ui.checkbox(&mut options.drives, "Local drives");
+                ui.checkbox(&mut options.printers, "Printers");
+                ui.checkbox(&mut options.smart_cards, "Smart cards");
+                ui.checkbox(&mut options.microphone, "Microphone");
+            });
+            egui::Grid::new("rdp-choices")
+                .num_columns(2)
+                .spacing([12., 8.])
+                .show(ui, |ui| {
+                    ui.label("Remote audio");
+                    egui::ComboBox::from_id_salt("rdp-audio")
+                        .width(220.)
+                        .selected_text(options.audio.label())
+                        .show_ui(ui, |ui| {
+                            for audio in Audio::ALL {
+                                ui.selectable_value(&mut options.audio, audio, audio.label());
+                            }
+                        });
+                    ui.end_row();
+                    ui.label("System key combinations");
+                    egui::ComboBox::from_id_salt("rdp-keys")
+                        .width(220.)
+                        .selected_text(options.keys.label())
+                        .show_ui(ui, |ui| {
+                            for keys in Keys::ALL {
+                                ui.selectable_value(&mut options.keys, keys, keys.label());
+                            }
+                        });
+                    ui.end_row();
+                    ui.label("Resolution");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut options.display, Display::Fit, "Fit to tab");
+                        let fixed = matches!(options.display, Display::Fixed { .. });
+                        if ui.radio(fixed, "Fixed").clicked() && !fixed {
+                            options.display = Display::Fixed {
+                                width: 1920,
+                                height: 1080,
+                            };
+                        }
+                        if let Display::Fixed { width, height } = &mut options.display {
+                            ui.add(egui::DragValue::new(width).range(200..=8192));
+                            ui.label("×");
+                            ui.add(egui::DragValue::new(height).range(200..=8192));
+                        }
+                    });
+                    ui.end_row();
+                });
+        });
+}
