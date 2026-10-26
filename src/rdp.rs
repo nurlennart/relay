@@ -173,6 +173,8 @@ pub struct RdpClient {
     failures: u32,
     retry_at: Instant,
     resized: Instant,
+    /// Overlay rectangles currently cut out of the viewport.
+    holes: Vec<[i32; 4]>,
     pub display_warning: Option<String>,
     _apartment: Apartment,
 }
@@ -267,6 +269,7 @@ impl RdpClient {
             failures: 0,
             retry_at: Instant::now(),
             resized: Instant::now(),
+            holes: vec![],
             display_warning: None,
             _apartment: apartment,
         };
@@ -428,14 +431,19 @@ impl RdpClient {
         }
         Ok(())
     }
-    pub fn place(&mut self, rect: Option<[i32; 4]>) -> Result<(), String> {
+    pub fn place(&mut self, rect: Option<[i32; 4]>, holes: &[[i32; 4]]) -> Result<(), String> {
         let Some(rect) = rect else {
             unsafe {
                 ShowWindow(self.window.0, SW_HIDE);
             }
             return Ok(());
         };
+        let resized = crate::native_host::bounds(self.window.0, self.parent)? != rect;
         self.layout(rect)?;
+        if holes != self.holes || (resized && !holes.is_empty()) {
+            crate::native_host::clip(self.window.0, [rect[2], rect[3]], holes)?;
+            self.holes = holes.to_vec();
+        }
         unsafe {
             ShowWindow(self.window.0, SW_SHOWNA);
         }

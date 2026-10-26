@@ -71,14 +71,21 @@ impl App {
                         "Collapse sidebar (Ctrl+B)"
                     });
                 if toggle.clicked() {
-                    self.sidebar_collapsed = Some(!collapsed);
+                    self.set_sidebar_collapsed(!collapsed);
                 }
                 ui.add_space(if collapsed { 20. } else { 28. });
                 let favorites = self.connections.iter().filter(|c| c.favorite).count();
+                let recent = self.state.recent(&self.location);
+                let recent = self
+                    .connections
+                    .iter()
+                    .filter(|c| recent.contains(&c.id))
+                    .count();
                 let count =
                     |p: Protocol| self.connections.iter().filter(|c| c.protocol == p).count();
                 let filters = [
                     (Filter::All, "▦", "All connections", self.connections.len()),
+                    (Filter::Recent, "◷", "Recent", recent),
                     (Filter::Favorites, "☆", "Favorites", favorites),
                     (Filter::Rdp, "▣", "Remote desktop", count(Protocol::Rdp)),
                     (Filter::Ssh, ">_", "SSH terminal", count(Protocol::Ssh)),
@@ -95,7 +102,7 @@ impl App {
                     for (index, (filter, symbol, label, count)) in filters.into_iter().enumerate() {
                         if index == 0 {
                             section_label(ui, "LIBRARY");
-                        } else if index == 2 {
+                        } else if index == 3 {
                             ui.add_space(20.);
                             section_label(ui, "PROTOCOLS");
                         }
@@ -196,6 +203,7 @@ impl App {
 
     pub fn filtered(&self) -> Vec<Connection> {
         let query = self.query.to_lowercase();
+        let recent = self.state.recent(&self.location);
         let mut items: Vec<_> = self
             .connections
             .iter()
@@ -204,6 +212,7 @@ impl App {
                     && self.group.as_ref().is_none_or(|g| g == &c.group)
                     && match self.filter {
                         Filter::All => true,
+                        Filter::Recent => recent.contains(&c.id),
                         Filter::Favorites => c.favorite,
                         Filter::Rdp => c.protocol == Protocol::Rdp,
                         Filter::Ssh => c.protocol == Protocol::Ssh,
@@ -211,7 +220,11 @@ impl App {
             })
             .cloned()
             .collect();
-        items.sort_by_key(|c| c.name.to_lowercase());
+        if self.filter == Filter::Recent && self.group.is_none() {
+            items.sort_by_key(|c| recent.iter().position(|id| *id == c.id));
+        } else {
+            items.sort_by_key(|c| c.name.to_lowercase());
+        }
         items
     }
 
@@ -245,6 +258,10 @@ impl App {
                             if library.clicked() {
                                 self.active = None;
                             }
+                            // Tabs can be dragged; the drop position follows the pointer.
+                            let mut rects = vec![];
+                            let mut dragging = None;
+                            let mut dropped = None;
                             for (index, s) in self.sessions.iter().enumerate() {
                                 ui.push_id(index, |ui| {
                                     let session = session_tab(
@@ -253,6 +270,13 @@ impl App {
                                         s.is_running(),
                                         self.active == Some(index),
                                     );
+                                    rects.push(session.response.rect);
+                                    if session.response.dragged() {
+                                        dragging = Some(index);
+                                    }
+                                    if session.response.drag_stopped() {
+                                        dropped = Some(index);
+                                    }
                                     if session.inner.0.clicked() {
                                         self.active = Some(index);
                                     }
@@ -260,6 +284,27 @@ impl App {
                                         self.modal = Modal::Close(index);
                                     }
                                 });
+                            }
+                            let pointer = ui.ctx().pointer_interact_pos().map(|p| p.x);
+                            if let (Some(from), Some(x)) = (dragging.or(dropped), pointer) {
+                                let to = drop_index(&rects, from, x);
+                                if dropped.is_some() {
+                                    self.move_session(from, to);
+                                } else if to != from {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                    let others: Vec<_> = rects
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(i, _)| *i != from)
+                                        .map(|(_, r)| *r)
+                                        .collect();
+                                    let x = match to {
+                                        0 => others[0].left() - 4.,
+                                        n => others[n - 1].right() + 4.,
+                                    };
+                                    let y = rects[from].y_range();
+                                    ui.painter().vline(x, y, Stroke::new(2_f32, colors.accent));
+                                }
                             }
                             #[cfg(feature = "ui-check")]
                             if std::env::var_os("RELAY_UI_TABS").is_some() {
@@ -331,6 +376,7 @@ impl App {
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     let title = self.group.as_deref().unwrap_or(match self.filter {
                         Filter::All => "All connections",
+                        Filter::Recent => "Recent",
                         Filter::Favorites => "Favorites",
                         Filter::Rdp => "Remote desktops",
                         Filter::Ssh => "SSH terminals",
@@ -750,6 +796,8 @@ impl App {
                         if let database::Location::Mssql(connection) = &location {
                             remember_error = self.remember_mssql(connection).err();
                         }
+                        self.state.library = state::Library::of(&location);
+                        self.save_state();
                         self.location = location;
                         if matches!(self.modal, Modal::Library) {
                             self.modal = Modal::None;
@@ -1320,6 +1368,14 @@ fn rail_row(ui: &mut egui::Ui, symbol: &str, tooltip: &str, selected: bool) -> b
 fn nav_icon(ui: &egui::Ui, symbol: &str, center: egui::Pos2, color: Color32) {
     match symbol {
         "▦" => library_icon(ui, center, color),
+        "◷" => {
+            let stroke = Stroke::new(1.25_f32, color);
+            ui.painter().circle_stroke(center, 6.5, stroke);
+            ui.painter()
+                .line_segment([center, center + Vec2::new(0., -4.)], stroke);
+            ui.painter()
+                .line_segment([center, center + Vec2::new(3., 1.5)], stroke);
+        }
         "▱" => {
             let points = [
                 (-7., -5.),
@@ -1392,8 +1448,7 @@ fn session_tab(
             .size()
             .x
     });
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(label_width + 82., 36.), Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(label_width + 82., 36.), Sense::drag());
     ui.painter().rect_filled(
         rect,
         6.,
@@ -1446,6 +1501,15 @@ fn session_tab(
         response,
     }
 }
+/// The position a dragged tab takes when dropped at `x`: the number of other tabs left of it.
+fn drop_index(rects: &[Rect], from: usize, x: f32) -> usize {
+    rects
+        .iter()
+        .enumerate()
+        .filter(|(i, r)| *i != from && r.center().x < x)
+        .count()
+}
+
 fn outline_button(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Response {
     let colors = theme::palette(ui.ctx());
     ui.add_sized(
@@ -1479,6 +1543,7 @@ mod tests {
             Ok(connections),
             None,
             std::ptr::null_mut(),
+            state::State::default(),
         )
     }
 
@@ -1552,6 +1617,40 @@ mod tests {
         assert!(app.error.is_none());
         library_frame(&mut app, &ctx, vec![press(egui::Key::Enter)]);
         assert!(app.error.is_some(), "Enter did not try to connect");
+    }
+
+    #[test]
+    fn moving_tabs_keeps_every_index_consistent() {
+        let items = ['a', 'b', 'c', 'd'];
+        for from in 0..items.len() {
+            for to in 0..items.len() {
+                let mut after = items.to_vec();
+                let item = after.remove(from);
+                after.insert(to, item);
+                for (index, item) in items.iter().enumerate() {
+                    assert_eq!(after[moved(index, from, to)], *item, "{from} -> {to}");
+                }
+            }
+        }
+        let tab = |x: f32| Rect::from_min_size(egui::pos2(x, 0.), Vec2::new(100., 36.));
+        let tabs = [tab(0.), tab(110.), tab(220.)];
+        assert_eq!(drop_index(&tabs, 0, 10.), 0);
+        assert_eq!(drop_index(&tabs, 0, 200.), 1);
+        assert_eq!(drop_index(&tabs, 0, 400.), 2);
+        assert_eq!(drop_index(&tabs, 2, 0.), 0);
+    }
+
+    #[test]
+    fn recent_filter_lists_opened_profiles_newest_first() {
+        let ctx = egui::Context::default();
+        let mut app = test_app(&ctx);
+        let location = app.location.clone();
+        for id in [1, 3, 99] {
+            app.state.note_recent(&location, id);
+        }
+        app.filter = Filter::Recent;
+        let ids: Vec<_> = app.filtered().iter().map(|c| c.id).collect();
+        assert_eq!(ids, [3, 1], "newest first, deleted profiles skipped");
     }
 
     #[test]

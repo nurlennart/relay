@@ -8,6 +8,7 @@ mod native_host;
 mod rdp;
 mod secret;
 mod session;
+mod state;
 mod terminal;
 mod theme;
 mod ui;
@@ -25,11 +26,13 @@ use std::{
 use windows_sys::Win32::Foundation::HWND;
 
 fn main() -> eframe::Result {
+    let saved = state::load(&state::path());
     eframe::run_native(
         "Relay · Remote workspace",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
-                .with_inner_size([1280., 820.])
+                .with_inner_size(saved.window.unwrap_or([1280., 820.]))
+                .with_maximized(saved.maximized)
                 .with_min_inner_size([720., 560.]),
             ..Default::default()
         },
@@ -46,6 +49,7 @@ fn main() -> eframe::Result {
 #[derive(PartialEq)]
 enum Filter {
     All,
+    Recent,
     Favorites,
     Rdp,
     Ssh,
@@ -110,8 +114,10 @@ struct App {
     scroll_to: bool,
     /// The connection list's last scroll offset and visible height.
     list_view: (f32, f32),
-    /// The user's sidebar choice; without one, the sidebar collapses in narrow windows.
-    sidebar_collapsed: Option<bool>,
+    /// Window size, sidebar, last library, and recents, kept between launches.
+    state: state::State,
+    /// Where `state` is saved; tests leave it unset.
+    state_path: Option<PathBuf>,
     /// The tab shown last frame, to focus a terminal when its tab opens.
     shown: Option<usize>,
     pending_save: bool,
@@ -170,13 +176,18 @@ impl App {
             _ => std::ptr::null_mut(),
         };
         native_host::install_shortcuts(parent, cc.egui_ctx.clone());
-        Self::with(
+        let state_path = state::path();
+        let mut app = Self::with(
             cc.egui_ctx.clone(),
             path,
             loaded,
             secret::load(&secret::path()),
             parent,
-        )
+            state::load(&state_path),
+        );
+        app.state_path = Some(state_path);
+        app.reopen_library();
+        app
     }
 
     fn with(
@@ -185,6 +196,7 @@ impl App {
         loaded: Result<Vec<Connection>, String>,
         saved_mssql: Option<String>,
         parent: HWND,
+        state: state::State,
     ) -> Self {
         let location = database::Location::Local(path.clone());
         let (connections, error) = match loaded {
@@ -222,7 +234,8 @@ impl App {
             selected: None,
             scroll_to: false,
             list_view: (0., 0.),
-            sidebar_collapsed: None,
+            state,
+            state_path: None,
             shown: None,
             pending_save: false,
         }
@@ -233,8 +246,52 @@ impl App {
     }
 
     fn sidebar_collapsed(&self, ctx: &egui::Context) -> bool {
-        self.sidebar_collapsed
+        self.state
+            .sidebar_collapsed
             .unwrap_or(ctx.content_rect().width() < 1000.)
+    }
+
+    fn set_sidebar_collapsed(&mut self, collapsed: bool) {
+        self.state.sidebar_collapsed = Some(collapsed);
+        self.save_state();
+    }
+
+    /// Saves workspace state. It is a convenience, so failures are not reported.
+    fn save_state(&self) {
+        if let Some(path) = &self.state_path {
+            let _ = self.state.save(path);
+        }
+    }
+
+    /// Reopens the library used last time, if it was a shared one.
+    fn reopen_library(&mut self) {
+        let location = match &self.state.library {
+            state::Library::Personal => return,
+            state::Library::Sqlite(path) => {
+                self.db_kind = LibraryKind::Sqlite;
+                self.db_path = path.display().to_string();
+                database::Location::Sqlite(path.clone())
+            }
+            // Only a remembered connection string can reopen an MSSQL library.
+            state::Library::Mssql if self.db_remember => {
+                self.db_kind = LibraryKind::Mssql;
+                database::Location::Mssql(self.db_mssql.clone())
+            }
+            state::Library::Mssql => return,
+        };
+        self.pending_location = Some(location.clone());
+        self.pending = Some(database::start(location, 0, None, self.ctx.clone()));
+    }
+
+    /// Moves session `from` to position `to`, keeping the same tab selected.
+    fn move_session(&mut self, from: usize, to: usize) {
+        if from >= self.sessions.len() || to >= self.sessions.len() || from == to {
+            return;
+        }
+        let session = self.sessions.remove(from);
+        self.sessions.insert(to, session);
+        self.active = self.active.map(|i| moved(i, from, to));
+        self.shown = self.active;
     }
 
     /// Selects tab `index`, where 0 is the connection library and 1.. are sessions.
@@ -280,6 +337,7 @@ impl App {
             self.error = Some("Cannot obtain the native application window.".into());
             return;
         }
+        let id = connection.id;
         match Session::start(connection, self.ctx.clone()) {
             Ok(session) => {
                 for s in &mut self.sessions {
@@ -287,6 +345,10 @@ impl App {
                 }
                 self.sessions.push(session);
                 self.active = Some(self.sessions.len() - 1);
+                if id != 0 {
+                    self.state.note_recent(&self.location, id);
+                    self.save_state();
+                }
             }
             Err(e) => self.error = Some(e),
         }
@@ -599,9 +661,21 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self) {
+        self.save_state();
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let colors = theme::palette(ctx);
         self.poll_storage();
+        // Remember the restored window size; a maximized window keeps the size it returns to.
+        let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized));
+        if let Some(maximized) = maximized {
+            self.state.maximized = maximized;
+            if !maximized && let Some(inner) = inner {
+                self.state.window = Some([inner.width().round(), inner.height().round()]);
+            }
+        }
         #[cfg(feature = "ui-check")]
         ui_check::capture(ctx);
         if ctx.input(|i| i.viewport().close_requested()) && self.pending.is_some() {
@@ -662,12 +736,20 @@ impl eframe::App for App {
                 self.active = None;
             }
             if shortcut(ctrl, egui::Key::B) {
-                self.sidebar_collapsed = Some(!self.sidebar_collapsed(ctx));
+                self.set_sidebar_collapsed(!self.sidebar_collapsed(ctx));
             }
             if shortcut(ctrl, egui::Key::W)
                 && let Some(active) = self.active
             {
                 self.modal = Modal::Close(active);
+            }
+            let shift = ctrl | egui::Modifiers::SHIFT;
+            if let Some(active) = self.active {
+                if shortcut(shift, egui::Key::PageUp) && active > 0 {
+                    self.move_session(active, active - 1);
+                } else if shortcut(shift, egui::Key::PageDown) {
+                    self.move_session(active, active + 1);
+                }
             }
             let numbers = [
                 egui::Key::Num1,
@@ -823,20 +905,36 @@ impl eframe::App for App {
         self.toast(ctx);
         let covered = self.covered();
         let ppp = ctx.pixels_per_point();
+        let pixels = |r: egui::Rect| {
+            [
+                (r.min.x * ppp).round() as i32,
+                (r.min.y * ppp).round() as i32,
+                (r.width() * ppp).round() as i32,
+                (r.height() * ppp).round() as i32,
+            ]
+        };
+        // Toasts, tooltips and menus float over the remote desktop; cut them out of it.
+        let holes: Vec<[i32; 4]> = session_rect
+            .map(|session| {
+                overlays(ctx)
+                    .into_iter()
+                    .map(|r| r.intersect(session))
+                    .filter(|r| r.is_positive())
+                    .map(|r| {
+                        let [x, y, w, h] = pixels(r);
+                        let [sx, sy, ..] = pixels(session);
+                        [x - sx, y - sy, w, h]
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         for (i, s) in self.sessions.iter_mut().enumerate() {
             let rect = if !covered && self.active == Some(i) {
-                session_rect.map(|r| {
-                    [
-                        (r.min.x * ppp).round() as i32,
-                        (r.min.y * ppp).round() as i32,
-                        (r.width() * ppp).round() as i32,
-                        (r.height() * ppp).round() as i32,
-                    ]
-                })
+                session_rect.map(pixels)
             } else {
                 None
             };
-            s.place(rect);
+            s.place_around(rect, &holes);
         }
         if !self.sessions.is_empty() {
             ctx.request_repaint_after(Duration::from_millis(200));
@@ -853,6 +951,34 @@ fn accent_button(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Response {
             .corner_radius(6),
     )
 }
+/// Screen areas of visible floating layers: toasts, tooltips, menus and popups.
+fn overlays(ctx: &egui::Context) -> Vec<egui::Rect> {
+    ctx.memory(|memory| {
+        let visible = memory.areas().visible_layer_ids();
+        memory
+            .layer_ids()
+            .filter(|layer| {
+                visible.contains(layer)
+                    && matches!(layer.order, egui::Order::Foreground | egui::Order::Tooltip)
+            })
+            .filter_map(|layer| memory.area_rect(layer.id))
+            .collect()
+    })
+}
+
+/// Where item `index` ends up after the item at `from` moves to `to`.
+fn moved(index: usize, from: usize, to: usize) -> usize {
+    if index == from {
+        to
+    } else if from < index && index <= to {
+        index - 1
+    } else if to <= index && index < from {
+        index + 1
+    } else {
+        index
+    }
+}
+
 /// A dialog width that leaves a margin in narrow windows.
 fn dialog_width(ctx: &egui::Context, preferred: f32) -> f32 {
     preferred.min(ctx.content_rect().width() - 96.)

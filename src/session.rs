@@ -76,11 +76,15 @@ impl Session {
             self.error = rdp.error();
         }
     }
+    /// Shows the session at `rect`, or hides it, with `holes` cut out for overlays.
     pub fn place(&mut self, rect: Option<[i32; 4]>) {
+        self.place_around(rect, &[]);
+    }
+    pub fn place_around(&mut self, rect: Option<[i32; 4]>, holes: &[[i32; 4]]) {
         if let Some(rdp) = &mut self.rdp
-            && let Err(error) = rdp.place(rect)
+            && let Err(error) = rdp.place(rect, holes)
         {
-            let _ = rdp.place(None);
+            let _ = rdp.place(None, &[]);
             self.error = Some(error);
         }
     }

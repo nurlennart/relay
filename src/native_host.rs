@@ -52,6 +52,35 @@ pub(crate) fn position(window: HWND, parent: HWND, rect: [i32; 4]) -> Result<(),
     Ok(())
 }
 
+/// Cuts `holes` out of a child window so Relay's own overlays drawn beneath it show through.
+/// Rectangles are `[x, y, width, height]` in the window's client coordinates; none restores
+/// the full window.
+pub(crate) fn clip(window: HWND, size: [i32; 2], holes: &[[i32; 4]]) -> Result<(), String> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        CombineRgn, CreateRectRgn, DeleteObject, RGN_DIFF, SetWindowRgn,
+    };
+    unsafe {
+        if holes.is_empty() {
+            if SetWindowRgn(window, std::ptr::null_mut(), 1) == 0 {
+                return Err(last_error("Cannot restore the RDP viewport"));
+            }
+            return Ok(());
+        }
+        let region = CreateRectRgn(0, 0, size[0], size[1]);
+        for &[x, y, w, h] in holes {
+            let hole = CreateRectRgn(x, y, x + w, y + h);
+            CombineRgn(region, region, hole, RGN_DIFF);
+            DeleteObject(hole);
+        }
+        // On success Windows owns the region.
+        if SetWindowRgn(window, region, 1) == 0 {
+            DeleteObject(region);
+            return Err(last_error("Cannot clip the RDP viewport"));
+        }
+    }
+    Ok(())
+}
+
 /// Relay shortcuts that work while a remote desktop has the keyboard.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Command {
@@ -143,6 +172,43 @@ unsafe extern "system" fn keyboard(code: i32, wparam: WPARAM, lparam: LPARAM) ->
 mod tests {
     use super::*;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_HOME, VK_NEXT, VK_PRIOR, VK_TAB};
+    #[test]
+    fn clipping_cuts_holes_and_restores() {
+        use windows_sys::Win32::Graphics::Gdi::{
+            CreateRectRgn, DeleteObject, GetWindowRgn, PtInRegion,
+        };
+        unsafe {
+            let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+            let window = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                std::ptr::null(),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                400,
+                300,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
+            assert!(!window.is_null());
+            clip(window, [400, 300], &[[300, 250, 90, 40]]).unwrap();
+            let region = CreateRectRgn(0, 0, 0, 0);
+            assert_ne!(GetWindowRgn(window, region), 0);
+            assert_ne!(
+                PtInRegion(region, 10, 10),
+                0,
+                "outside the hole stays visible"
+            );
+            assert_eq!(PtInRegion(region, 320, 260), 0, "the hole is cut out");
+            clip(window, [400, 300], &[]).unwrap();
+            assert_eq!(GetWindowRgn(window, region), 0, "no region after restoring");
+            DeleteObject(region);
+            DestroyWindow(window);
+        }
+    }
     #[test]
     fn shortcuts_need_ctrl_and_alt() {
         assert_eq!(command(VK_PRIOR, true, true), Some(Command::PreviousTab));
