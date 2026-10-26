@@ -2,6 +2,8 @@
 
 A remote connection manager for Windows, macOS, and Linux, written in Rust. A dark, GPU-rendered workspace with a searchable library, group filters, favorites, and tabs for RDP and SSH sessions.
 
+![Relay's connection library in the Graphite theme, with an SSH session open in a tab](assets/screenshot.png)
+
 ## Install
 
 Download the archive for your platform from the [latest release](https://github.com/nurlennart/relay/releases/latest).
@@ -36,7 +38,7 @@ Open **Settings** at the bottom of the sidebar and use **Appearance** to switch 
 - Session tabs show a status dot: accent while open, red once the session has ended. Drag a tab to reorder it, or use `Ctrl+Shift+PageUp`/`Ctrl+Shift+PageDown`.
 - **Recent** lists the connections you opened in the current library, newest first.
 - Relay remembers the window size, the sidebar choice, the last library, recent connections, snippets and open tabs in `state.json`. A shared SQLite library reopens at startup, and an MSSQL library reopens when its connection string is remembered. No connection strings are written to this file. Open tabs come back at startup; each connects when it is first selected, starting with the tab that was selected, so a restart does not open every login prompt at once.
-- **Connection library** returns to the list while sessions stay open.
+- The **Library** tab returns to the list while sessions stay open.
 - Closing a tab or quitting with active sessions asks for confirmation.
 - The **···** menu edits, duplicates, copies the address of, or deletes a profile. Changes apply to future connections. The editor suggests existing groups.
 - **Split view:** right-click a tab and choose **Open beside current tab**, or press `Ctrl+\` to pair the current tab with its neighbour. Drag the divider to resize; selecting the right-hand tab swaps the sides. **Move to new window** in the same menu detaches a session into its own window; its tab brings the window forward, and **Back to tabs** or closing the window returns it.

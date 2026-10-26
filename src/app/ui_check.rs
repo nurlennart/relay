@@ -132,6 +132,10 @@ git pull && ./deploy.sh",
         if std::env::var_os("RELAY_UI_DETACH").is_some() {
             app.detach(0);
         }
+        // Show the library with the session's tab open beside it.
+        if std::env::var_os("RELAY_UI_LIBRARY").is_some() {
+            app.active = None;
+        }
     }
     if std::env::var_os("RELAY_UI_SSH").is_some() {
         let mut c = app.connections[1].clone();
