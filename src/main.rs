@@ -112,6 +112,8 @@ struct App {
     list_view: (f32, f32),
     /// The user's sidebar choice; without one, the sidebar collapses in narrow windows.
     sidebar_collapsed: Option<bool>,
+    /// The tab shown last frame, to focus a terminal when its tab opens.
+    shown: Option<usize>,
     pending_save: bool,
 }
 
@@ -130,6 +132,23 @@ impl App {
                 .get_mut(&egui::FontFamily::Proportional)
                 .unwrap()
                 .insert(0, "segoe".into());
+        }
+        // A real terminal font for SSH sessions and addresses; egui's own is the fallback.
+        for (name, file) in [
+            ("cascadia", "CascadiaMono.ttf"),
+            ("consolas", "consola.ttf"),
+        ] {
+            if let Ok(bytes) = std::fs::read(format!(r"C:\Windows\Fonts\{file}")) {
+                fonts
+                    .font_data
+                    .insert(name.into(), egui::FontData::from_owned(bytes).into());
+                fonts
+                    .families
+                    .get_mut(&egui::FontFamily::Monospace)
+                    .unwrap()
+                    .insert(0, name.into());
+                break;
+            }
         }
         cc.egui_ctx.set_fonts(fonts);
         theme::load(&theme::path()).apply(&cc.egui_ctx);
@@ -204,6 +223,7 @@ impl App {
             scroll_to: false,
             list_view: (0., 0.),
             sidebar_collapsed: None,
+            shown: None,
             pending_save: false,
         }
     }
@@ -670,6 +690,16 @@ impl eframe::App for App {
         }
         for s in &mut self.sessions {
             s.poll(self.parent);
+        }
+        if self.shown != self.active {
+            self.shown = self.active;
+            if let Some(terminal) = self
+                .active
+                .and_then(|i| self.sessions.get_mut(i))
+                .and_then(|s| s.terminal.as_mut())
+            {
+                terminal.focus();
+            }
         }
         // Hide native children before painting overlays; native child HWNDs sit above GPU content.
         let covered = self.covered();

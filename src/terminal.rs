@@ -15,6 +15,9 @@ pub struct Terminal {
     pub ended: bool,
     pub focused: bool,
     pub error: Option<String>,
+    /// A mouse selection between two visible cells, in drag order.
+    selection: Option<((u16, u16), (u16, u16))>,
+    focus_requested: bool,
 }
 
 #[derive(Default)]
@@ -51,6 +54,21 @@ impl Terminal {
         }
         command.args(["--", &c.host]);
         Self::spawn(command, Some(ctx))
+    }
+
+    /// A quiet process whose screen shows `transcript`, for rendering checks.
+    #[cfg(feature = "ui-check")]
+    pub fn demo(transcript: &'static [u8]) -> Self {
+        let mut command = CommandBuilder::new(r"C:\Windows\System32\cmd.exe");
+        command.args(["/d", "/c", "ping -n 60 127.0.0.1 >nul"]);
+        let terminal = Self::spawn(command, None).unwrap();
+        let parser = terminal.parser.clone();
+        std::thread::spawn(move || {
+            // Let ConPTY's startup output settle first.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            parser.lock().unwrap().process(transcript);
+        });
+        terminal
     }
 
     fn spawn(mut command: CommandBuilder, ctx: Option<egui::Context>) -> Result<Self, String> {
@@ -135,6 +153,8 @@ impl Terminal {
             ended: false,
             focused: false,
             error: None,
+            selection: None,
+            focus_requested: true,
         })
     }
 
@@ -153,33 +173,56 @@ impl Terminal {
         }
     }
 
+    #[cfg(feature = "ui-check")]
+    pub fn select(&mut self, start: (u16, u16), end: (u16, u16)) {
+        self.selection = Some((start, end));
+    }
+
+    /// Focuses the terminal the next time it is shown.
+    pub fn focus(&mut self) {
+        self.focus_requested = true;
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui) {
-        let colors = super::theme::palette(ui.ctx());
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(
-                    "Click terminal to type · Ctrl+Shift+C copies screen · Ctrl+V pastes",
-                )
-                .size(11.)
-                .color(colors.muted),
-            );
-            if self.ended {
-                ui.colored_label(
-                    colors.muted,
-                    self.error.as_deref().unwrap_or("Session ended"),
-                );
-            }
-        });
         let font = FontId::monospace(14.);
         let cell = ui.fonts_mut(|f| Vec2::new(f.glyph_width(&font, 'M'), f.row_height(&font)));
-        let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click());
-        if response.clicked() {
+        let (frame, response) =
+            ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+        let painter = ui.painter_at(frame);
+        painter.rect_filled(frame, 8., TERMINAL_BG);
+        let bar = Rect::from_min_size(frame.min, Vec2::new(frame.width(), TITLE_HEIGHT));
+        painter.rect_filled(
+            bar,
+            egui::CornerRadius {
+                nw: 8,
+                ne: 8,
+                sw: 0,
+                se: 0,
+            },
+            TITLE_BG,
+        );
+        painter.line_segment(
+            [bar.left_bottom(), bar.right_bottom()],
+            Stroke::new(1_f32, BORDER),
+        );
+        painter.rect_stroke(
+            frame,
+            8.,
+            Stroke::new(1_f32, BORDER),
+            egui::StrokeKind::Inside,
+        );
+        let content = Rect::from_min_max(
+            Pos2::new(frame.min.x + PADDING, bar.max.y + PADDING),
+            frame.max - Vec2::splat(PADDING),
+        );
+
+        if response.clicked() || std::mem::take(&mut self.focus_requested) {
             response.request_focus();
         }
         lock_focus(ui, &response);
         self.focused = response.has_focus();
-        let rows = ((rect.height() / cell.y) as u16).clamp(2, 300);
-        let cols = ((rect.width() / cell.x) as u16).clamp(2, 500);
+        let rows = ((content.height() / cell.y) as u16).clamp(2, 300);
+        let cols = ((content.width() / cell.x) as u16).clamp(2, 500);
         if self.size != (rows, cols) {
             match self.master.resize(PtySize {
                 rows,
@@ -198,23 +241,97 @@ impl Terminal {
                 Err(e) => self.error = Some(format!("Terminal resize failed: {e}")),
             }
         }
+        let cell_at = |pos: Pos2| {
+            let offset = pos - content.min;
+            let row = (offset.y / cell.y).floor().clamp(0., (rows - 1) as f32) as u16;
+            let col = (offset.x / cell.x).floor().clamp(0., (cols - 1) as f32) as u16;
+            (row, col)
+        };
+        // A drag is reported once the pointer has moved, so anchor where the button went down.
+        if response.drag_started_by(egui::PointerButton::Primary)
+            && let Some(pos) = ui.input(|i| i.pointer.press_origin())
+        {
+            response.request_focus();
+            let start = cell_at(pos);
+            self.selection = Some((start, start));
+        }
+        if response.dragged_by(egui::PointerButton::Primary)
+            && let (Some(pos), Some(selection)) =
+                (response.interact_pointer_pos(), &mut self.selection)
+        {
+            selection.1 = cell_at(pos);
+        }
+        if response.clicked() {
+            self.selection = None;
+        }
+
         let mut parser = self.parser.lock().unwrap();
+        let offset = parser.screen().scrollback();
+        // vt100 clamps the offset to the history it holds, which reveals the history length.
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let history = parser.screen().scrollback();
+        parser.screen_mut().set_scrollback(offset);
         if response.hovered() {
             let delta = ui.input(|i| i.raw_scroll_delta.y);
             if delta.abs() > 0. {
-                let scroll = parser.screen().scrollback() as isize;
-                parser
-                    .screen_mut()
-                    .set_scrollback((scroll + (delta / cell.y) as isize).max(0) as usize);
+                let lines = (delta / cell.y).round() as isize;
+                let next = (offset as isize + lines).clamp(0, history as isize) as usize;
+                if next != offset {
+                    parser.screen_mut().set_scrollback(next);
+                    self.selection = None;
+                }
             }
         }
         let screen = parser.screen();
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 4., colors.bg);
+        let scrolled = screen.scrollback();
+        let selection = self
+            .selection
+            .map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
+        let selected = |row: u16, col: u16| {
+            selection.is_some_and(|(start, end)| (row, col) >= start && (row, col) <= end)
+        };
+
+        // Title bar: state and size on the left, scroll position or hints on the right.
+        let text_y = bar.center().y;
+        let (state, dot) = if self.ended {
+            (
+                self.error.clone().unwrap_or_else(|| "Session ended".into()),
+                ui.visuals().error_fg_color,
+            )
+        } else {
+            (format!("SSH · {cols}×{rows}"), RUNNING)
+        };
+        painter.circle_filled(Pos2::new(bar.min.x + 16., text_y), 4., dot);
+        painter.text(
+            Pos2::new(bar.min.x + 28., text_y),
+            egui::Align2::LEFT_CENTER,
+            state,
+            FontId::proportional(12.),
+            TITLE_TEXT,
+        );
+        let (hint, hint_color) = if scrolled > 0 {
+            (
+                format!("↑ {scrolled} lines back · scroll down or type to return"),
+                SCROLLED,
+            )
+        } else {
+            (
+                "Drag to select · Right-click copies or pastes · Ctrl+Shift+C".into(),
+                TITLE_MUTED,
+            )
+        };
+        painter.text(
+            Pos2::new(bar.max.x - 14., text_y),
+            egui::Align2::RIGHT_CENTER,
+            hint,
+            FontId::proportional(11.),
+            hint_color,
+        );
+
         // Paint runs of same-styled ASCII cells as one string; other glyphs may not share the
         // monospace advance, so they are painted per cell to stay on the grid.
         let paint = |col: u16, row: u16, text: &str, cells: usize, fg: Color32, underline: bool| {
-            let pos = rect.min + Vec2::new(col as f32 * cell.x, row as f32 * cell.y);
+            let pos = content.min + Vec2::new(col as f32 * cell.x, row as f32 * cell.y);
             if !text.trim_end().is_empty() {
                 painter.text(pos, egui::Align2::LEFT_TOP, text, font.clone(), fg);
             }
@@ -229,6 +346,9 @@ impl Terminal {
                 );
             }
         };
+        let (cursor_row, cursor_col) = screen.cursor_position();
+        let cursor_visible = !screen.hide_cursor() && scrolled == 0 && !self.ended;
+        let focused = response.has_focus();
         for row in 0..rows {
             let mut run = String::new();
             let mut run_start = 0;
@@ -240,14 +360,17 @@ impl Terminal {
                 if c.is_wide_continuation() {
                     continue;
                 }
-                let mut fg = color(c.fgcolor(), colors.text);
-                let mut bg = color(c.bgcolor(), colors.bg);
-                if c.inverse() {
-                    std::mem::swap(&mut fg, &mut bg);
+                let (mut fg, mut bg) = cell_colors(c);
+                let block_cursor =
+                    focused && cursor_visible && (row, col) == (cursor_row, cursor_col);
+                if block_cursor {
+                    (fg, bg) = (TERMINAL_BG, CURSOR);
+                } else if selected(row, col) {
+                    bg = SELECTION;
                 }
                 let width = if c.is_wide() { cell.x * 2. } else { cell.x };
-                if bg != colors.bg {
-                    let pos = rect.min + Vec2::new(col as f32 * cell.x, row as f32 * cell.y);
+                if bg != TERMINAL_BG {
+                    let pos = content.min + Vec2::new(col as f32 * cell.x, row as f32 * cell.y);
                     painter.rect_filled(Rect::from_min_size(pos, Vec2::new(width, cell.y)), 0., bg);
                 }
                 let contents = c.contents();
@@ -274,18 +397,48 @@ impl Terminal {
                 paint(run_start, row, &run, run.len(), fg, underline);
             }
         }
-        if response.has_focus() && !screen.hide_cursor() && screen.scrollback() == 0 {
-            let (row, col) = screen.cursor_position();
-            let pos = Pos2::new(
-                rect.min.x + col as f32 * cell.x,
-                rect.min.y + row as f32 * cell.y,
-            );
+        if cursor_visible && !focused {
+            let pos =
+                content.min + Vec2::new(cursor_col as f32 * cell.x, cursor_row as f32 * cell.y);
             painter.rect_stroke(
                 Rect::from_min_size(pos, cell),
                 0.,
-                Stroke::new(1_f32, colors.accent),
+                Stroke::new(1_f32, CURSOR.gamma_multiply(0.7)),
                 egui::StrokeKind::Inside,
             );
+        }
+        if history > 0 {
+            // A thin scrollbar on the right edge shows where the view sits in the history.
+            let track = Rect::from_min_max(
+                Pos2::new(frame.max.x - 6., content.min.y),
+                Pos2::new(frame.max.x - 3., content.max.y),
+            );
+            let total = (history + rows as usize) as f32;
+            let height = (track.height() * rows as f32 / total).max(16.);
+            let bottom = track.max.y - (track.height() - height) * scrolled as f32 / history as f32;
+            painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(track.min.x, bottom - height),
+                    Pos2::new(track.max.x, bottom),
+                ),
+                2.,
+                if scrolled > 0 { SCROLLED } else { BORDER },
+            );
+        }
+
+        let selection_text = selection
+            .map(|(start, end)| screen.contents_between(start.0, start.1, end.0, end.1 + 1));
+        if response.secondary_clicked() {
+            response.request_focus();
+            match &selection_text {
+                Some(text) => {
+                    ui.ctx().copy_text(text.clone());
+                    self.selection = None;
+                }
+                None => ui
+                    .ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::RequestPaste),
+            }
         }
         let mut input = vec![];
         if response.has_focus() && !self.ended {
@@ -297,18 +450,59 @@ impl Terminal {
             let copy;
             (input, copy) = translate(&events, modifiers, mode);
             if copy {
-                ui.ctx().copy_text(screen.contents());
+                ui.ctx()
+                    .copy_text(selection_text.unwrap_or_else(|| screen.contents()));
             }
         }
         if !input.is_empty() {
             parser.screen_mut().set_scrollback(0);
             drop(parser);
+            self.selection = None;
             let mut writer = self.writer.lock().unwrap();
             if let Err(e) = writer.write_all(&input).and_then(|_| writer.flush()) {
                 self.error = Some(format!("Cannot send terminal input: {e}"));
             }
         }
     }
+}
+
+// The terminal keeps its own dark palette in every app theme.
+const TERMINAL_BG: Color32 = Color32::from_rgb(14, 17, 22);
+const TITLE_BG: Color32 = Color32::from_rgb(22, 26, 33);
+const TITLE_TEXT: Color32 = Color32::from_rgb(200, 207, 218);
+const TITLE_MUTED: Color32 = Color32::from_rgb(122, 132, 148);
+const BORDER: Color32 = Color32::from_rgb(42, 48, 58);
+const FOREGROUND: Color32 = Color32::from_rgb(215, 222, 232);
+const CURSOR: Color32 = Color32::from_rgb(230, 235, 242);
+const SELECTION: Color32 = Color32::from_rgb(52, 70, 98);
+const RUNNING: Color32 = Color32::from_rgb(137, 222, 173);
+const SCROLLED: Color32 = Color32::from_rgb(229, 192, 123);
+const TITLE_HEIGHT: f32 = 30.;
+const PADDING: f32 = 10.;
+
+/// A cell's colors after bold, dim, and inverse attributes.
+fn cell_colors(c: &vt100::Cell) -> (Color32, Color32) {
+    let fg = match c.fgcolor() {
+        // Bold brightens the eight basic colors, as most terminals do.
+        vt100::Color::Idx(i) if c.bold() && i < 8 => color(vt100::Color::Idx(i + 8), FOREGROUND),
+        vt100::Color::Default if c.bold() => color(vt100::Color::Idx(15), FOREGROUND),
+        other => color(other, FOREGROUND),
+    };
+    let mut bg = color(c.bgcolor(), TERMINAL_BG);
+    let mut fg = if c.dim() { mix(fg, bg, 0.45) } else { fg };
+    if c.inverse() {
+        std::mem::swap(&mut fg, &mut bg);
+    }
+    (fg, bg)
+}
+
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let channel = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(
+        channel(a.r(), b.r()),
+        channel(a.g(), b.g()),
+        channel(a.b(), b.b()),
+    )
 }
 
 impl Drop for Terminal {
@@ -642,6 +836,72 @@ mod tests {
             screen.contains("relay-test.invalid"),
             "ssh output was lost: {screen:?}"
         );
+    }
+    #[test]
+    fn dragging_selects_and_ctrl_shift_c_copies_it() {
+        let mut command = CommandBuilder::new(r"C:\Windows\System32\cmd.exe");
+        command.args(["/d", "/c", "ping -n 10 127.0.0.1 >nul"]);
+        let mut terminal = Terminal::spawn(command, None).unwrap();
+        let parser = terminal.parser.clone();
+        let ctx = egui::Context::default();
+        let mut frame = |events: Vec<egui::Event>, modifiers| {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800., 400.))),
+                    events,
+                    modifiers,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| terminal.show(ui));
+                },
+            )
+        };
+        frame(vec![], egui::Modifiers::NONE);
+        // Let ConPTY's startup and resize output settle, then show known text.
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        parser
+            .lock()
+            .unwrap()
+            .process(b"\x1b[2J\x1b[Hhello world\r\nsecond line");
+        frame(vec![], egui::Modifiers::NONE);
+        let font = FontId::monospace(14.);
+        let cell = ctx.fonts_mut(|f| Vec2::new(f.glyph_width(&font, 'M'), f.row_height(&font)));
+        let at = |row: f32, col: f32| {
+            Pos2::new(
+                PADDING + (col + 0.5) * cell.x,
+                TITLE_HEIGHT + PADDING + (row + 0.5) * cell.y,
+            )
+        };
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let (start, end) = (at(0., 6.), at(1., 5.));
+        frame(
+            vec![egui::Event::PointerMoved(start), button(start, true)],
+            egui::Modifiers::NONE,
+        );
+        frame(vec![egui::Event::PointerMoved(end)], egui::Modifiers::NONE);
+        frame(vec![button(end, false)], egui::Modifiers::NONE);
+        let shortcut = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
+        let output = frame(vec![egui::Event::Copy], shortcut);
+        let copied: Vec<_> = output
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let screen = parser.lock().unwrap().screen().contents();
+        assert!(screen.starts_with("hello world"), "{screen:?}");
+        assert_eq!(copied, ["world\nsecond"]);
     }
     #[test]
     fn conpty_runs_and_receives_input() {

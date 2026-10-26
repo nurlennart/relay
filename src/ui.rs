@@ -119,7 +119,7 @@ impl App {
                     }
                     egui::ScrollArea::vertical()
                         .id_salt("groups")
-                        .max_height((ui.available_height() - 200.).max(90.))
+                        .max_height((ui.available_height() - 250.).max(60.))
                         .show(ui, |ui| {
                             if groups.is_empty() {
                                 ui.label(

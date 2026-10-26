@@ -35,6 +35,19 @@ impl Session {
             ended: false,
         })
     }
+    #[cfg(feature = "ui-check")]
+    pub fn demo(connection: Connection, terminal: Terminal, ctx: eframe::egui::Context) -> Self {
+        Self {
+            connection,
+            terminal: Some(terminal),
+            rdp: None,
+            window: std::ptr::null_mut(),
+            error: None,
+            started: Instant::now(),
+            ctx,
+            ended: false,
+        }
+    }
     pub fn poll(&mut self, parent: HWND) {
         if let Some(terminal) = &mut self.terminal {
             terminal.poll();
