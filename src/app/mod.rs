@@ -1,0 +1,935 @@
+//! Relay's workspace: the `App` state, its frame loop, and the screens drawn from it.
+mod editor;
+mod library;
+mod sessions;
+mod settings;
+mod sidebar;
+mod storage;
+mod tabs;
+#[cfg(test)]
+mod tests;
+#[cfg(feature = "ui-check")]
+mod ui_check;
+mod widgets;
+
+use crate::{
+    csv_io, database, file_dialog, import,
+    model::{self, Connection, Protocol},
+    platform, rdp, secret,
+    session::{self, Session},
+    state, theme,
+};
+use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
+use sessions::*;
+use sidebar::*;
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
+use widgets::*;
+
+/// Opens Relay's main window and runs until it closes.
+pub fn run() -> eframe::Result {
+    // Rendering checks start from defaults and never touch the user's saved state.
+    let check = cfg!(feature = "ui-check") && std::env::var_os("RELAY_UI_CHECK").is_some();
+    let saved = if check {
+        state::State::default()
+    } else {
+        state::load(&state::path())
+    };
+    eframe::run_native(
+        "Relay · Remote workspace",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                // Matches the Linux desktop entry, so docks show Relay's icon and name.
+                .with_app_id("relay")
+                .with_inner_size(saved.window.unwrap_or([1280., 820.]))
+                .with_maximized(saved.maximized)
+                .with_min_inner_size([720., 560.])
+                .with_icon(app_icon()),
+            ..Default::default()
+        },
+        Box::new(|cc| {
+            #[allow(unused_mut)]
+            let mut app = App::new(cc);
+            #[cfg(feature = "ui-check")]
+            ui_check::seed(&mut app);
+            Ok(Box::new(app))
+        }),
+    )
+}
+
+#[derive(PartialEq)]
+enum Filter {
+    All,
+    Recent,
+    Favorites,
+    Rdp,
+    Ssh,
+}
+
+/// The dialog covering the workspace. Only one is open at a time.
+#[derive(Default)]
+enum Modal {
+    #[default]
+    None,
+    Editor(Connection),
+    Delete(u64),
+    Close(usize),
+    Settings,
+    Library,
+    Import(csv_io::Import),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum LibraryKind {
+    Personal,
+    Sqlite,
+    Mssql,
+}
+
+/// Integrated authentication needs Windows; elsewhere the example uses an SQL login.
+const MSSQL_EXAMPLE: &str = if cfg!(windows) {
+    "Server=tcp:sql.example.com,1433;Database=Relay;\
+     Integrated Security=true;Encrypt=true;TrustServerCertificate=false"
+} else {
+    "Server=tcp:sql.example.com,1433;Database=Relay;\
+     User ID=relay;Password=;Encrypt=true;TrustServerCertificate=false"
+};
+
+struct App {
+    connections: Vec<Connection>,
+    sessions: Vec<Session>,
+    active: Option<usize>,
+    filter: Filter,
+    query: String,
+    modal: Modal,
+    /// The quit confirmation overlays `modal`, which returns when the user keeps working.
+    quitting: bool,
+    editor_error: String,
+    error: Option<String>,
+    storage_ok: bool,
+    path: PathBuf,
+    /// Relay's main window, which pickers and embedded remote desktops attach to.
+    parent: Option<platform::Window>,
+    search_focus: bool,
+    ctx: egui::Context,
+    location: database::Location,
+    revision: i64,
+    pending: Option<std::sync::mpsc::Receiver<Result<database::Snapshot, String>>>,
+    pending_location: Option<database::Location>,
+    recovery: Option<Vec<Connection>>,
+    pending_editor: Option<Connection>,
+    db_kind: LibraryKind,
+    db_path: String,
+    db_mssql: String,
+    /// Keep the MSSQL connection string in the credential store after it opens successfully.
+    db_remember: bool,
+    db_reveal: bool,
+    /// A short confirmation shown as a toast until it expires.
+    notice: Option<(String, Instant)>,
+    group: Option<String>,
+    selected: Option<u64>,
+    /// Scroll the selected row into view on the next frame.
+    scroll_to: bool,
+    /// The connection list's last scroll offset and visible height.
+    list_view: (f32, f32),
+    /// Window size, sidebar, last library, and recents, kept between launches.
+    state: state::State,
+    /// Where `state` is saved; tests leave it unset.
+    state_path: Option<PathBuf>,
+    /// The tab shown last frame, to focus a terminal when its tab opens.
+    shown: Option<usize>,
+    /// Sessions shown in their own windows, by session key.
+    detached: Vec<u64>,
+    /// Native windows found for detached sessions, which remote desktops are moved into.
+    windows: Vec<(u64, platform::Window)>,
+    /// The session shown beside the active one in split view.
+    split: Option<usize>,
+    /// Where the split divider sits, as a fraction of the width.
+    split_fraction: f32,
+    /// The open snippet palette, over the active SSH tab.
+    palette: Option<Palette>,
+    /// A snippet being added (no index) or edited in Settings.
+    snippet_draft: Option<(Option<usize>, state::Snippet)>,
+    pending_save: bool,
+    /// A connection to open at the start of the next frame, outside any dialog or list.
+    connect_request: Option<Connection>,
+}
+
+const NOTICE_SECONDS: u64 = 4;
+
+#[derive(Default)]
+struct Palette {
+    query: String,
+    /// The highlighted row among the matching snippets.
+    selected: usize,
+    focused: bool,
+}
+
+impl App {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        cc.egui_ctx.set_theme(egui::Theme::Dark);
+        let mut fonts = egui::FontDefinitions::default();
+        // Prefer the system's own fonts; a real terminal font matters for SSH sessions.
+        for (family, monospace) in [
+            (egui::FontFamily::Proportional, false),
+            (egui::FontFamily::Monospace, true),
+        ] {
+            if let Some((path, bytes)) = platform::fonts(monospace)
+                .iter()
+                .find_map(|path| Some((path, std::fs::read(path).ok()?)))
+            {
+                let name = path.to_string();
+                fonts
+                    .font_data
+                    .insert(name.clone(), egui::FontData::from_owned(bytes).into());
+                fonts.families.entry(family).or_default().insert(0, name);
+            }
+        }
+        cc.egui_ctx.set_fonts(fonts);
+        theme::load(&theme::path()).apply(&cc.egui_ctx);
+        apply_style(&cc.egui_ctx);
+        let path = model::data_path();
+        let loaded = model::load(&path);
+        let parent = platform::Window::of(cc);
+        if let Some(parent) = parent {
+            platform::install_shortcuts(parent, cc.egui_ctx.clone());
+        }
+        let state_path = state::path();
+        let mut app = Self::with(
+            cc.egui_ctx.clone(),
+            path,
+            loaded,
+            secret::load(),
+            parent,
+            state::load(&state_path),
+        );
+        app.state_path = Some(state_path);
+        app.reopen_library();
+        app.restore_tabs();
+        app
+    }
+
+    fn with(
+        ctx: egui::Context,
+        path: PathBuf,
+        loaded: Result<Vec<Connection>, String>,
+        saved_mssql: Option<String>,
+        parent: Option<platform::Window>,
+        state: state::State,
+    ) -> Self {
+        let location = database::Location::Local(path.clone());
+        let (connections, error) = match loaded {
+            Ok(c) => (c, None),
+            Err(e) => (vec![], Some(e)),
+        };
+        Self {
+            connections,
+            sessions: vec![],
+            active: None,
+            filter: Filter::All,
+            query: String::new(),
+            modal: Modal::None,
+            quitting: false,
+            editor_error: String::new(),
+            storage_ok: error.is_none(),
+            error,
+            path,
+            parent,
+            search_focus: false,
+            ctx,
+            location,
+            revision: 0,
+            pending: None,
+            pending_location: None,
+            recovery: None,
+            pending_editor: None,
+            db_kind: LibraryKind::Personal,
+            db_path: String::new(),
+            db_remember: saved_mssql.is_some(),
+            db_mssql: saved_mssql.unwrap_or_else(|| MSSQL_EXAMPLE.into()),
+            db_reveal: false,
+            notice: None,
+            group: None,
+            selected: None,
+            scroll_to: false,
+            list_view: (0., 0.),
+            state,
+            state_path: None,
+            shown: None,
+            detached: vec![],
+            windows: vec![],
+            split: None,
+            split_fraction: 0.5,
+            palette: None,
+            snippet_draft: None,
+            pending_save: false,
+            connect_request: None,
+        }
+    }
+
+    fn notify(&mut self, text: impl Into<String>) {
+        self.notice = Some((text.into(), Instant::now()));
+    }
+
+    fn sidebar_collapsed(&self, ctx: &egui::Context) -> bool {
+        self.state
+            .sidebar_collapsed
+            .unwrap_or(ctx.content_rect().width() < 1000.)
+    }
+
+    fn set_sidebar_collapsed(&mut self, collapsed: bool) {
+        self.state.sidebar_collapsed = Some(collapsed);
+        self.save_state();
+    }
+
+    /// Saves workspace state. It is a convenience, so failures are not reported.
+    fn save_state(&self) {
+        if let Some(path) = &self.state_path {
+            let _ = self.state.save(path);
+        }
+    }
+
+    /// Reopens last run's tabs. Each connects when first shown, starting with the selected one.
+    fn restore_tabs(&mut self) {
+        for connection in self.state.open.clone() {
+            self.sessions
+                .push(Session::restored(connection, self.ctx.clone()));
+        }
+        self.active = self.state.active_tab.filter(|i| *i < self.sessions.len());
+    }
+
+    /// Records the open tabs so the next start can restore them.
+    fn remember_tabs(&mut self) {
+        self.state.open = self.sessions.iter().map(|s| s.connection.clone()).collect();
+        self.state.active_tab = self.active;
+        self.save_state();
+    }
+
+    /// Reopens the library used last time, if it was a shared one.
+    fn reopen_library(&mut self) {
+        let location = match &self.state.library {
+            state::Library::Personal => return,
+            state::Library::Sqlite(path) => {
+                self.db_kind = LibraryKind::Sqlite;
+                self.db_path = path.display().to_string();
+                database::Location::Sqlite(path.clone())
+            }
+            // Only a remembered connection string can reopen an MSSQL library.
+            state::Library::Mssql if self.db_remember => {
+                self.db_kind = LibraryKind::Mssql;
+                database::Location::Mssql(self.db_mssql.clone())
+            }
+            state::Library::Mssql => return,
+        };
+        self.pending_location = Some(location.clone());
+        self.pending = Some(database::start(location, 0, None, self.ctx.clone()));
+    }
+
+    /// Moves session `from` to position `to`, keeping the same tab selected.
+    fn move_session(&mut self, from: usize, to: usize) {
+        if from >= self.sessions.len() || to >= self.sessions.len() || from == to {
+            return;
+        }
+        let session = self.sessions.remove(from);
+        self.sessions.insert(to, session);
+        self.active = self.active.map(|i| moved(i, from, to));
+        self.split = self.split.map(|i| moved(i, from, to));
+        self.shown = self.active;
+        self.remember_tabs();
+    }
+
+    /// Shows `index` beside the active session, or closes split view if it is already there.
+    fn split_with(&mut self, index: usize) {
+        if self.split == Some(index) {
+            self.split = None;
+        } else if self.active.is_some_and(|a| a != index) && index < self.sessions.len() {
+            self.split = Some(index);
+        }
+    }
+
+    /// Opens split view with the neighbouring tab, or closes it.
+    fn toggle_split(&mut self) {
+        if self.split.take().is_some() {
+            return;
+        }
+        if let Some(active) = self.active {
+            let next = if active + 1 < self.sessions.len() {
+                Some(active + 1)
+            } else {
+                active.checked_sub(1)
+            };
+            if let Some(next) = next {
+                self.split_with(next);
+            } else {
+                self.notify("Open a second session to use split view.");
+            }
+        }
+    }
+
+    /// Selects tab `index`, where 0 is the connection library and 1.. are sessions.
+    fn select_tab(&mut self, index: usize) {
+        self.active = index.checked_sub(1).filter(|i| *i < self.sessions.len());
+    }
+
+    /// Whether a dialog covers the workspace. Native RDP windows sit above GPU content, so
+    /// they are hidden while this is true.
+    fn covered(&self) -> bool {
+        self.quitting || !matches!(self.modal, Modal::None)
+    }
+
+    fn persist(&mut self, next: Vec<Connection>) -> bool {
+        if !self.storage_ok {
+            self.error = Some(
+                "Repair the saved connections file and restart Relay before making changes. \
+                 Your existing file has been preserved."
+                    .into(),
+            );
+            return false;
+        }
+        if self.pending.is_some() {
+            return false;
+        }
+        self.recovery = Some(next.clone());
+        self.pending_editor = match &self.modal {
+            Modal::Editor(c) => Some(c.clone()),
+            _ => None,
+        };
+        self.pending_save = true;
+        self.pending = Some(database::start(
+            self.location.clone(),
+            self.revision,
+            Some(next),
+            self.ctx.clone(),
+        ));
+        true
+    }
+
+    /// Opens `connection` in a new tab on the next frame.
+    fn request_connect(&mut self, connection: Connection) {
+        self.connect_request = Some(connection);
+        self.ctx.request_repaint();
+    }
+
+    fn connect(&mut self, connection: Connection) {
+        let id = connection.id;
+        match Session::start(connection, self.ctx.clone()) {
+            Ok(session) => {
+                for s in &mut self.sessions {
+                    s.place(None);
+                }
+                self.sessions.push(session);
+                self.active = Some(self.sessions.len() - 1);
+                self.remember_tabs();
+                if id != 0 {
+                    self.state.note_recent(&self.location, id);
+                    self.save_state();
+                }
+            }
+            Err(e) => self.error = Some(e),
+        }
+    }
+
+    /// Reconnects a session in its tab with the connection's current saved settings.
+    fn reconnect(&mut self, index: usize) {
+        let session = &self.sessions[index];
+        let connection = self
+            .connections
+            .iter()
+            .find(|c| c.id == session.connection.id)
+            .unwrap_or(&session.connection)
+            .clone();
+        if let Err(e) = self.sessions[index].reconnect(connection) {
+            self.error = Some(e);
+        }
+    }
+
+    fn new_connection(&mut self) {
+        if self.pending.is_some() {
+            self.notify("Wait for the current library operation to finish.");
+            return;
+        }
+        self.edit(Connection::new());
+    }
+
+    fn edit(&mut self, connection: Connection) {
+        self.modal = Modal::Editor(connection);
+        self.editor_error.clear();
+    }
+
+    /// Shows the current notice in a corner without moving the page, until it expires.
+    fn toast(&mut self, ctx: &egui::Context) {
+        let Some((text, shown)) = self.notice.clone() else {
+            return;
+        };
+        let remaining = Duration::from_secs(NOTICE_SECONDS).saturating_sub(shown.elapsed());
+        if remaining.is_zero() {
+            self.notice = None;
+            return;
+        }
+        ctx.request_repaint_after(remaining);
+        let colors = theme::palette(ctx);
+        let mut dismiss = false;
+        egui::Area::new(egui::Id::new("notice"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_BOTTOM, Vec2::new(-24., -24.))
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(colors.surface)
+                    .stroke(Stroke::new(1_f32, colors.line))
+                    .corner_radius(8)
+                    .inner_margin(egui::Margin::symmetric(14, 10))
+                    .show(ui, |ui| {
+                        ui.set_max_width(420.);
+                        ui.horizontal(|ui| {
+                            ui.colored_label(colors.accent, "●");
+                            ui.label(text);
+                            dismiss = ui.small_button("×").clicked();
+                        });
+                    });
+            });
+        if dismiss {
+            self.notice = None;
+        }
+    }
+
+    fn confirmations(&mut self, ctx: &egui::Context) {
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if self.quitting && escape {
+            self.quitting = false;
+        }
+        if self.quitting {
+            dialog("quit", ctx).show(ctx, |ui| {
+                ui.set_width(380.);
+                ui.heading("Close Relay?");
+                ui.label("Save your work on each remote machine before closing.");
+                if self.recovery.is_some() {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        "There are unsaved library changes in memory. \
+                         Export them before closing or they will be lost.",
+                    );
+                }
+                ui.horizontal(|ui| {
+                    let quit = egui::Button::new("End sessions and quit");
+                    if ui.add_enabled(self.pending.is_none(), quit).clicked() {
+                        self.sessions.clear();
+                        self.active = None;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    if ui.button("Keep working").clicked() {
+                        self.quitting = false;
+                    }
+                });
+            });
+            return;
+        }
+        if escape && matches!(self.modal, Modal::Delete(_) | Modal::Close(_)) {
+            self.modal = Modal::None;
+        }
+        match self.modal {
+            Modal::Delete(id) => {
+                let name = self
+                    .connections
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map_or("connection".into(), |c| format!("“{}”", c.name));
+                dialog("delete", ctx).show(ctx, |ui| {
+                    ui.set_width(360.);
+                    ui.heading(format!("Delete {name}?"));
+                    ui.label("This removes the saved entry. Any open session stays open.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Delete connection").clicked() {
+                            let next = self
+                                .connections
+                                .iter()
+                                .filter(|c| c.id != id)
+                                .cloned()
+                                .collect();
+                            if self.persist(next) {
+                                self.modal = Modal::None;
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.modal = Modal::None;
+                        }
+                    });
+                });
+            }
+            Modal::Close(index) => {
+                let name = self
+                    .sessions
+                    .get(index)
+                    .map_or("session".into(), |s| format!("“{}”", s.connection.name));
+                dialog("close", ctx).show(ctx, |ui| {
+                    ui.set_width(380.);
+                    ui.heading(format!("Close {name}?"));
+                    ui.label(
+                        "The connection will end. Save your work on the remote machine first.",
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Close session").clicked() {
+                            self.sessions.remove(index);
+                            let shift = |tab: Option<usize>| match tab {
+                                Some(a) if a == index => None,
+                                Some(a) if a > index => Some(a - 1),
+                                other => other,
+                            };
+                            self.active = shift(self.active);
+                            self.split = shift(self.split);
+                            self.modal = Modal::None;
+                            self.remember_tabs();
+                        }
+                        if ui.button("Keep open").clicked() {
+                            self.modal = Modal::None;
+                        }
+                    });
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+impl eframe::App for App {
+    fn on_exit(&mut self) {
+        // Quitting ends sessions first; keep the tabs recorded before that.
+        if !self.sessions.is_empty() {
+            self.state.active_tab = self.active;
+        }
+        self.save_state();
+    }
+
+    #[cfg(feature = "ui-check")]
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        ui_check::hover(raw_input);
+    }
+
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let colors = theme::palette(ctx);
+        self.poll_storage();
+        if let Some(connection) = self.connect_request.take() {
+            self.connect(connection);
+        }
+        // Remember the restored window size; a maximized window keeps the size it returns to.
+        let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized));
+        if let Some(maximized) = maximized {
+            self.state.maximized = maximized;
+            if !maximized && let Some(inner) = inner {
+                self.state.window = Some([inner.width().round(), inner.height().round()]);
+            }
+        }
+        #[cfg(feature = "ui-check")]
+        ui_check::capture(ctx);
+        if ctx.input(|i| i.viewport().close_requested()) && self.pending.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.notify("Wait for the library operation to finish before closing Relay.");
+        }
+        if ctx.input(|i| i.viewport().close_requested())
+            && (self.sessions.iter().any(|s| s.is_running()) || self.recovery.is_some())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.quitting = true;
+        }
+        // Either side of a split view can hold the focused terminal.
+        let terminal_focused = [self.active, self.split]
+            .into_iter()
+            .flatten()
+            .filter_map(|i| self.sessions.get(i))
+            .filter_map(|s| s.terminal.as_ref())
+            .any(|t| t.focused);
+        let shortcut = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
+        // Cmd on macOS, Ctrl elsewhere.
+        let ctrl = egui::Modifiers::COMMAND;
+        // Remote desktops take the keyboard, so their shortcuts arrive through a native hook.
+        let native = platform::take_command();
+        if !self.covered() {
+            use platform::Command;
+            if shortcut(ctrl, egui::Key::Backslash) {
+                self.toggle_split();
+            }
+            let ssh = self
+                .active
+                .and_then(|i| self.sessions.get(i))
+                .is_some_and(|s| s.connection.protocol == Protocol::Ssh && s.terminal.is_some());
+            if ssh && shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::P) {
+                self.palette = Some(Palette::default());
+            }
+            // Tab switching also works from a focused terminal, which has no use for these keys.
+            let ctrl_alt = ctrl | egui::Modifiers::ALT;
+            let command = native.or_else(|| {
+                if shortcut(ctrl_alt, egui::Key::PageUp)
+                    || shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::Tab)
+                {
+                    Some(Command::PreviousTab)
+                } else if shortcut(ctrl_alt, egui::Key::PageDown) || shortcut(ctrl, egui::Key::Tab)
+                {
+                    Some(Command::NextTab)
+                } else {
+                    None
+                }
+            });
+            let tabs = self.sessions.len() + 1;
+            let current = self.active.map_or(0, |i| i + 1);
+            match command {
+                Some(Command::PreviousTab) => self.select_tab((current + tabs - 1) % tabs),
+                Some(Command::NextTab) => self.select_tab((current + 1) % tabs),
+                Some(Command::Release) | None => {}
+            }
+            if native.is_some()
+                && let Some(parent) = self.parent
+            {
+                // Take the keyboard back from the remote desktop.
+                platform::focus(parent);
+            }
+        }
+        if !terminal_focused && !self.covered() {
+            if shortcut(ctrl, egui::Key::N) {
+                self.new_connection();
+            }
+            if shortcut(ctrl, egui::Key::K) {
+                self.search_focus = true;
+                self.active = None;
+            }
+            if shortcut(ctrl, egui::Key::B) {
+                self.set_sidebar_collapsed(!self.sidebar_collapsed(ctx));
+            }
+            if shortcut(ctrl, egui::Key::W)
+                && let Some(active) = self.active
+            {
+                self.modal = Modal::Close(active);
+            }
+            let shift = ctrl | egui::Modifiers::SHIFT;
+            if let Some(active) = self.active {
+                if shortcut(shift, egui::Key::PageUp) && active > 0 {
+                    self.move_session(active, active - 1);
+                } else if shortcut(shift, egui::Key::PageDown) {
+                    self.move_session(active, active + 1);
+                }
+            }
+            let numbers = [
+                egui::Key::Num1,
+                egui::Key::Num2,
+                egui::Key::Num3,
+                egui::Key::Num4,
+                egui::Key::Num5,
+                egui::Key::Num6,
+                egui::Key::Num7,
+                egui::Key::Num8,
+            ];
+            for (index, key) in numbers.into_iter().enumerate() {
+                if shortcut(ctrl, key) {
+                    self.select_tab(index);
+                }
+            }
+            if shortcut(ctrl, egui::Key::Num9) {
+                self.select_tab(self.sessions.len());
+            }
+        }
+        for s in &mut self.sessions {
+            s.poll(self.parent);
+        }
+        if self.split == self.active {
+            self.split = None;
+        }
+        // A tab restored from the last run connects when it is first shown.
+        for index in [self.active, self.split].into_iter().flatten() {
+            if let Some(session) = self.sessions.get_mut(index)
+                && let Err(e) = session.resume()
+            {
+                self.error = Some(e);
+            }
+        }
+        if self.shown != self.active {
+            self.shown = self.active;
+            if let Some(terminal) = self
+                .active
+                .and_then(|i| self.sessions.get_mut(i))
+                .and_then(|s| s.terminal.as_mut())
+            {
+                terminal.focus();
+            }
+        }
+        // Hide native children before painting overlays; embedded remote desktops sit above GPU content.
+        let covered = self.covered();
+        for (i, s) in self.sessions.iter_mut().enumerate() {
+            let detached = self.detached.contains(&s.key);
+            if !detached && ((self.active != Some(i) && self.split != Some(i)) || covered) {
+                s.place(None);
+            }
+        }
+        self.sidebar(ctx);
+        self.tabs(ctx);
+        // Sessions on screen, with the area each remote desktop should cover.
+        let mut session_rects: Vec<(usize, egui::Rect)> = vec![];
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(colors.bg).inner_margin(24.))
+            .show(ctx, |ui| {
+                if let Some(error) = self.error.clone() {
+                    egui::Frame::new()
+                        .fill(colors.error_bg)
+                        .inner_margin(12.)
+                        .corner_radius(6)
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.colored_label(ui.visuals().error_fg_color, error);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.error = None;
+                                }
+                            });
+                        });
+                    ui.add_space(12.);
+                }
+                if self.recovery.is_some() && self.pending.is_none() {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            "Unsaved changes are held in memory.",
+                        );
+                        if ui.button("Export unsaved changes").clicked() {
+                            self.export_csv(true);
+                        }
+                    });
+                    ui.add_space(10.);
+                }
+                let split = self.split.filter(|i| {
+                    Some(*i) != self.active && *i < self.sessions.len() && !self.is_detached(*i)
+                });
+                match (self.active, split) {
+                    (Some(index), _) if self.is_detached(index) => {
+                        self.detached_placeholder(ui, index)
+                    }
+                    (Some(left), Some(right)) => {
+                        let area = ui.available_rect_before_wrap();
+                        let gap = 16.;
+                        let x = area.left() + area.width() * self.split_fraction;
+                        let divider = egui::Rect::from_min_max(
+                            egui::pos2(x - gap / 2., area.top()),
+                            egui::pos2(x + gap / 2., area.bottom()),
+                        );
+                        let handle = ui
+                            .interact(divider, egui::Id::new("split-divider"), egui::Sense::drag())
+                            .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                        if handle.dragged()
+                            && let Some(pointer) = handle.interact_pointer_pos()
+                        {
+                            self.split_fraction =
+                                ((pointer.x - area.left()) / area.width()).clamp(0.25, 0.75);
+                        }
+                        let line = if handle.hovered() || handle.dragged() {
+                            colors.accent
+                        } else {
+                            colors.line
+                        };
+                        ui.painter()
+                            .vline(x, area.y_range(), Stroke::new(1_f32, line));
+                        let sides = [
+                            (
+                                left,
+                                egui::Rect::from_min_max(
+                                    area.min,
+                                    egui::pos2(divider.left(), area.bottom()),
+                                ),
+                                Pane::Main,
+                            ),
+                            (
+                                right,
+                                egui::Rect::from_min_max(
+                                    egui::pos2(divider.right(), area.top()),
+                                    area.max,
+                                ),
+                                Pane::Beside,
+                            ),
+                        ];
+                        for (index, rect, pane) in sides {
+                            let mut pane_ui = ui.new_child(
+                                egui::UiBuilder::new()
+                                    .max_rect(rect)
+                                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
+                            );
+                            pane_ui.set_clip_rect(rect);
+                            if let Some(rect) = self.session_pane(&mut pane_ui, index, pane) {
+                                session_rects.push((index, rect));
+                            }
+                        }
+                        ui.allocate_rect(area, egui::Sense::hover());
+                    }
+                    (Some(index), None) => {
+                        if let Some(rect) = self.session_pane(ui, index, Pane::Main) {
+                            session_rects.push((index, rect));
+                        }
+                    }
+                    (None, _) => self.workspace(ui),
+                }
+            });
+        self.editor(ctx);
+        self.confirmations(ctx);
+        self.settings(ctx);
+        self.library_dialogs(ctx);
+        self.snippet_palette(ctx);
+        self.toast(ctx);
+        let windows = self.detached_windows(ctx);
+        let covered = self.covered();
+        let ppp = ctx.pixels_per_point();
+        let pixels = |r: egui::Rect| {
+            [
+                (r.min.x * ppp).round() as i32,
+                (r.min.y * ppp).round() as i32,
+                (r.width() * ppp).round() as i32,
+                (r.height() * ppp).round() as i32,
+            ]
+        };
+        // Toasts, tooltips and menus float over remote desktops; cut them out of each.
+        let floating = overlays(ctx);
+        let holes = |session: egui::Rect| -> Vec<[i32; 4]> {
+            floating
+                .iter()
+                .map(|r| r.intersect(session))
+                .filter(|r| r.is_positive())
+                .map(|r| {
+                    let [x, y, w, h] = pixels(r);
+                    let [sx, sy, ..] = pixels(session);
+                    [x - sx, y - sy, w, h]
+                })
+                .collect()
+        };
+        for (i, s) in self.sessions.iter_mut().enumerate() {
+            // Detached windows are separate from the main window's dialogs.
+            if let Some((_, rect, holes)) = windows.iter().find(|(index, ..)| *index == i) {
+                s.place_around(Some(*rect), holes);
+                continue;
+            }
+            let rect = session_rects
+                .iter()
+                .find(|(index, _)| *index == i && !covered)
+                .map(|(_, rect)| *rect);
+            s.place_around(rect.map(pixels), &rect.map(holes).unwrap_or_default());
+        }
+        if !self.sessions.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+    }
+}
+
+/// Where item `index` ends up after the item at `from` moves to `to`.
+fn moved(index: usize, from: usize, to: usize) -> usize {
+    if index == from {
+        to
+    } else if from < index && index <= to {
+        index - 1
+    } else if to <= index && index < from {
+        index + 1
+    } else {
+        index
+    }
+}
+
+/// Relay's icon for its windows, rendered by assets/make_icon.py.
+fn app_icon() -> egui::IconData {
+    egui::IconData {
+        rgba: include_bytes!("../../assets/icon.rgba").to_vec(),
+        width: 256,
+        height: 256,
+    }
+}
