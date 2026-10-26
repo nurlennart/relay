@@ -461,7 +461,7 @@ pub fn config(settings: &Settings) -> ConnectorResult<ironrdp_connector::Config>
         hardware_id: None,
         request_data: None,
         autologon: true,
-        // Sound and microphones are not redirected.
+        // Sound and microphones are not redirected; see `unsupported`.
         enable_audio_playback: false,
         enable_audio_capture: false,
         performance_flags: Default::default(),

@@ -602,6 +602,11 @@ pub const SAVES_PASSWORDS: bool = true;
 pub const SIGN_IN_HELP: &str = "Windows asks for credentials; tick “Remember me” to skip the \
     prompt next time.\nWindows keeps them in Credential Manager. Relay never sees passwords.";
 
+/// The control supports every option.
+pub fn unsupported(_options: &crate::model::RdpOptions) -> Vec<&'static str> {
+    vec![]
+}
+
 /// Removes Windows-saved credentials for an RDP host. Returns whether any existed.
 pub fn forget_credentials(host: &str) -> Result<bool, String> {
     use windows_sys::Win32::Security::Credentials::{CRED_TYPE_DOMAIN_PASSWORD, CredDeleteW};
