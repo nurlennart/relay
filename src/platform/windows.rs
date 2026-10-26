@@ -1,6 +1,55 @@
+//! Windows: native child windows for the embedded RDP control, and the keyboard hook that keeps
+//! Relay's shortcuts working while a remote desktop has focus.
+use super::{Command, Window};
+use raw_window_handle::{
+    RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle,
+};
+use std::path::PathBuf;
 use windows_sys::Win32::{
     Foundation::*, Graphics::Gdi::MapWindowPoints, UI::WindowsAndMessaging::*,
 };
+
+pub const PROPORTIONAL_FONTS: &[&str] = &[r"C:\Windows\Fonts\segoeui.ttf"];
+pub const MONOSPACE_FONTS: &[&str] = &[
+    r"C:\Windows\Fonts\CascadiaMono.ttf",
+    r"C:\Windows\Fonts\consola.ttf",
+];
+pub const EXTRA_PROGRAM_DIRS: &[&str] = &[];
+
+/// The Windows OpenSSH Client feature, or another `ssh.exe` on `PATH`.
+pub fn ssh_program() -> PathBuf {
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    let system = PathBuf::from(root).join(r"System32\OpenSSH\ssh.exe");
+    if system.is_file() {
+        return system;
+    }
+    super::find_program("ssh.exe").unwrap_or(system)
+}
+
+impl Window {
+    pub fn from_hwnd(window: HWND) -> Option<Self> {
+        let handle = Win32WindowHandle::new(std::num::NonZeroIsize::new(window as isize)?);
+        Some(Self {
+            window: RawWindowHandle::Win32(handle),
+            display: RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
+        })
+    }
+
+    pub fn hwnd(self) -> HWND {
+        match self.window {
+            RawWindowHandle::Win32(handle) => handle.hwnd.get() as HWND,
+            _ => std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Gives keyboard focus back to Relay's window, away from a remote desktop.
+pub fn focus(window: Window) {
+    unsafe {
+        windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(window.hwnd());
+    }
+}
+
 fn last_error(message: &str) -> String {
     format!("{message}: {}", std::io::Error::last_os_error())
 }
@@ -82,10 +131,10 @@ pub(crate) fn clip(window: HWND, size: [i32; 2], holes: &[[i32; 4]]) -> Result<(
 }
 
 /// Finds a top-level window of this process by its exact title, skipping `known` ones.
-pub(crate) fn find_window(title: &str, known: &[HWND]) -> Option<HWND> {
-    struct Search<'a> {
+pub fn find_window(title: &str, known: &[Window]) -> Option<Window> {
+    struct Search {
         title: Vec<u16>,
-        known: &'a [HWND],
+        known: Vec<HWND>,
         found: Option<HWND>,
     }
     unsafe extern "system" fn each(window: HWND, search: LPARAM) -> windows_sys::core::BOOL {
@@ -107,22 +156,13 @@ pub(crate) fn find_window(title: &str, known: &[HWND]) -> Option<HWND> {
     }
     let mut search = Search {
         title: title.encode_utf16().collect(),
-        known,
+        known: known.iter().map(|w| w.hwnd()).collect(),
         found: None,
     };
     unsafe {
         EnumWindows(Some(each), &mut search as *mut Search as LPARAM);
     }
-    search.found
-}
-
-/// Relay shortcuts that work while a remote desktop has the keyboard.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Command {
-    PreviousTab,
-    NextTab,
-    /// Returns keyboard focus to Relay.
-    Release,
+    search.found.and_then(Window::from_hwnd)
 }
 
 static MAIN: std::sync::atomic::AtomicPtr<std::ffi::c_void> =
@@ -145,7 +185,8 @@ fn command(key: u16, ctrl: bool, alt: bool) -> Option<Command> {
 
 /// Watches for Ctrl+Alt+PageUp/PageDown/Home while a remote desktop inside Relay has focus.
 /// A low-level hook sees these keys before the RDP control, whichever thread owns its input.
-pub fn install_shortcuts(main: HWND, ctx: eframe::egui::Context) {
+pub fn install_shortcuts(main: Window, ctx: eframe::egui::Context) {
+    let main = main.hwnd();
     if main.is_null() || CONTEXT.set(ctx).is_err() {
         return;
     }

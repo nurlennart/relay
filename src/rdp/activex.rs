@@ -1,4 +1,8 @@
-use crate::model::{Audio, Connection, Display, Keys};
+//! Microsoft's RDP ActiveX control, hosted through ATL in a child window of Relay.
+use crate::{
+    model::{Audio, Connection, Display, Keys},
+    platform::{self, Window as NativeWindow},
+};
 use eframe::egui;
 use std::{
     ffi::c_void,
@@ -175,12 +179,20 @@ pub struct RdpClient {
     resized: Instant,
     /// Overlay rectangles currently cut out of the viewport.
     holes: Vec<[i32; 4]>,
-    pub display_warning: Option<String>,
+    display_warning: Option<String>,
     _apartment: Apartment,
 }
 
 impl RdpClient {
-    pub fn new(parent: HWND, connection: &Connection, ctx: egui::Context) -> Result<Self, String> {
+    pub fn new(
+        parent: Option<NativeWindow>,
+        connection: &Connection,
+        ctx: egui::Context,
+    ) -> Result<Self, String> {
+        let parent = parent
+            .map(NativeWindow::hwnd)
+            .filter(|window| !window.is_null())
+            .ok_or("Cannot obtain the native application window.")?;
         let apartment =
             Apartment::new().map_err(|e| format!("Cannot initialize Windows RDP: {e}"))?;
         let module = atl()?;
@@ -380,7 +392,8 @@ impl RdpClient {
         .map(|_| ())
     }
     /// Moves the remote desktop into another window, such as a detached session window.
-    pub fn set_parent(&mut self, parent: HWND) {
+    pub fn set_parent(&mut self, parent: NativeWindow) {
+        let parent = parent.hwnd();
         if parent != self.parent {
             unsafe {
                 SetParent(self.window.0, parent);
@@ -389,8 +402,8 @@ impl RdpClient {
             self.holes.clear();
         }
     }
-    pub fn window(&self) -> HWND {
-        self.window.0
+    pub fn display_warning(&self) -> Option<&str> {
+        self.display_warning.as_deref()
     }
     pub fn ended(&self) -> bool {
         self.state.lock().unwrap().ended
@@ -426,7 +439,7 @@ impl RdpClient {
     }
     fn layout(&mut self, [x, y, w, h]: [i32; 4]) -> Result<(), String> {
         let (w, h) = (w.max(1), h.max(1));
-        crate::native_host::position(self.window.0, self.parent, [x, y, w, h])?;
+        platform::windows::position(self.window.0, self.parent, [x, y, w, h])?;
         let size = match self.display {
             Display::Fit => (w.clamp(200, 8192), h.clamp(200, 8192)),
             Display::Fixed { width, height } => (width as i32, height as i32),
@@ -448,10 +461,10 @@ impl RdpClient {
             }
             return Ok(());
         };
-        let resized = crate::native_host::bounds(self.window.0, self.parent)? != rect;
+        let resized = platform::windows::bounds(self.window.0, self.parent)? != rect;
         self.layout(rect)?;
         if holes != self.holes || (resized && !holes.is_empty()) {
-            crate::native_host::clip(self.window.0, [rect[2], rect[3]], holes)?;
+            platform::windows::clip(self.window.0, [rect[2], rect[3]], holes)?;
             self.holes = holes.to_vec();
         }
         unsafe {
@@ -741,7 +754,12 @@ mod tests {
         let mut connection = Connection::new();
         connection.host = "localhost".into();
         connection.username = "test-user".into();
-        let mut client = RdpClient::new(parent.0, &connection, egui::Context::default()).unwrap();
+        let mut client = RdpClient::new(
+            NativeWindow::from_hwnd(parent.0),
+            &connection,
+            egui::Context::default(),
+        )
+        .unwrap();
         unsafe {
             let inplace: windows::Win32::System::Ole::IOleInPlaceObject =
                 client.client.cast().unwrap();
@@ -749,11 +767,11 @@ mod tests {
             for rect in [[260, 125, 1400, 720], [260, 125, 900, 500]] {
                 client.layout(rect).unwrap();
                 assert_eq!(
-                    crate::native_host::bounds(client.window.0, parent.0).unwrap(),
+                    platform::windows::bounds(client.window.0, parent.0).unwrap(),
                     rect
                 );
                 assert_eq!(
-                    crate::native_host::bounds(control_window, client.window.0).unwrap(),
+                    platform::windows::bounds(control_window, client.window.0).unwrap(),
                     [0, 0, rect[2], rect[3]]
                 );
                 assert_eq!(
@@ -782,15 +800,20 @@ mod tests {
         let (first, second) = (parent(), parent());
         let mut connection = Connection::new();
         connection.host = "localhost".into();
-        let mut client = RdpClient::new(first.0, &connection, egui::Context::default()).unwrap();
+        let mut client = RdpClient::new(
+            NativeWindow::from_hwnd(first.0),
+            &connection,
+            egui::Context::default(),
+        )
+        .unwrap();
         client.layout([10, 20, 640, 480]).unwrap();
-        client.set_parent(second.0);
+        client.set_parent(NativeWindow::from_hwnd(second.0).unwrap());
         client.layout([30, 40, 800, 500]).unwrap();
         unsafe {
             assert_eq!(GetParent(client.window.0), second.0);
         }
         assert_eq!(
-            crate::native_host::bounds(client.window.0, second.0).unwrap(),
+            platform::windows::bounds(client.window.0, second.0).unwrap(),
             [30, 40, 800, 500]
         );
     }
@@ -814,7 +837,12 @@ mod tests {
                 height: 900,
             },
         };
-        let mut client = RdpClient::new(parent.0, &connection, egui::Context::default()).unwrap();
+        let mut client = RdpClient::new(
+            NativeWindow::from_hwnd(parent.0),
+            &connection,
+            egui::Context::default(),
+        )
+        .unwrap();
         let flag = |name| bool::try_from(&get(&client.advanced, name)).unwrap();
         assert!(!flag("RedirectClipboard"));
         for name in [
@@ -872,7 +900,12 @@ mod tests {
         let parent = parent();
         let mut connection = Connection::new();
         connection.host = "localhost".into();
-        let mut client = RdpClient::new(parent.0, &connection, egui::Context::default()).unwrap();
+        let mut client = RdpClient::new(
+            NativeWindow::from_hwnd(parent.0),
+            &connection,
+            egui::Context::default(),
+        )
+        .unwrap();
         client.layout([0, 0, 1000, 600]).unwrap();
         client.resized = Instant::now() - Duration::from_secs(1);
         // Pretend the session connected with this size at 100%, without contacting a host.
