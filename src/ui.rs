@@ -44,13 +44,7 @@ impl App {
             )
             .show(ctx, |ui| {
                 let header = ui.horizontal(|ui| {
-                    egui::Frame::new()
-                        .fill(colors.accent)
-                        .corner_radius(10)
-                        .inner_margin(Margin::symmetric(10, 4))
-                        .show(ui, |ui| {
-                            ui.label(RichText::new("R").size(24.).strong().color(colors.bg));
-                        });
+                    logo(ui, 40., colors.accent, colors.bg);
                     if !collapsed {
                         ui.vertical(|ui| {
                             ui.label(RichText::new("Relay").size(23.).strong());
@@ -167,20 +161,9 @@ impl App {
                         .corner_radius(8)
                         .inner_margin(12.)
                         .show(ui, |ui| {
+                            // The footer stacks bottom-up, so the card's rows are added last
+                            // to first.
                             ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                ui.colored_label(colors.accent, "●");
-                                ui.label(RichText::new(self.location.label()).size(12.).strong());
-                            });
-                            ui.label(
-                                RichText::new(if self.pending.is_some() {
-                                    "Updating library…"
-                                } else {
-                                    "Connection profiles only"
-                                })
-                                .size(11.)
-                                .color(colors.muted),
-                            );
                             let manage = egui::Button::new(
                                 RichText::new("Manage library  →")
                                     .size(12.)
@@ -190,6 +173,19 @@ impl App {
                             if ui.add_enabled(self.pending.is_none(), manage).clicked() {
                                 self.modal = Modal::Library;
                             }
+                            ui.label(
+                                RichText::new(if self.pending.is_some() {
+                                    "Updating library…"
+                                } else {
+                                    "Connection profiles only"
+                                })
+                                .size(11.)
+                                .color(colors.muted),
+                            );
+                            ui.horizontal(|ui| {
+                                ui.colored_label(colors.accent, "●");
+                                ui.label(RichText::new(self.location.label()).size(12.).strong());
+                            });
                         });
                     if let database::Location::Local(path) | database::Location::Sqlite(path) =
                         &self.location
@@ -373,7 +369,7 @@ impl App {
                 {
                     self.new_connection();
                 }
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.with_layout(Layout::left_to_right(Align::Max), |ui| {
                     let title = self.group.as_deref().unwrap_or(match self.filter {
                         Filter::All => "All connections",
                         Filter::Recent => "Recent",
@@ -411,11 +407,9 @@ impl App {
                 }
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     let response = ui.add_sized(
-                        [ui.available_width().min(420.), 36.],
-                        egui::TextEdit::singleline(&mut self.query)
-                            .id(search_id)
-                            .hint_text("Search name, address, or group   Ctrl+K")
-                            .margin(Margin::symmetric(12, 9)),
+                        [ui.available_width().min(420.), CONTROL_HEIGHT],
+                        input(&mut self.query, "Search name, address, or group   Ctrl+K")
+                            .id(search_id),
                     );
                     if ui.available_width() > 230. {
                         ui.label(
@@ -934,7 +928,7 @@ impl App {
                     ui.add_space(14.);
                     ui.separator();
                     section_label(ui, "CONNECTION LIBRARY");
-                    ui.horizontal(|ui| {
+                    ui.horizontal_centered(|ui| {
                         ui.label(RichText::new(self.location.label()).strong());
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             manage = ui
@@ -1075,13 +1069,20 @@ impl App {
                         ui.label("ADO.NET connection string");
                         let hint = "Server=tcp:sql,1433;Database=Relay;Integrated Security=true";
                         ui.horizontal(|ui| {
+                            let show = 64.;
                             ui.add_sized(
-                                [ui.available_width() - 70., 36.],
-                                egui::TextEdit::singleline(&mut self.db_mssql)
-                                    .password(!self.db_reveal)
-                                    .hint_text(hint),
+                                [
+                                    ui.available_width() - show - ui.spacing().item_spacing.x,
+                                    CONTROL_HEIGHT,
+                                ],
+                                input(&mut self.db_mssql, hint).password(!self.db_reveal),
                             );
-                            ui.toggle_value(&mut self.db_reveal, "Show");
+                            let reveal = egui::Button::new("Show")
+                                .selected(self.db_reveal)
+                                .min_size(Vec2::new(show, CONTROL_HEIGHT));
+                            if ui.add(reveal).clicked() {
+                                self.db_reveal = !self.db_reveal;
+                            }
                         });
                         ui.checkbox(
                             &mut self.db_remember,
@@ -1405,6 +1406,37 @@ fn nav_icon(ui: &egui::Ui, symbol: &str, center: egui::Pos2, color: Color32) {
             );
         }
     }
+}
+/// Relay's mark, matching assets/make_icon.py: a remote window with a prompt, and a second
+/// window behind it.
+fn logo(ui: &mut egui::Ui, size: f32, tile: Color32, mark: Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    let painter = ui.painter();
+    let at = |x: f32, y: f32| rect.min + Vec2::new(x * size, y * size);
+    let round = size * 0.07;
+    let stroke = Stroke::new(size * 0.06, mark);
+    painter.rect_filled(rect, size * 0.24, tile);
+    let offset = 0.085;
+    painter.rect_stroke(
+        Rect::from_min_max(
+            at(0.16 + offset, 0.30 - offset),
+            at(0.76 + offset, 0.79 - offset),
+        ),
+        round,
+        Stroke::new(stroke.width, mark.gamma_multiply(0.45)),
+        egui::StrokeKind::Middle,
+    );
+    let front = Rect::from_min_max(at(0.16, 0.30), at(0.76, 0.79));
+    painter.rect_filled(front, round, tile);
+    painter.rect_stroke(front, round, stroke, egui::StrokeKind::Middle);
+    let bar = 0.42;
+    painter.line_segment([at(0.16, bar), at(0.76, bar)], stroke);
+    let (x, y, arm) = (0.30, (bar + 0.79) / 2. + 0.01, 0.085);
+    painter.add(egui::Shape::line(
+        vec![at(x, y - arm), at(x + arm, y), at(x, y + arm)],
+        stroke,
+    ));
+    painter.line_segment([at(0.48, y + arm), at(0.62, y + arm)], stroke);
 }
 fn library_icon(ui: &egui::Ui, center: egui::Pos2, color: Color32) {
     for y in 0..2 {

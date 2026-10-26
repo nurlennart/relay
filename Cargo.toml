@@ -30,3 +30,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graph
 strip = true
 lto = "thin"
 
+[build-dependencies]
+winresource = "0.1.34"
+

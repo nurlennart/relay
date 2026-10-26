@@ -33,7 +33,13 @@ fn main() -> eframe::Result {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size(saved.window.unwrap_or([1280., 820.]))
                 .with_maximized(saved.maximized)
-                .with_min_inner_size([720., 560.]),
+                .with_min_inner_size([720., 560.])
+                .with_icon(egui::IconData {
+                    // Rendered by assets/make_icon.py.
+                    rgba: include_bytes!("../assets/icon.rgba").to_vec(),
+                    width: 256,
+                    height: 256,
+                }),
             ..Default::default()
         },
         Box::new(|cc| {
@@ -409,10 +415,11 @@ impl App {
                 .max_height(fields_height)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        let half = (ui.available_width() - ui.spacing().item_spacing.x) / 2.;
                         for protocol in [Protocol::Rdp, Protocol::Ssh] {
                             let button = egui::Button::new(protocol.label())
                                 .selected(c.protocol == protocol);
-                            if ui.add_sized([210., 40.], button).clicked() {
+                            if ui.add_sized([half, 40.], button).clicked() {
                                 if c.port == c.protocol.port() {
                                     c.port = protocol.port();
                                 }
@@ -427,42 +434,62 @@ impl App {
                         &mut c.name,
                         "e.g. Office workstation",
                     );
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label("Host / IP address");
+                    ui.horizontal_top(|ui| {
+                        let port_width = 96.;
+                        let host_width =
+                            ui.available_width() - port_width - ui.spacing().item_spacing.x;
+                        labeled(ui, "Host / IP address", |ui| {
                             ui.add_sized(
-                                [330., 32.],
-                                egui::TextEdit::singleline(&mut c.host)
-                                    .hint_text("e.g. 192.168.1.20"),
+                                [host_width, CONTROL_HEIGHT],
+                                input(&mut c.host, "e.g. 192.168.1.20"),
                             );
                         });
-                        ui.vertical(|ui| {
-                            ui.label("Port");
-                            ui.add_sized(
-                                [90., 32.],
-                                egui::DragValue::new(&mut c.port).range(1..=65535).speed(1),
-                            );
+                        labeled(ui, "Port", |ui| {
+                            // Digits only; an empty field reads as 0, which validation rejects.
+                            let mut port = if c.port == 0 {
+                                String::new()
+                            } else {
+                                c.port.to_string()
+                            };
+                            let response =
+                                ui.add_sized([port_width, CONTROL_HEIGHT], input(&mut port, ""));
+                            if response.changed() {
+                                let digits: String =
+                                    port.chars().filter(char::is_ascii_digit).collect();
+                                c.port = digits.parse().unwrap_or(if digits.is_empty() {
+                                    0
+                                } else {
+                                    c.port
+                                });
+                            }
                         });
                     });
                     let user_hint = if rdp { "DOMAIN\\username" } else { "username" };
                     field(ui, "Username (optional)", &mut c.username, user_hint);
-                    ui.label("Group");
-                    ui.horizontal(|ui| {
-                        ui.add_sized(
-                            [ui.available_width() - 46., 32.],
-                            egui::TextEdit::singleline(&mut c.group).hint_text("Personal"),
-                        );
-                        ui.add_enabled_ui(!groups.is_empty(), |ui| {
-                            ui.menu_button(RichText::new("▼").size(10.), |ui| {
+                    labeled(ui, "Group", |ui| {
+                        ui.horizontal(|ui| {
+                            let button = CONTROL_HEIGHT;
+                            ui.add_sized(
+                                [
+                                    ui.available_width() - button - ui.spacing().item_spacing.x,
+                                    CONTROL_HEIGHT,
+                                ],
+                                input(&mut c.group, "Personal"),
+                            );
+                            let choose = ui
+                                .add_enabled(
+                                    !groups.is_empty(),
+                                    egui::Button::new(RichText::new("▼").size(10.))
+                                        .min_size(Vec2::splat(button)),
+                                )
+                                .on_hover_text("Choose an existing group");
+                            egui::Popup::menu(&choose).show(|ui| {
                                 for group in &groups {
                                     if ui.button(group).clicked() {
                                         c.group = group.clone();
-                                        ui.close();
                                     }
                                 }
-                            })
-                            .response
-                            .on_hover_text("Choose an existing group");
+                            });
                         });
                     });
                     ui.checkbox(&mut c.favorite, "Add to favorites");
@@ -945,7 +972,7 @@ impl eframe::App for App {
 fn accent_button(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Response {
     let colors = theme::palette(ui.ctx());
     ui.add_sized(
-        [width, 37.],
+        [width, CONTROL_HEIGHT],
         egui::Button::new(RichText::new(text).color(colors.bg).strong())
             .fill(colors.accent)
             .corner_radius(6),
@@ -1076,10 +1103,29 @@ fn rdp_options(ui: &mut egui::Ui, options: &mut model::RdpOptions) {
                 });
         });
 }
+/// The height of text fields and buttons, so controls in a row line up.
+const CONTROL_HEIGHT: f32 = 36.;
+
+/// A single-line text field with room around its text, which is vertically centered.
+fn input<'a>(value: &'a mut String, hint: &str) -> egui::TextEdit<'a> {
+    egui::TextEdit::singleline(value)
+        .hint_text(hint)
+        .margin(egui::Margin::symmetric(11, 8))
+        .vertical_align(egui::Align::Center)
+}
+
+/// A label with a control close below it; groups are spaced further apart.
+fn labeled<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 5.;
+        ui.label(label);
+        add(ui)
+    })
+    .inner
+}
+
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
-    ui.label(label);
-    ui.add_sized(
-        [ui.available_width(), 32.],
-        egui::TextEdit::singleline(value).hint_text(hint),
-    );
+    labeled(ui, label, |ui| {
+        ui.add_sized([ui.available_width(), CONTROL_HEIGHT], input(value, hint));
+    });
 }

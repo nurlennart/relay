@@ -23,7 +23,9 @@ Open **Settings** at the bottom of the sidebar and use **Appearance** to switch 
 - Sidebar filters and groups narrow the library. Search matches names, addresses, usernames, groups, and protocols.
 - Keyboard: `Ctrl+K` searches; `↑`/`↓` move the selection and `Enter` connects (from the search box or the list); `Esc` clears the search and closes dialogs; `Enter` saves the connection editor. `Ctrl+N` adds a profile, `Ctrl+W` closes the selected tab, `Ctrl+1`–`Ctrl+9` jump to tabs, and `Ctrl+B` toggles the sidebar. `Ctrl+Tab`/`Ctrl+Shift+Tab` cycle tabs, even from an SSH terminal; the terminal receives the other shortcuts while focused. Click the manager chrome to regain focus.
 - Below 1000 px wide the sidebar collapses to icons, and narrow tables hide the group and then the protocol column. The window can shrink to 720×560.
-- Session tabs show a status dot: accent while open, red once the session has ended.
+- Session tabs show a status dot: accent while open, red once the session has ended. Drag a tab to reorder it, or use `Ctrl+Shift+PageUp`/`Ctrl+Shift+PageDown`.
+- **Recent** lists the connections you opened in the current library, newest first.
+- Relay remembers the window size, the sidebar choice, the last library and recent connections in `%LOCALAPPDATA%\Relay\state.json`. A shared SQLite library reopens at startup, and an MSSQL library reopens when its connection string is remembered. No connection strings are written to this file.
 - **Connection library** returns to the list while sessions stay open.
 - Closing a tab or quitting with active sessions asks for confirmation.
 - The **···** menu edits, duplicates, copies the address of, or deletes a profile. Changes apply to future connections. The editor suggests existing groups.
@@ -87,6 +89,10 @@ While a remote desktop has the keyboard, it receives normal shortcuts. Relay res
 Each RDP connection has **Remote desktop options** in its editor: an optional **RD Gateway** host (used with the same credentials), which local resources to use on the remote computer (clipboard, local drives, printers, smart cards, microphone), where remote audio plays, where Windows key combinations such as `Alt+Tab` apply (default: remote only in full screen), and the resolution (fit to tab, or a fixed size scaled to the tab). Options are saved with the connection in personal and shared libraries; CSV export does not include them.
 
 SSH runs in a dark terminal panel that keeps its own colors in every app theme, using Cascadia Mono (or Consolas). It supports 256 and true colors, bold, dim, underline and inverse text, scrolling through 5,000 lines with a scrollbar, resizing, bracketed paste, and navigation, function, control and Alt keys. The terminal is focused when its tab opens; Tab, Escape and the arrow keys stay in it. `Ctrl+C` sends an interrupt. Drag to select text; `Ctrl+Shift+C` or a right-click copies the selection (or the whole screen when nothing is selected), and a right-click without a selection, `Ctrl+V` or `Shift+Insert` pastes. Mouse reporting, hyperlinks and complete xterm compatibility are not implemented. Closing SSH may terminate remote foreground work.
+
+## Icon
+
+The application icon is drawn by `assets/make_icon.py` (Python with Pillow). Run `python -I assets/make_icon.py` to regenerate `assets/icon.ico`, which `build.rs` embeds in the executable, and `assets/icon.rgba`, which Relay uses for its window and taskbar icon.
 
 ## Verification
 
