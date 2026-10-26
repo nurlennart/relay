@@ -165,7 +165,13 @@ pub struct RdpClient {
     display: Display,
     started: bool,
     size: Option<(i32, i32)>,
-    applied: Option<((i32, i32), u32, u64)>,
+    /// The size and scale the session connected with.
+    initial: Option<((i32, i32), u32)>,
+    /// The size and scale the remote display has now.
+    current: Option<((i32, i32), u32)>,
+    generation: u64,
+    failures: u32,
+    retry_at: Instant,
     resized: Instant,
     pub display_warning: Option<String>,
     _apartment: Apartment,
@@ -255,7 +261,11 @@ impl RdpClient {
             display: options.display,
             started: false,
             size: None,
-            applied: None,
+            initial: None,
+            current: None,
+            generation: 0,
+            failures: 0,
+            retry_at: Instant::now(),
             resized: Instant::now(),
             display_warning: None,
             _apartment: apartment,
@@ -431,43 +441,83 @@ impl RdpClient {
         }
         let scale = scale_for(self.parent);
         if !self.started {
-            if let Err(e) = self.set_scale(scale) {
-                self.display_warning = Some(e);
-            }
+            // If the scale cannot be preset, the session starts at 100% and a display update
+            // corrects it after login.
+            let initial_scale = if self.set_scale(scale).is_ok() {
+                scale
+            } else {
+                100
+            };
             invoke(&self.client, "Connect", DISPATCH_METHOD, vec![])?;
             self.started = true;
+            self.initial = self.size.map(|size| (size, initial_scale));
         }
         let state = self.state.lock().unwrap();
         let (connected, generation) = (state.connected, state.generation);
         drop(state);
-        if self.display == Display::Fit
-            && let Some(size) = self.size
-            && connected
-            && self.applied != Some((size, scale, generation))
-            && self.resized.elapsed() >= Duration::from_millis(250)
-        {
-            // Physical size in millimetres at the window's DPI.
-            let millimetres = |pixels: i32| (pixels as u32 * 2540 / (scale * 96)).max(10);
-            let result = invoke(
-                &self.client,
-                "UpdateSessionDisplaySettings",
-                DISPATCH_METHOD,
-                vec![
-                    VARIANT::from(size.0 as u32),
-                    VARIANT::from(size.1 as u32),
-                    VARIANT::from(millimetres(size.0)),
-                    VARIANT::from(millimetres(size.1)),
-                    VARIANT::from(0u32),
-                    VARIANT::from(scale),
-                    VARIANT::from(device_scale(scale)),
-                ],
-            );
-            self.applied = Some((size, scale, generation));
-            self.display_warning = result
-                .err()
-                .map(|e| format!("The remote host could not update its display size: {e}"));
-        }
+        self.sync_display(scale, connected, generation);
         Ok(())
+    }
+
+    /// Asks the session to match the tab's size and scale once it can.
+    fn sync_display(&mut self, scale: u32, connected: bool, generation: u64) {
+        /// Failed updates retry this often; the session rejects them until login completes.
+        const RETRY: Duration = Duration::from_secs(1);
+        /// After this many failures in a row, the warning is shown.
+        const ATTEMPTS: u32 = 8;
+        if generation != self.generation {
+            // A new connection or reconnection starts from the connect-time settings.
+            self.generation = generation;
+            self.current = self.initial;
+            self.failures = 0;
+        }
+        let Some(size) = self.size else {
+            return;
+        };
+        let wanted = (size, scale);
+        if self.display != Display::Fit
+            || !connected
+            || self.current == Some(wanted)
+            || self.resized.elapsed() < Duration::from_millis(250)
+            || Instant::now() < self.retry_at
+        {
+            return;
+        }
+        // Physical size in millimetres at the window's DPI.
+        let millimetres = |pixels: i32| (pixels as u32 * 2540 / (scale * 96)).max(10);
+        let result = invoke(
+            &self.client,
+            "UpdateSessionDisplaySettings",
+            DISPATCH_METHOD,
+            vec![
+                VARIANT::from(size.0 as u32),
+                VARIANT::from(size.1 as u32),
+                VARIANT::from(millimetres(size.0)),
+                VARIANT::from(millimetres(size.1)),
+                VARIANT::from(0u32),
+                VARIANT::from(scale),
+                VARIANT::from(device_scale(scale)),
+            ],
+        );
+        match result {
+            Ok(_) => {
+                self.current = Some(wanted);
+                self.failures = 0;
+                self.display_warning = None;
+            }
+            Err(e) => {
+                self.failures += 1;
+                self.retry_at = Instant::now() + RETRY;
+                if self.failures >= ATTEMPTS {
+                    // Stop retrying until the size or scale changes again.
+                    self.current = Some(wanted);
+                    self.failures = 0;
+                    self.display_warning = Some(format!(
+                        "The remote host could not update its display size: {e}"
+                    ));
+                }
+            }
+        }
     }
 }
 impl Drop for RdpClient {
@@ -779,6 +829,44 @@ mod tests {
                 .unwrap();
             assert_eq!(u32::try_from(&value).unwrap(), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn display_updates_skip_connect_settings_and_retry_quietly() {
+        let parent = parent();
+        let mut connection = Connection::new();
+        connection.host = "localhost".into();
+        let mut client = RdpClient::new(parent.0, &connection, egui::Context::default()).unwrap();
+        client.layout([0, 0, 1000, 600]).unwrap();
+        client.resized = Instant::now() - Duration::from_secs(1);
+        // Pretend the session connected with this size at 100%, without contacting a host.
+        client.started = true;
+        client.initial = Some(((1000, 600), 100));
+        client.sync_display(100, true, 1);
+        assert_eq!(
+            client.failures, 0,
+            "no update is needed at the connect-time size"
+        );
+        assert!(client.display_warning.is_none());
+        // A new scale needs an update. An unconnected control rejects it, like a session that
+        // has not finished logging in; failures retry without a warning at first.
+        for attempt in 1..8 {
+            client.retry_at = Instant::now();
+            client.sync_display(150, true, 1);
+            assert_eq!(client.failures, attempt);
+            assert!(
+                client.display_warning.is_none(),
+                "warned on attempt {attempt}"
+            );
+        }
+        client.sync_display(150, true, 1);
+        assert_eq!(client.failures, 7, "retries wait for the retry delay");
+        client.retry_at = Instant::now();
+        client.sync_display(150, true, 1);
+        assert!(client.display_warning.is_some());
+        // A reconnection starts again from the connect-time settings.
+        client.sync_display(100, true, 2);
+        assert_eq!((client.current, client.failures), (client.initial, 0));
     }
 
     #[test]
