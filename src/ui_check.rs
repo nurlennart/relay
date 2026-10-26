@@ -112,6 +112,17 @@ git pull && ./deploy.sh",
             app.ctx.clone(),
         ));
         app.active = Some(0);
+        if std::env::var_os("RELAY_UI_SPLIT").is_some() {
+            let mut connection = app.connections[3].clone();
+            connection.host = "staging.example.com".into();
+            let terminal = crate::terminal::Terminal::demo(TRANSCRIPT);
+            app.sessions.push(session::Session::demo(
+                connection,
+                terminal,
+                app.ctx.clone(),
+            ));
+            app.split = Some(1);
+        }
         if std::env::var_os("RELAY_UI_PALETTE").is_some() {
             app.palette = Some(Palette::default());
         }

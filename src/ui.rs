@@ -263,6 +263,7 @@ impl App {
                             }
                             // Tabs can be dragged; the drop position follows the pointer.
                             let mut rects = vec![];
+                            let mut split_with = None;
                             let mut dragging = None;
                             let mut dropped = None;
                             for (index, s) in self.sessions.iter().enumerate() {
@@ -271,7 +272,7 @@ impl App {
                                         ui,
                                         &s.connection,
                                         s.tab_state(),
-                                        self.active == Some(index),
+                                        self.active == Some(index) || self.split == Some(index),
                                     );
                                     rects.push(session.response.rect);
                                     if session.response.dragged() {
@@ -281,12 +282,39 @@ impl App {
                                         dropped = Some(index);
                                     }
                                     if session.inner.0.clicked() {
+                                        if self.split == Some(index) {
+                                            // Selecting the right side swaps the two sides.
+                                            self.split = self.active;
+                                        }
                                         self.active = Some(index);
                                     }
                                     if session.inner.1.clicked() {
                                         self.modal = Modal::Close(index);
                                     }
+                                    session.inner.0.context_menu(|ui| {
+                                        let beside = self.split == Some(index);
+                                        let other = self.active.is_some_and(|a| a != index);
+                                        if (beside || other)
+                                            && ui
+                                                .button(if beside {
+                                                    "Close split view"
+                                                } else {
+                                                    "Open beside current tab"
+                                                })
+                                                .clicked()
+                                        {
+                                            split_with = Some(index);
+                                            ui.close();
+                                        }
+                                        if ui.button("Close tab").clicked() {
+                                            self.modal = Modal::Close(index);
+                                            ui.close();
+                                        }
+                                    });
                                 });
+                            }
+                            if let Some(index) = split_with {
+                                self.split_with(index);
                             }
                             let pointer = ui.ctx().pointer_interact_pos().map(|p| p.x);
                             if let (Some(from), Some(x)) = (dragging.or(dropped), pointer) {
@@ -2114,6 +2142,36 @@ mod tests {
         app.sessions.clear();
         app.restore_tabs();
         assert_eq!(app.active, None);
+    }
+
+    #[test]
+    fn split_view_pairs_two_tabs_and_follows_moves() {
+        let ctx = egui::Context::default();
+        let mut app = test_app(&ctx);
+        for c in app.connections.clone() {
+            app.sessions
+                .push(session::Session::restored(c, ctx.clone()));
+        }
+        app.active = Some(0);
+        app.toggle_split();
+        assert_eq!(app.split, Some(1), "the neighbouring tab opens beside");
+        app.toggle_split();
+        assert_eq!(app.split, None);
+        app.split_with(0);
+        assert_eq!(app.split, None, "a tab cannot sit beside itself");
+        app.split_with(2);
+        assert_eq!(app.split, Some(2));
+        app.move_session(2, 0);
+        assert_eq!((app.active, app.split), (Some(1), Some(0)));
+        app.active = Some(2);
+        app.toggle_split();
+        assert_eq!(app.split, None, "toggling closes an open split");
+        app.toggle_split();
+        assert_eq!(
+            app.split,
+            Some(1),
+            "the last tab pairs with the one before it"
+        );
     }
 
     #[test]

@@ -350,16 +350,20 @@ impl Terminal {
             FontId::proportional(12.),
             TITLE_TEXT,
         );
+        // The hint needs room beside the state; narrow panes, such as split view, drop it.
+        let room = bar.width() > 560.;
         let (hint, hint_color) = if scrolled > 0 {
             (
                 format!("↑ {scrolled} lines back · scroll down or type to return"),
                 SCROLLED,
             )
-        } else {
+        } else if room {
             (
                 "Drag to select · Right-click copies or pastes · Ctrl+Shift+C".into(),
                 TITLE_MUTED,
             )
+        } else {
+            (String::new(), TITLE_MUTED)
         };
         painter.text(
             Pos2::new(bar.max.x - 14., text_y),
