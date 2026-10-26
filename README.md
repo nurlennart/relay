@@ -148,3 +148,7 @@ SSH runs in a dark terminal panel that keeps its own colors in every app theme, 
 SSH profiles have **SSH options**: a jump host (`ssh -J`), an identity file (`ssh -i`), and port forwards written as `L8080:localhost:80`, `R9000:localhost:9000` or `D1080`, separated by commas. Relay passes `ServerAliveInterval=15`, so a dropped connection is noticed within about 45 seconds. When ssh exits with 255 after the session had been up, Relay reconnects in the same tab after 1, 2, 4, 8, 16, then 30 seconds, up to ten times; **Reconnect now** and **Stop** are shown meanwhile. Wrong passwords, unknown hosts and `exit` are not retried.
 
 **Snippets** are saved commands, managed in **Settings → Snippets**. In an SSH tab, `Ctrl+Shift+P` or **Snippets** opens a palette: type to filter, `↑`/`↓` and `Enter` send, `Esc` closes. A snippet types its command and can press Enter afterwards; multi-line snippets use bracketed paste.
+
+## License
+
+Relay is released under the [MIT License](LICENSE).

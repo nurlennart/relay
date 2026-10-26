@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.94"
 description = "A remote connection workspace for RDP and SSH on Windows, macOS, and Linux"
 repository = "https://github.com/nurlennart/relay"
+license = "MIT"
 publish = false
 
 [features]

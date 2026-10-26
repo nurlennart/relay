@@ -70,7 +70,7 @@ jobs:
         run: |
           mkdir -p dist
           7z a "dist/relay-${{ steps.version.outputs.version }}-${{ matrix.name }}.zip" \
-            "./target/${{ matrix.target }}/release/relay.exe" README.md
+            "./target/${{ matrix.target }}/release/relay.exe" README.md LICENSE
 
       - name: Package macOS
         if: matrix.name == 'macos-universal'
@@ -90,7 +90,7 @@ jobs:
         run: |
           name="relay-${{ steps.version.outputs.version }}-${{ matrix.name }}"
           mkdir -p "build/$name" dist
-          cp "target/${{ matrix.target }}/release/relay" README.md "build/$name/"
+          cp "target/${{ matrix.target }}/release/relay" README.md LICENSE "build/$name/"
           cp packaging/linux/relay.desktop packaging/linux/install.sh "build/$name/"
           cp assets/icon.png "build/$name/relay.png"
           tar -C build -czf "dist/$name.tar.gz" "$name"

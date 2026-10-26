@@ -14,6 +14,7 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
 cp "$binary" "$app/Contents/MacOS/relay"
+cp "$root/LICENSE" "$app/Contents/Resources/LICENSE"
 sed "s/@VERSION@/$version/g" "$root/packaging/macos/Info.plist" > "$app/Contents/Info.plist"
 
 iconset=$(mktemp -d)/Relay.iconset
