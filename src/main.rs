@@ -1183,7 +1183,7 @@ impl eframe::App for App {
                 .iter()
                 .find(|(index, _)| *index == i && !covered)
                 .map(|(_, rect)| *rect);
-            s.place_around(rect.map(pixels), &rect.map(&holes).unwrap_or_default());
+            s.place_around(rect.map(pixels), &rect.map(holes).unwrap_or_default());
         }
         if !self.sessions.is_empty() {
             ctx.request_repaint_after(Duration::from_millis(200));
