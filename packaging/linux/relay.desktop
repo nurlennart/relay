@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Relay
+GenericName=Remote connection manager
+Comment=RDP and SSH sessions in one workspace
+Exec=relay
+Icon=relay
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=rdp;ssh;remote;desktop;terminal;
+StartupWMClass=relay

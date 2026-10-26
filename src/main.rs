@@ -36,6 +36,8 @@ fn main() -> eframe::Result {
         "Relay · Remote workspace",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
+                // Matches the Linux desktop entry, so docks show Relay's icon and name.
+                .with_app_id("relay")
                 .with_inner_size(saved.window.unwrap_or([1280., 820.]))
                 .with_maximized(saved.maximized)
                 .with_min_inner_size([720., 560.])
