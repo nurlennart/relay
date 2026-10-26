@@ -19,12 +19,14 @@ Open **Settings** at the bottom of the sidebar and use **Appearance** to switch 
 ## Connection library
 
 - **New connection** saves a name, host, port, optional username, group, and favorite.
-- Click **Connect** or double-click a name to open a tab.
+- Click **Connect**, double-click a row, or select it and press `Enter` to open a tab.
 - Sidebar filters and groups narrow the library. Search matches names, addresses, usernames, groups, and protocols.
-- The **···** menu edits or deletes a profile. Changes apply to future connections.
+- Keyboard: `Ctrl+K` searches; `↑`/`↓` move the selection and `Enter` connects (from the search box or the list); `Esc` clears the search and closes dialogs; `Enter` saves the connection editor. `Ctrl+N` adds a profile, `Ctrl+W` closes the selected tab, `Ctrl+1`–`Ctrl+9` jump to tabs, and `Ctrl+B` toggles the sidebar. `Ctrl+Tab`/`Ctrl+Shift+Tab` cycle tabs, even from an SSH terminal; the terminal receives the other shortcuts while focused. Click the manager chrome to regain focus.
+- Below 1000 px wide the sidebar collapses to icons, and narrow tables hide the group and then the protocol column. The window can shrink to 720×560.
+- Session tabs show a status dot: accent while open, red once the session has ended.
 - **Connection library** returns to the list while sessions stay open.
 - Closing a tab or quitting with active sessions asks for confirmation.
-- `Ctrl+K` searches, `Ctrl+N` adds a profile, and `Ctrl+W` closes the selected tab when the manager has focus. SSH receives these keys while its terminal is focused. Click the manager chrome to regain focus.
+- The **···** menu edits, duplicates, copies the address of, or deletes a profile. Changes apply to future connections. The editor suggests existing groups.
 
 The personal library is `%LOCALAPPDATA%\Relay\connections.json`. Writes use atomic replacement. Invalid libraries remain untouched and cannot be overwritten through the editor. Profiles contain plaintext hostnames, usernames, groups, and imported metadata; remote passwords are never stored.
 

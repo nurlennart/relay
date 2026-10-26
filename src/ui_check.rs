@@ -13,9 +13,19 @@ pub fn seed(app: &mut App) {
     {
         theme.apply(&app.ctx);
     }
+    if let Ok(size) = std::env::var("RELAY_UI_SIZE")
+        && let Some((w, h)) = size.split_once('x')
+        && let (Ok(w), Ok(h)) = (w.parse(), h.parse())
+    {
+        app.ctx
+            .send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(w, h)));
+    }
     if std::env::var_os("RELAY_UI_SETTINGS").is_some() {
         app.modal = Modal::Settings;
     }
+    app.selected = std::env::var("RELAY_UI_SELECT")
+        .ok()
+        .and_then(|id| id.parse().ok());
     app.storage_ok = false;
     app.connections = [
         (
