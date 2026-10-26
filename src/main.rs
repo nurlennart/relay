@@ -6,6 +6,7 @@ mod file_dialog;
 mod model;
 mod native_host;
 mod rdp;
+mod secret;
 mod session;
 mod terminal;
 mod theme;
@@ -95,6 +96,8 @@ struct App {
     db_kind: LibraryKind,
     db_path: String,
     db_mssql: String,
+    /// Keep the MSSQL connection string in DPAPI storage after it opens successfully.
+    db_remember: bool,
     notice: Option<String>,
     group: Option<String>,
     selected: Option<u64>,
@@ -134,6 +137,7 @@ impl App {
             Ok(c) => (c, None),
             Err(e) => (vec![], Some(e)),
         };
+        let saved_mssql = secret::load(&secret::path());
         let parent = match cc.window_handle().map(|h| h.as_raw()) {
             Ok(raw_window_handle::RawWindowHandle::Win32(h)) => h.hwnd.get() as HWND,
             _ => std::ptr::null_mut(),
@@ -161,7 +165,8 @@ impl App {
             pending_editor: None,
             db_kind: LibraryKind::Personal,
             db_path: String::new(),
-            db_mssql: MSSQL_EXAMPLE.into(),
+            db_remember: saved_mssql.is_some(),
+            db_mssql: saved_mssql.unwrap_or_else(|| MSSQL_EXAMPLE.into()),
             notice: None,
             group: None,
             selected: None,

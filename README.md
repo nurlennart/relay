@@ -58,7 +58,7 @@ SQL authentication:
 Server=tcp:sql.example.com,1433;Database=Relay;User ID=relay;Password=your-password;Encrypt=true;TrustServerCertificate=false
 ```
 
-Use an explicit TCP port. Relay requires encrypted transport, uses Windows certificate trust by default, and supports Windows integrated authentication or SQL logins. Database connection strings stay in memory for the session and are not saved to disk. The app does not create the database or alter other tables. A library is one revisioned JSON document in `dbo.RelayLibrary`.
+Use an explicit TCP port. Relay requires encrypted transport, uses Windows certificate trust by default, and supports Windows integrated authentication or SQL logins. By default the connection string stays in memory for the session and is not saved to disk. Tick **Remember on this computer** to store it in `%LOCALAPPDATA%\Relay\mssql.bin`, encrypted with Windows DPAPI for your user account; it is saved only after the library opens, and opening without the option deletes it. The app does not create the database or alter other tables. A library is one revisioned JSON document in `dbo.RelayLibrary`.
 
 ### SQLite file
 
@@ -76,7 +76,7 @@ RDP is hosted directly inside each tab using the Windows desktop RDP control. Re
 
 The initial remote desktop resolution uses the actual tab viewport. After login and window resizing, Relay requests updated remote display dimensions, with smart sizing enabled while the size changes or when the server cannot change resolution. A failed display update shows a warning in the tab. The native control and its host window track the viewport together, keeping the session inside the content area. Live server resolution negotiation and mixed-DPI monitor transitions still need testing against your hosts. Closing RDP disconnects without logging out the remote Windows session.
 
-SSH supports terminal colors, scrolling (5,000 lines), resizing, bracketed paste, navigation/function/control keys, and copying the visible screen. Click inside to type. `Ctrl+Shift+C` copies the screen; use the platform paste shortcut to paste. Mouse reporting, text selection, hyperlinks, and complete xterm compatibility are not implemented. Closing SSH may terminate remote foreground work.
+SSH supports terminal colors, scrolling (5,000 lines), resizing, bracketed paste, navigation/function/control/Alt keys, and copying the visible screen. Click inside to type; Tab, Escape, and the arrow keys stay in the terminal. `Ctrl+C` sends an interrupt, `Ctrl+Shift+C` copies the screen, and `Ctrl+V` or `Shift+Insert` pastes. Mouse reporting, text selection, hyperlinks, and complete xterm compatibility are not implemented. Closing SSH may terminate remote foreground work.
 
 ## Verification
 

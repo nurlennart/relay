@@ -587,14 +587,20 @@ impl App {
                     self.connections = snapshot.connections;
                     self.revision = snapshot.revision;
                     self.storage_ok = true;
+                    let mut remember_error = None;
                     if let Some(location) = self.pending_location.take() {
+                        if let database::Location::Mssql(connection) = &location {
+                            remember_error = self.remember_mssql(connection).err();
+                        }
                         self.location = location;
                         if matches!(self.modal, Modal::Library) {
                             self.modal = Modal::None;
                         }
                         self.group = None;
                         self.filter = Filter::All;
-                        self.db_mssql.clear();
+                        if !self.db_remember {
+                            self.db_mssql.clear();
+                        }
                     }
                     if self.pending_save {
                         self.recovery = None;
@@ -602,7 +608,7 @@ impl App {
                     self.pending_save = false;
                     self.pending_editor = None;
                     self.pending = None;
-                    self.error = None;
+                    self.error = remember_error;
                     self.notice = Some("Library updated successfully.".into());
                 }
                 Ok(Err(e)) => {
@@ -861,12 +867,21 @@ impl App {
                                 .password(true)
                                 .hint_text(hint),
                         );
+                        ui.checkbox(
+                            &mut self.db_remember,
+                            "Remember on this computer (encrypted for your Windows account)",
+                        );
+                        let storage = if self.db_remember {
+                            "Saved with Windows DPAPI after the library opens."
+                        } else {
+                            "Held in memory for this session only. \
+                             Opening without this option removes a saved string."
+                        };
                         ui.label(
-                            RichText::new(
+                            RichText::new(format!(
                                 "Windows integrated authentication and SQL logins are supported. \
-                                 TLS is required. The string is held in memory for this session \
-                                 only.",
-                            )
+                                 TLS is required. {storage}"
+                            ))
                             .size(12.)
                             .color(colors.muted),
                         );
@@ -977,6 +992,22 @@ impl App {
             } else if cancel {
                 self.modal = Modal::None;
             }
+        }
+    }
+
+    /// Stores or removes the encrypted connection string after it opened successfully.
+    fn remember_mssql(&self, connection: &str) -> Result<(), String> {
+        let path = secret::path();
+        if self.db_remember {
+            secret::save(&path, connection).map_err(|e| {
+                format!("The library opened, but the connection string could not be saved: {e}")
+            })
+        } else {
+            secret::forget(&path).map_err(|e| {
+                format!(
+                    "The library opened, but the saved connection string could not be removed: {e}"
+                )
+            })
         }
     }
 
