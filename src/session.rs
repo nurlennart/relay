@@ -30,6 +30,10 @@ pub struct Session {
     retry: Option<Instant>,
     /// Automatic reconnection attempts since the session was last up.
     attempts: u32,
+    /// Identifies the session while tabs move, for its detached window.
+    pub key: u64,
+    /// The window a detached remote desktop lives in, instead of Relay's main window.
+    host: Option<HWND>,
 }
 
 /// Automatic SSH reconnection gives up after this many attempts in a row.
@@ -62,6 +66,11 @@ impl Session {
             waiting: false,
             retry: None,
             attempts: 0,
+            key: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
+            host: None,
         }
     }
     pub fn start(mut connection: Connection, ctx: eframe::egui::Context) -> Result<Self, String> {
@@ -121,6 +130,7 @@ impl Session {
             return;
         }
         if self.rdp.is_none() {
+            let parent = self.host.unwrap_or(parent);
             match RdpClient::new(parent, &self.connection, self.ctx.clone()) {
                 Ok(rdp) => {
                     self.window = rdp.window();
@@ -149,6 +159,13 @@ impl Session {
         {
             let _ = rdp.place(None, &[]);
             self.error = Some(error);
+        }
+    }
+    /// Hosts a remote desktop in `window`, or back in the main window with `None`.
+    pub fn set_host(&mut self, window: Option<HWND>, main: HWND) {
+        self.host = window;
+        if let Some(rdp) = &mut self.rdp {
+            rdp.set_parent(window.unwrap_or(main));
         }
     }
     /// Restarts the session in place, using `connection` as it is saved now.

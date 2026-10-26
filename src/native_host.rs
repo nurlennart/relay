@@ -81,6 +81,41 @@ pub(crate) fn clip(window: HWND, size: [i32; 2], holes: &[[i32; 4]]) -> Result<(
     Ok(())
 }
 
+/// Finds a top-level window of this process by its exact title, skipping `known` ones.
+pub(crate) fn find_window(title: &str, known: &[HWND]) -> Option<HWND> {
+    struct Search<'a> {
+        title: Vec<u16>,
+        known: &'a [HWND],
+        found: Option<HWND>,
+    }
+    unsafe extern "system" fn each(window: HWND, search: LPARAM) -> windows_sys::core::BOOL {
+        let search = unsafe { &mut *(search as *mut Search) };
+        let mut process = 0;
+        let mut text = [0u16; 512];
+        unsafe {
+            GetWindowThreadProcessId(window, &mut process);
+            let len = GetWindowTextW(window, text.as_mut_ptr(), text.len() as i32);
+            if process == std::process::id()
+                && text[..len.max(0) as usize] == search.title[..]
+                && !search.known.contains(&window)
+            {
+                search.found = Some(window);
+                return 0;
+            }
+        }
+        1
+    }
+    let mut search = Search {
+        title: title.encode_utf16().collect(),
+        known,
+        found: None,
+    };
+    unsafe {
+        EnumWindows(Some(each), &mut search as *mut Search as LPARAM);
+    }
+    search.found
+}
+
 /// Relay shortcuts that work while a remote desktop has the keyboard.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Command {

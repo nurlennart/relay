@@ -126,6 +126,9 @@ git pull && ./deploy.sh",
         if std::env::var_os("RELAY_UI_PALETTE").is_some() {
             app.palette = Some(Palette::default());
         }
+        if std::env::var_os("RELAY_UI_DETACH").is_some() {
+            app.detach(0);
+        }
     }
     if std::env::var_os("RELAY_UI_SSH").is_some() {
         let mut c = app.connections[1].clone();
@@ -184,10 +187,10 @@ pub fn capture(ctx: &egui::Context) {
     };
     static FRAMES: AtomicU32 = AtomicU32::new(0);
     // The terminal fixture needs its transcript in place before the capture.
-    let frame = if std::env::var_os("RELAY_UI_TERMINAL").is_some() {
-        90
-    } else {
-        5
+    let frame = match std::env::var("RELAY_UI_FRAMES").map(|f| f.parse()) {
+        Ok(Ok(frames)) => frames,
+        _ if std::env::var_os("RELAY_UI_TERMINAL").is_some() => 90,
+        _ => 5,
     };
     if FRAMES.fetch_add(1, Ordering::Relaxed) == frame {
         ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));

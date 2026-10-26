@@ -264,6 +264,7 @@ impl App {
                             // Tabs can be dragged; the drop position follows the pointer.
                             let mut rects = vec![];
                             let mut split_with = None;
+                            let mut window_action = None;
                             let mut dragging = None;
                             let mut dropped = None;
                             for (index, s) in self.sessions.iter().enumerate() {
@@ -281,7 +282,14 @@ impl App {
                                     if session.response.drag_stopped() {
                                         dropped = Some(index);
                                     }
-                                    if session.inner.0.clicked() {
+                                    let detached = self.detached.contains(&s.key);
+                                    if session.inner.0.clicked() && detached {
+                                        // A detached session's tab brings its window forward.
+                                        ui.ctx().send_viewport_cmd_to(
+                                            session_viewport(s.key),
+                                            egui::ViewportCommand::Focus,
+                                        );
+                                    } else if session.inner.0.clicked() {
                                         if self.split == Some(index) {
                                             // Selecting the right side swaps the two sides.
                                             self.split = self.active;
@@ -293,7 +301,8 @@ impl App {
                                     }
                                     session.inner.0.context_menu(|ui| {
                                         let beside = self.split == Some(index);
-                                        let other = self.active.is_some_and(|a| a != index);
+                                        let other =
+                                            self.active.is_some_and(|a| a != index) && !detached;
                                         if (beside || other)
                                             && ui
                                                 .button(if beside {
@@ -306,6 +315,15 @@ impl App {
                                             split_with = Some(index);
                                             ui.close();
                                         }
+                                        let window = if detached {
+                                            "Back to tabs"
+                                        } else {
+                                            "Move to new window"
+                                        };
+                                        if ui.button(window).clicked() {
+                                            window_action = Some((index, detached));
+                                            ui.close();
+                                        }
                                         if ui.button("Close tab").clicked() {
                                             self.modal = Modal::Close(index);
                                             ui.close();
@@ -315,6 +333,11 @@ impl App {
                             }
                             if let Some(index) = split_with {
                                 self.split_with(index);
+                            }
+                            match window_action {
+                                Some((index, false)) => self.detach(index),
+                                Some((index, true)) => self.attach(self.sessions[index].key),
+                                None => {}
                             }
                             let pointer = ui.ctx().pointer_interact_pos().map(|p| p.x);
                             if let (Some(from), Some(x)) = (dragging.or(dropped), pointer) {

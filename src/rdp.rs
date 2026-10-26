@@ -379,6 +379,16 @@ impl RdpClient {
         )
         .map(|_| ())
     }
+    /// Moves the remote desktop into another window, such as a detached session window.
+    pub fn set_parent(&mut self, parent: HWND) {
+        if parent != self.parent {
+            unsafe {
+                SetParent(self.window.0, parent);
+            }
+            self.parent = parent;
+            self.holes.clear();
+        }
+    }
     pub fn window(&self) -> HWND {
         self.window.0
     }
@@ -765,6 +775,24 @@ mod tests {
         assert!(bool::try_from(&get(&client.advanced, "EnableAutoReconnect")).unwrap());
         assert!(bool::try_from(&get(&client.advanced, "RedirectClipboard")).unwrap());
         assert!(!bool::try_from(&get(&client.advanced, "RedirectDrives")).unwrap());
+    }
+
+    #[test]
+    fn viewport_moves_to_another_window() {
+        let (first, second) = (parent(), parent());
+        let mut connection = Connection::new();
+        connection.host = "localhost".into();
+        let mut client = RdpClient::new(first.0, &connection, egui::Context::default()).unwrap();
+        client.layout([10, 20, 640, 480]).unwrap();
+        client.set_parent(second.0);
+        client.layout([30, 40, 800, 500]).unwrap();
+        unsafe {
+            assert_eq!(GetParent(client.window.0), second.0);
+        }
+        assert_eq!(
+            crate::native_host::bounds(client.window.0, second.0).unwrap(),
+            [30, 40, 800, 500]
+        );
     }
 
     #[test]

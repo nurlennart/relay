@@ -41,12 +41,7 @@ fn main() -> eframe::Result {
                 .with_inner_size(saved.window.unwrap_or([1280., 820.]))
                 .with_maximized(saved.maximized)
                 .with_min_inner_size([720., 560.])
-                .with_icon(egui::IconData {
-                    // Rendered by assets/make_icon.py.
-                    rgba: include_bytes!("../assets/icon.rgba").to_vec(),
-                    width: 256,
-                    height: 256,
-                }),
+                .with_icon(app_icon()),
             ..Default::default()
         },
         Box::new(|cc| {
@@ -133,6 +128,10 @@ struct App {
     state_path: Option<PathBuf>,
     /// The tab shown last frame, to focus a terminal when its tab opens.
     shown: Option<usize>,
+    /// Sessions shown in their own windows, by session key.
+    detached: Vec<u64>,
+    /// Native windows found for detached sessions, which remote desktops are moved into.
+    windows: Vec<(u64, HWND)>,
     /// The session shown beside the active one in split view.
     split: Option<usize>,
     /// Where the split divider sits, as a fraction of the width.
@@ -257,6 +256,8 @@ impl App {
             state,
             state_path: None,
             shown: None,
+            detached: vec![],
+            windows: vec![],
             split: None,
             split_fraction: 0.5,
             palette: None,
@@ -334,6 +335,145 @@ impl App {
         self.split = self.split.map(|i| moved(i, from, to));
         self.shown = self.active;
         self.remember_tabs();
+    }
+
+    fn is_detached(&self, index: usize) -> bool {
+        self.sessions
+            .get(index)
+            .is_some_and(|s| self.detached.contains(&s.key))
+    }
+
+    /// Moves session `index` into its own window.
+    fn detach(&mut self, index: usize) {
+        let Some(session) = self.sessions.get_mut(index) else {
+            return;
+        };
+        if let Some(terminal) = &mut session.terminal {
+            terminal.focus();
+        }
+        self.detached.push(session.key);
+        if self.split == Some(index) {
+            self.split = None;
+        }
+        if self.active == Some(index) {
+            self.active = self.split.take();
+        }
+    }
+
+    /// Returns a detached session to the tabs and selects it.
+    fn attach(&mut self, key: u64) {
+        self.detached.retain(|k| *k != key);
+        self.windows.retain(|(k, _)| *k != key);
+        if let Some(index) = self.sessions.iter().position(|s| s.key == key) {
+            self.sessions[index].set_host(None, self.parent);
+            self.active = Some(index);
+        }
+    }
+
+    /// Stands in for a session that lives in its own window.
+    fn detached_placeholder(&mut self, ui: &mut egui::Ui, index: usize) {
+        let colors = theme::palette(ui.ctx());
+        let key = self.sessions[index].key;
+        ui.add_space(60.);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "{} is open in its own window.",
+                    self.sessions[index].connection.name
+                ))
+                .size(18.),
+            );
+            ui.add_space(12.);
+            ui.horizontal(|ui| {
+                ui.add_space((ui.available_width() - 260.).max(0.) / 2.);
+                if accent_button(ui, "Show window", 130.).clicked() {
+                    ui.ctx()
+                        .send_viewport_cmd_to(session_viewport(key), egui::ViewportCommand::Focus);
+                }
+                if ui
+                    .add_sized([120., CONTROL_HEIGHT], egui::Button::new("Back to tabs"))
+                    .clicked()
+                {
+                    self.attach(key);
+                }
+            });
+            ui.label(RichText::new("Closing that window also brings it back.").color(colors.muted));
+        });
+    }
+
+    /// Shows each detached session in its own window. Returns, for remote desktops, their
+    /// physical rectangle in that window and the overlay holes to cut out of it.
+    #[allow(clippy::type_complexity)]
+    fn detached_windows(&mut self, ctx: &egui::Context) -> Vec<(usize, [i32; 4], Vec<[i32; 4]>)> {
+        let mut placed = vec![];
+        for key in self.detached.clone() {
+            let Some(index) = self.sessions.iter().position(|s| s.key == key) else {
+                // The session was closed; its window closes with it.
+                self.detached.retain(|k| *k != key);
+                self.windows.retain(|(k, _)| *k != key);
+                continue;
+            };
+            let title = format!("{} · Relay", self.sessions[index].connection.name);
+            let builder = egui::ViewportBuilder::default()
+                .with_title(&title)
+                .with_inner_size([1100., 760.])
+                .with_min_inner_size([520., 380.])
+                .with_icon(app_icon());
+            let colors = theme::palette(ctx);
+            let mut close = false;
+            let shown = ctx.show_viewport_immediate(session_viewport(key), builder, |ctx, _| {
+                close = ctx.input(|i| i.viewport().close_requested());
+                let mut rect = None;
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(colors.bg).inner_margin(16.))
+                    .show(ctx, |ui| {
+                        if self.is_detached(index) {
+                            rect = self.session_pane(ui, index, Pane::Window);
+                        }
+                    });
+                rect.map(|rect| (rect, ctx.pixels_per_point(), overlays(ctx)))
+            });
+            if close {
+                self.attach(key);
+                continue;
+            }
+            // A remote desktop moves into the window once Windows has created it.
+            let window = match self.windows.iter().find(|(k, _)| *k == key) {
+                Some((_, window)) => Some(*window),
+                None => {
+                    let mut known: Vec<HWND> = self.windows.iter().map(|(_, w)| *w).collect();
+                    known.push(self.parent);
+                    let found = native_host::find_window(&title, &known);
+                    if let Some(window) = found {
+                        self.windows.push((key, window));
+                        self.sessions[index].set_host(Some(window), self.parent);
+                    }
+                    found
+                }
+            };
+            if let (Some(_), Some((rect, ppp, floating))) = (window, shown) {
+                let pixels = |r: egui::Rect| {
+                    [
+                        (r.min.x * ppp).round() as i32,
+                        (r.min.y * ppp).round() as i32,
+                        (r.width() * ppp).round() as i32,
+                        (r.height() * ppp).round() as i32,
+                    ]
+                };
+                let [sx, sy, ..] = pixels(rect);
+                let holes = floating
+                    .iter()
+                    .map(|r| r.intersect(rect))
+                    .filter(|r| r.is_positive())
+                    .map(|r| {
+                        let [x, y, w, h] = pixels(r);
+                        [x - sx, y - sy, w, h]
+                    })
+                    .collect();
+                placed.push((index, pixels(rect), holes));
+            }
+        }
+        placed
     }
 
     /// Shows `index` beside the active session, or closes split view if it is already there.
@@ -625,17 +765,12 @@ impl App {
     }
 
     /// Shows session `index` in `ui`: its header, then its terminal, status, or remote desktop.
-    /// Returns the area a remote desktop should cover. `beside` marks the right side of a
-    /// split view.
-    fn session_pane(
-        &mut self,
-        ui: &mut egui::Ui,
-        index: usize,
-        beside: bool,
-    ) -> Option<egui::Rect> {
+    /// Returns the area a remote desktop should cover.
+    fn session_pane(&mut self, ui: &mut egui::Ui, index: usize, pane: Pane) -> Option<egui::Rect> {
         let colors = theme::palette(ui.ctx());
         let mut full_screen = false;
         let mut unsplit = false;
+        let mut attach = false;
         let mut save = false;
         let mut snippets = false;
         let s = &self.sessions[index];
@@ -656,11 +791,20 @@ impl App {
                     .iter()
                     .any(|c| c.same_target(&s.connection));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if beside {
-                    unsplit = ui
-                        .button("Close split")
-                        .on_hover_text("Ctrl+\\ toggles split view")
-                        .clicked();
+                match pane {
+                    Pane::Beside => {
+                        unsplit = ui
+                            .button("Close split")
+                            .on_hover_text("Ctrl+\\ toggles split view")
+                            .clicked();
+                    }
+                    Pane::Window => {
+                        attach = ui
+                            .button("Back to tabs")
+                            .on_hover_text("Closing this window does the same")
+                            .clicked();
+                    }
+                    Pane::Main => {}
                 }
                 if unsaved {
                     save = ui
@@ -668,7 +812,8 @@ impl App {
                         .on_hover_text("Keep this connection in the library")
                         .clicked();
                 }
-                if s.terminal.is_some() && s.is_running() {
+                // The snippet palette opens over the main window's active tab.
+                if s.terminal.is_some() && s.is_running() && pane != Pane::Window {
                     snippets = ui
                         .button("Snippets")
                         .on_hover_text("Saved commands · Ctrl+Shift+P")
@@ -700,6 +845,9 @@ impl App {
         }
         if unsplit {
             self.split = None;
+        }
+        if attach {
+            self.attach(self.sessions[index].key);
         }
         let s = &self.sessions[index];
         ui.add_space(10.);
@@ -1043,7 +1191,8 @@ impl eframe::App for App {
         // Hide native children before painting overlays; native child HWNDs sit above GPU content.
         let covered = self.covered();
         for (i, s) in self.sessions.iter_mut().enumerate() {
-            if (self.active != Some(i) && self.split != Some(i)) || covered {
+            let detached = self.detached.contains(&s.key);
+            if !detached && ((self.active != Some(i) && self.split != Some(i)) || covered) {
                 s.place(None);
             }
         }
@@ -1081,10 +1230,13 @@ impl eframe::App for App {
                     });
                     ui.add_space(10.);
                 }
-                let split = self
-                    .split
-                    .filter(|i| Some(*i) != self.active && *i < self.sessions.len());
+                let split = self.split.filter(|i| {
+                    Some(*i) != self.active && *i < self.sessions.len() && !self.is_detached(*i)
+                });
                 match (self.active, split) {
+                    (Some(index), _) if self.is_detached(index) => {
+                        self.detached_placeholder(ui, index)
+                    }
                     (Some(left), Some(right)) => {
                         let area = ui.available_rect_before_wrap();
                         let gap = 16.;
@@ -1116,7 +1268,7 @@ impl eframe::App for App {
                                     area.min,
                                     egui::pos2(divider.left(), area.bottom()),
                                 ),
-                                false,
+                                Pane::Main,
                             ),
                             (
                                 right,
@@ -1124,24 +1276,24 @@ impl eframe::App for App {
                                     egui::pos2(divider.right(), area.top()),
                                     area.max,
                                 ),
-                                true,
+                                Pane::Beside,
                             ),
                         ];
-                        for (index, rect, beside) in sides {
-                            let mut pane = ui.new_child(
+                        for (index, rect, pane) in sides {
+                            let mut pane_ui = ui.new_child(
                                 egui::UiBuilder::new()
                                     .max_rect(rect)
                                     .layout(egui::Layout::top_down(egui::Align::LEFT)),
                             );
-                            pane.set_clip_rect(rect);
-                            if let Some(rect) = self.session_pane(&mut pane, index, beside) {
+                            pane_ui.set_clip_rect(rect);
+                            if let Some(rect) = self.session_pane(&mut pane_ui, index, pane) {
                                 session_rects.push((index, rect));
                             }
                         }
                         ui.allocate_rect(area, egui::Sense::hover());
                     }
                     (Some(index), None) => {
-                        if let Some(rect) = self.session_pane(ui, index, false) {
+                        if let Some(rect) = self.session_pane(ui, index, Pane::Main) {
                             session_rects.push((index, rect));
                         }
                     }
@@ -1154,6 +1306,7 @@ impl eframe::App for App {
         self.library_dialogs(ctx);
         self.snippet_palette(ctx);
         self.toast(ctx);
+        let windows = self.detached_windows(ctx);
         let covered = self.covered();
         let ppp = ctx.pixels_per_point();
         let pixels = |r: egui::Rect| {
@@ -1179,6 +1332,11 @@ impl eframe::App for App {
                 .collect()
         };
         for (i, s) in self.sessions.iter_mut().enumerate() {
+            // Detached windows are separate from the main window's dialogs.
+            if let Some((_, rect, holes)) = windows.iter().find(|(index, ..)| *index == i) {
+                s.place_around(Some(*rect), holes);
+                continue;
+            }
             let rect = session_rects
                 .iter()
                 .find(|(index, _)| *index == i && !covered)
@@ -1213,6 +1371,29 @@ fn overlays(ctx: &egui::Context) -> Vec<egui::Rect> {
             .filter_map(|layer| memory.area_rect(layer.id))
             .collect()
     })
+}
+
+/// Relay's icon for its windows, rendered by assets/make_icon.py.
+fn app_icon() -> egui::IconData {
+    egui::IconData {
+        rgba: include_bytes!("../assets/icon.rgba").to_vec(),
+        width: 256,
+        height: 256,
+    }
+}
+
+/// Where a session pane is shown, which decides its header actions.
+#[derive(Clone, Copy, PartialEq)]
+enum Pane {
+    Main,
+    /// The right side of split view.
+    Beside,
+    /// A detached session window.
+    Window,
+}
+
+fn session_viewport(key: u64) -> egui::ViewportId {
+    egui::ViewportId::from_hash_of(("relay-session", key))
 }
 
 /// Where item `index` ends up after the item at `from` moves to `to`.
