@@ -62,6 +62,8 @@ enum Stage {
     SignIn {
         credentials: Credentials,
         error: Option<String>,
+        /// Whether the prompt still has to put the cursor where typing is needed.
+        place_cursor: bool,
     },
     Trust {
         credentials: Credentials,
@@ -112,6 +114,7 @@ impl RdpClient {
                     password: String::new(),
                 },
                 error: None,
+                place_cursor: true,
             },
             area: None,
             requested: None,
@@ -170,6 +173,7 @@ impl RdpClient {
                                 ..credentials.clone()
                             },
                             error: Some(error),
+                            place_cursor: true,
                         },
                         Outcome::Certificate(certificate) => Stage::Trust {
                             credentials: credentials.clone(),
@@ -239,8 +243,13 @@ impl RdpClient {
         self.poll();
         let mut start = None;
         match &mut self.stage {
-            Stage::SignIn { credentials, error } => {
-                if sign_in(ui, &self.connection, credentials, error.as_deref()) {
+            Stage::SignIn {
+                credentials,
+                error,
+                place_cursor,
+            } => {
+                let place = std::mem::take(place_cursor);
+                if sign_in(ui, &self.connection, credentials, error.as_deref(), place) {
                     start = Some(credentials.clone());
                 }
             }
@@ -464,6 +473,7 @@ fn sign_in(
     connection: &Connection,
     credentials: &mut Credentials,
     error: Option<&str>,
+    place_cursor: bool,
 ) -> bool {
     let mut connect = false;
     ui.add_space(40.);
@@ -488,17 +498,16 @@ fn sign_in(
                 .password(true)
                 .desired_width(f32::INFINITY),
         );
-        // Start where typing is needed, once.
-        let nothing_focused = ui.memory(|m| m.focused().is_none());
-        if nothing_focused {
+        // Enter leaves a single-line field, so read it before moving the cursor anywhere.
+        let enter = (user.lost_focus() || password.lost_focus())
+            && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if place_cursor {
             if credentials.username.is_empty() {
                 user.request_focus();
             } else {
                 password.request_focus();
             }
         }
-        let enter = (user.lost_focus() || password.lost_focus())
-            && ui.input(|i| i.key_pressed(egui::Key::Enter));
         ui.add_space(12.);
         let ready = !credentials.username.trim().is_empty();
         connect = ui
@@ -621,7 +630,7 @@ mod tests {
         assert!(!client.ended() && !client.reconnecting() && !client.focused());
         assert!(matches!(
             &client.stage,
-            Stage::SignIn { credentials, error: None }
+            Stage::SignIn { credentials, error: None, place_cursor: true }
                 if credentials.username == "alex" && credentials.password.is_empty()
         ));
     }
