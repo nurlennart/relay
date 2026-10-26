@@ -4,6 +4,13 @@ use egui::{Align, Align2, FontId, Layout, Margin, Rect, Sense, UiBuilder};
 const ROW: f32 = 48.;
 const GAP: f32 = 16.;
 
+/// Where Settings imports connections from.
+enum Source {
+    Csv,
+    SshConfig,
+    RdpFiles,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Column {
     Star,
@@ -886,12 +893,62 @@ impl App {
         for s in &mut self.sessions {
             s.place(None);
         }
-        match file_dialog::choose(self.parent, false, false) {
-            Ok(Some(path)) => match csv_io::read(&path, &self.connections) {
-                Ok(import) => self.modal = Modal::Import(import),
-                Err(e) => self.error = Some(e),
-            },
-            Ok(None) => {}
+        match file_dialog::choose(self.parent, file_dialog::Kind::ImportCsv) {
+            Ok(paths) => {
+                if let Some(path) = paths.first() {
+                    self.review(csv_io::read(path, &self.connections));
+                }
+            }
+            Err(e) => self.error = Some(e),
+        }
+    }
+
+    /// Imports the user's OpenSSH configuration for review.
+    fn import_ssh_config(&mut self) {
+        match import::ssh_config_path() {
+            Some(path) if path.exists() => {
+                self.review(import::read_ssh_config(&path, &self.connections));
+            }
+            Some(path) => {
+                self.error = Some(format!("There is no SSH config at {}.", path.display()));
+            }
+            None => self.error = Some("Cannot find your user profile folder.".into()),
+        }
+    }
+
+    /// Imports one or more .rdp files for review.
+    fn import_rdp_files(&mut self) {
+        for s in &mut self.sessions {
+            s.place(None);
+        }
+        let paths = match file_dialog::choose(self.parent, file_dialog::Kind::RdpFiles) {
+            Ok(paths) if paths.is_empty() => return,
+            Ok(paths) => paths,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+        let files: Result<Vec<_>, String> = paths
+            .iter()
+            .map(|path| {
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into();
+                std::fs::read(path)
+                    .map(|bytes| (name, bytes))
+                    .map_err(|e| format!("Cannot read {}: {e}", path.display()))
+            })
+            .collect();
+        self.review(files.and_then(|files| import::rdp_files(&files, &self.connections)));
+    }
+
+    /// Shows an import for review before anything is saved.
+    fn review(&mut self, import: Result<csv_io::Import, String>) {
+        match import {
+            Ok(import) => self.modal = Modal::Import(import),
             Err(e) => self.error = Some(e),
         }
     }
@@ -899,7 +956,9 @@ impl App {
         for s in &mut self.sessions {
             s.place(None);
         }
-        match file_dialog::choose(self.parent, true, false) {
+        match file_dialog::choose(self.parent, file_dialog::Kind::ExportCsv)
+            .map(|paths| paths.into_iter().next())
+        {
             Ok(Some(path)) => {
                 let connections = if recovery {
                     self.recovery.as_deref().unwrap_or(&self.connections)
@@ -931,7 +990,7 @@ impl App {
         let before = choice;
         let mut close = false;
         let mut manage = false;
-        let mut import = false;
+        let mut import = None;
         let mut export = false;
         let mut recovery = false;
         dialog("settings", ctx).show(ctx, |ui| {
@@ -972,8 +1031,8 @@ impl App {
                     ui.add_space(14.);
                     ui.separator();
                     section_label(ui, "CONNECTION LIBRARY");
-                    ui.horizontal_centered(|ui| {
-                        ui.label(RichText::new(self.location.label()).strong());
+                    // The button comes first so the row takes its height and centers the label.
+                    ui.horizontal(|ui| {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             manage = ui
                                 .add_enabled(
@@ -981,6 +1040,9 @@ impl App {
                                     egui::Button::new("Manage library"),
                                 )
                                 .clicked();
+                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                ui.label(RichText::new(self.location.label()).strong());
+                            });
                         });
                     });
                     ui.label(
@@ -994,14 +1056,30 @@ impl App {
                     ui.separator();
                     section_label(ui, "IMPORT & EXPORT");
                     ui.label(
-                        RichText::new("Transfer connection profiles using CSV files.")
+                        RichText::new("Bring in connections from CSV, your SSH config, or .rdp files. Export as CSV.")
                             .color(colors.muted),
                     );
                     ui.add_space(4.);
                     let button_width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.;
+                    let idle = self.pending.is_none();
+                    ui.add_enabled_ui(idle, |ui| {
+                        ui.horizontal(|ui| {
+                            if outline_button(ui, "Import CSV", button_width).clicked() {
+                                import = Some(Source::Csv);
+                            }
+                            if outline_button(ui, "Import SSH config", button_width)
+                                .on_hover_text("Reads %USERPROFILE%\\.ssh\\config")
+                                .clicked()
+                            {
+                                import = Some(Source::SshConfig);
+                            }
+                        });
+                    });
                     ui.horizontal(|ui| {
-                        ui.add_enabled_ui(self.pending.is_none(), |ui| {
-                            import = outline_button(ui, "Import CSV", button_width).clicked();
+                        ui.add_enabled_ui(idle, |ui| {
+                            if outline_button(ui, "Import .rdp files", button_width).clicked() {
+                                import = Some(Source::RdpFiles);
+                            }
                         });
                         export = outline_button(ui, "Export CSV", button_width).clicked();
                     });
@@ -1034,9 +1112,12 @@ impl App {
         if manage {
             self.modal = Modal::Library;
         }
-        if import {
-            // Replaces settings with the import preview once a file is read.
-            self.import_csv();
+        // Each import replaces settings with its preview once read.
+        match import {
+            Some(Source::Csv) => self.import_csv(),
+            Some(Source::SshConfig) => self.import_ssh_config(),
+            Some(Source::RdpFiles) => self.import_rdp_files(),
+            None => {}
         }
         if export {
             self.export_csv(false);
@@ -1088,9 +1169,12 @@ impl App {
                             "\\\\server\\share\\relay.sqlite",
                         );
                         if ui.button("Browse…").clicked() {
-                            match file_dialog::choose(self.parent, false, true) {
-                                Ok(Some(path)) => self.db_path = path.display().to_string(),
-                                Ok(None) => {}
+                            match file_dialog::choose(self.parent, file_dialog::Kind::Database) {
+                                Ok(paths) => {
+                                    if let Some(path) = paths.first() {
+                                        self.db_path = path.display().to_string();
+                                    }
+                                }
                                 Err(e) => self.error = Some(e),
                             }
                         }

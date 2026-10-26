@@ -40,6 +40,64 @@ pub struct Connection {
     pub metadata: std::collections::BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "RdpOptions::is_default")]
     pub rdp: RdpOptions,
+    #[serde(default, skip_serializing_if = "SshOptions::is_default")]
+    pub ssh: SshOptions,
+}
+
+/// OpenSSH options Relay passes on the command line.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SshOptions {
+    /// Jump hosts as for `ssh -J`: `[user@]host[:port]`, comma separated.
+    pub jump: String,
+    /// A private key file for `ssh -i`.
+    pub identity: String,
+    /// Port forwards, comma separated: `L[bind:]port:host:hostport`, `R...`, or `D[bind:]port`.
+    pub forwards: String,
+}
+
+impl SshOptions {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The forwards as ssh flags and values, such as `("-L", "8080:localhost:80")`.
+    pub fn forward_args(&self) -> Result<Vec<(&'static str, String)>, String> {
+        let invalid = |item: &str| {
+            format!(
+                "Port forward {item:?} is not valid. Use L8080:localhost:80, \
+                 R9000:localhost:9000 or D1080, separated by commas."
+            )
+        };
+        self.forwards
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(|item| {
+                let (flag, spec) = match item.get(..1).map(str::to_ascii_uppercase).as_deref() {
+                    Some("L") => ("-L", &item[1..]),
+                    Some("R") => ("-R", &item[1..]),
+                    Some("D") => ("-D", &item[1..]),
+                    _ => return Err(invalid(item)),
+                };
+                let spec = spec.trim();
+                let parts = spec.split(':').count();
+                let shape = if flag == "-D" {
+                    parts <= 2
+                } else {
+                    (3..=4).contains(&parts)
+                };
+                let safe = !spec.starts_with('-')
+                    && spec
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || ".-_:[]*".contains(c));
+                if spec.is_empty() || !shape || !safe {
+                    return Err(invalid(item));
+                }
+                Ok((flag, spec.to_string()))
+            })
+            .collect()
+    }
 }
 
 /// Where remote audio plays.
@@ -183,6 +241,23 @@ impl Connection {
         if !self.rdp.gateway.is_empty() && !valid_host(&self.rdp.gateway) {
             return Err("Enter the RD Gateway as a hostname, such as gateway.example.com.".into());
         }
+        self.ssh.jump = self.ssh.jump.trim().into();
+        self.ssh.identity = self.ssh.identity.trim().trim_matches('"').into();
+        self.ssh.forwards = self.ssh.forwards.trim().into();
+        let jump_valid = self.ssh.jump.split(',').map(str::trim).all(|hop| {
+            !hop.is_empty()
+                && !hop.starts_with('-')
+                && hop
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || ".-_@:[]".contains(c))
+        });
+        if !self.ssh.jump.is_empty() && !jump_valid {
+            return Err("Enter jump hosts as user@host:port, separated by commas.".into());
+        }
+        if self.ssh.identity.starts_with('-') || self.ssh.identity.chars().any(|c| c.is_control()) {
+            return Err("Enter the identity file as a path to a private key.".into());
+        }
+        self.ssh.forward_args()?;
         let pixels = |v: u16| (200..=8192).contains(&v);
         if let Display::Fixed { width, height } = self.rdp.display
             && !(pixels(width) && pixels(height))
@@ -457,6 +532,48 @@ mod tests {
         ] {
             assert_eq!(target(invalid), None, "{invalid:?}");
         }
+    }
+    #[test]
+    fn ssh_options_validate_and_become_flags() {
+        let mut c = Connection::new();
+        c.name = "Build".into();
+        c.host = "build.example".into();
+        c.protocol = Protocol::Ssh;
+        c.ssh = SshOptions {
+            jump: " deploy@bastion.example:2222, hop2 ".into(),
+            identity: "\"C:\\Keys\\id_ed25519\"".into(),
+            forwards: "L8080:localhost:80, r9000:127.0.0.1:9000 ,D1080, L127.0.0.1:5432:db:5432"
+                .into(),
+        };
+        assert!(c.validate().is_ok());
+        assert_eq!(c.ssh.identity, "C:\\Keys\\id_ed25519");
+        assert_eq!(
+            c.ssh.forward_args().unwrap(),
+            [
+                ("-L", "8080:localhost:80".into()),
+                ("-R", "9000:127.0.0.1:9000".into()),
+                ("-D", "1080".into()),
+                ("-L", "127.0.0.1:5432:db:5432".into()),
+            ]
+        );
+        for forwards in [
+            "X8080:a:80",
+            "L8080",
+            "L-oProxyCommand=x:a:1",
+            "D1:2:3",
+            "L1:a b:2:3",
+        ] {
+            c.ssh.forwards = forwards.into();
+            assert!(c.validate().is_err(), "{forwards}");
+        }
+        c.ssh.forwards.clear();
+        for jump in ["-oProxyCommand=calc", "a b", "host,"] {
+            c.ssh.jump = jump.into();
+            assert!(c.validate().is_err(), "{jump}");
+        }
+        c.ssh.jump.clear();
+        c.ssh.identity = "-oProxyCommand=calc".into();
+        assert!(c.validate().is_err());
     }
     #[test]
     fn rdp_options_default_quietly_and_validate() {

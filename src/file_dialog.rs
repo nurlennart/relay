@@ -7,9 +7,10 @@ use windows::{
             CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize,
         },
         UI::Shell::{
-            Common::COMDLG_FILTERSPEC, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_NOCHANGEDIR,
-            FOS_OVERWRITEPROMPT, FOS_PATHMUSTEXIST, FileOpenDialog, FileSaveDialog, IFileDialog,
-            IFileOpenDialog, IFileSaveDialog, SIGDN_FILESYSPATH,
+            Common::COMDLG_FILTERSPEC, FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST,
+            FOS_FORCEFILESYSTEM, FOS_NOCHANGEDIR, FOS_OVERWRITEPROMPT, FOS_PATHMUSTEXIST,
+            FileOpenDialog, FileSaveDialog, IFileDialog, IFileOpenDialog, IFileSaveDialog,
+            IShellItem, SIGDN_FILESYSPATH,
         },
     },
     core::{HSTRING, Interface, PCWSTR},
@@ -43,49 +44,90 @@ fn error(e: windows::core::Error) -> String {
     format!("File picker failed: {e}")
 }
 
-pub fn choose(
-    parent: windows_sys::Win32::Foundation::HWND,
-    save: bool,
-    database: bool,
-) -> Result<Option<PathBuf>, String> {
-    let _apartment = Apartment::new()?;
-    let dialog = create(save, database)?;
-    unsafe {
-        match dialog.Show(Some(HWND(parent))) {
-            Err(e) if e.code() == ERROR_CANCELLED.to_hresult() => return Ok(None),
-            result => result.map_err(error)?,
-        }
-        let name = dialog
-            .GetResult()
-            .and_then(|item| item.GetDisplayName(SIGDN_FILESYSPATH))
-            .map_err(error)?;
-        let path = name.to_string();
-        CoTaskMemFree(Some(name.0 as _));
-        path.map(|p| Some(PathBuf::from(p)))
-            .map_err(|e| format!("File picker returned an invalid path: {e}"))
-    }
+/// What a picker is for, which sets its file types and options.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Kind {
+    ImportCsv,
+    ExportCsv,
+    /// An existing or new SQLite library.
+    Database,
+    /// One or more Remote Desktop files.
+    RdpFiles,
+    /// An SSH private key.
+    Key,
 }
 
-/// Creates a configured CSV or SQLite picker. Requires an initialized apartment.
-fn create(save: bool, database: bool) -> Result<IFileDialog, String> {
-    let (filters, extension) = if database {
-        (
-            [
+impl Kind {
+    fn save(self) -> bool {
+        self == Self::ExportCsv
+    }
+    fn filters(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Self::ImportCsv | Self::ExportCsv => &[("CSV file", "*.csv"), ("All files", "*.*")],
+            Self::Database => &[
                 ("SQLite database", "*.sqlite;*.db;*.sqlite3"),
                 ("All files", "*.*"),
             ],
-            "sqlite",
-        )
-    } else {
-        ([("CSV file", "*.csv"), ("All files", "*.*")], "csv")
-    };
-    let filters = filters.map(|(name, spec)| (HSTRING::from(name), HSTRING::from(spec)));
-    let specs = filters.each_ref().map(|(name, spec)| COMDLG_FILTERSPEC {
-        pszName: PCWSTR(name.as_ptr()),
-        pszSpec: PCWSTR(spec.as_ptr()),
-    });
+            Self::RdpFiles => &[("Remote Desktop file", "*.rdp"), ("All files", "*.*")],
+            Self::Key => &[("All files", "*.*")],
+        }
+    }
+}
+
+/// Shows a picker and returns the chosen paths; an empty list means it was cancelled.
+pub fn choose(
+    parent: windows_sys::Win32::Foundation::HWND,
+    kind: Kind,
+) -> Result<Vec<PathBuf>, String> {
+    let _apartment = Apartment::new()?;
+    let dialog = create(kind)?;
     unsafe {
-        let dialog: IFileDialog = if save {
+        match dialog.Show(Some(HWND(parent))) {
+            Err(e) if e.code() == ERROR_CANCELLED.to_hresult() => return Ok(vec![]),
+            result => result.map_err(error)?,
+        }
+        let items: Vec<IShellItem> = if kind == Kind::RdpFiles {
+            let results = dialog
+                .cast::<IFileOpenDialog>()
+                .and_then(|d| d.GetResults())
+                .map_err(error)?;
+            let count = results.GetCount().map_err(error)?;
+            (0..count)
+                .map(|i| results.GetItemAt(i))
+                .collect::<Result<_, _>>()
+                .map_err(error)?
+        } else {
+            vec![dialog.GetResult().map_err(error)?]
+        };
+        items
+            .iter()
+            .map(|item| {
+                let name = item.GetDisplayName(SIGDN_FILESYSPATH).map_err(error)?;
+                let path = name.to_string();
+                CoTaskMemFree(Some(name.0 as _));
+                path.map(PathBuf::from)
+                    .map_err(|e| format!("File picker returned an invalid path: {e}"))
+            })
+            .collect()
+    }
+}
+
+/// Creates a configured picker. Requires an initialized apartment.
+fn create(kind: Kind) -> Result<IFileDialog, String> {
+    let filters: Vec<_> = kind
+        .filters()
+        .iter()
+        .map(|(name, spec)| (HSTRING::from(*name), HSTRING::from(*spec)))
+        .collect();
+    let specs: Vec<_> = filters
+        .iter()
+        .map(|(name, spec)| COMDLG_FILTERSPEC {
+            pszName: PCWSTR(name.as_ptr()),
+            pszSpec: PCWSTR(spec.as_ptr()),
+        })
+        .collect();
+    unsafe {
+        let dialog: IFileDialog = if kind.save() {
             CoCreateInstance::<_, IFileSaveDialog>(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)
                 .and_then(|d| d.cast())
         } else {
@@ -94,10 +136,18 @@ fn create(save: bool, database: bool) -> Result<IFileDialog, String> {
         }
         .map_err(error)?;
         dialog.SetFileTypes(&specs).map_err(error)?;
-        dialog
-            .SetDefaultExtension(&HSTRING::from(extension))
-            .map_err(error)?;
-        if save {
+        let extension = match kind {
+            Kind::ImportCsv | Kind::ExportCsv => Some("csv"),
+            Kind::Database => Some("sqlite"),
+            Kind::RdpFiles => Some("rdp"),
+            Kind::Key => None,
+        };
+        if let Some(extension) = extension {
+            dialog
+                .SetDefaultExtension(&HSTRING::from(extension))
+                .map_err(error)?;
+        }
+        if kind.save() {
             dialog
                 .SetFileName(&HSTRING::from("connections.csv"))
                 .map_err(error)?;
@@ -106,13 +156,12 @@ fn create(save: bool, database: bool) -> Result<IFileDialog, String> {
             | FOS_FORCEFILESYSTEM
             | FOS_NOCHANGEDIR
             | FOS_PATHMUSTEXIST;
-        if save {
-            options |= FOS_OVERWRITEPROMPT;
-        } else if database {
+        match kind {
+            Kind::ExportCsv => options |= FOS_OVERWRITEPROMPT,
             // A missing SQLite file is created when the library opens.
-            options &= !FOS_FILEMUSTEXIST;
-        } else {
-            options |= FOS_FILEMUSTEXIST;
+            Kind::Database => options &= !FOS_FILEMUSTEXIST,
+            Kind::RdpFiles => options |= FOS_FILEMUSTEXIST | FOS_ALLOWMULTISELECT,
+            Kind::ImportCsv | Kind::Key => options |= FOS_FILEMUSTEXIST,
         }
         dialog.SetOptions(options).map_err(error)?;
         Ok(dialog)
@@ -137,18 +186,20 @@ mod tests {
     #[test]
     fn pickers_use_expected_options() {
         let _apartment = Apartment::new().unwrap();
-        let options =
-            |save, database| unsafe { create(save, database).unwrap().GetOptions().unwrap() };
+        let options = |kind| unsafe { create(kind).unwrap().GetOptions().unwrap() };
         let has = |o: FILEOPENDIALOGOPTIONS, flag| o.contains(flag);
-        let export = options(true, false);
+        let export = options(Kind::ExportCsv);
         assert!(has(export, FOS_OVERWRITEPROMPT) && has(export, FOS_FORCEFILESYSTEM));
-        assert!(has(options(false, false), FOS_FILEMUSTEXIST));
-        let database = options(false, true);
+        assert!(has(options(Kind::ImportCsv), FOS_FILEMUSTEXIST));
+        assert!(!has(options(Kind::ImportCsv), FOS_ALLOWMULTISELECT));
+        let database = options(Kind::Database);
         assert!(!has(database, FOS_FILEMUSTEXIST) && has(database, FOS_NOCHANGEDIR));
+        assert!(has(options(Kind::RdpFiles), FOS_ALLOWMULTISELECT));
+        assert!(has(options(Kind::Key), FOS_FILEMUSTEXIST));
     }
 
     #[test]
-    fn cancelling_the_picker_returns_none() {
+    fn cancelling_the_picker_returns_nothing() {
         // Close the dialog from another thread once it appears in this process.
         let closer = std::thread::spawn(|| {
             unsafe extern "system" fn close(window: Window, closed: LPARAM) -> BOOL {
@@ -175,7 +226,7 @@ mod tests {
             }
             closed
         });
-        assert_eq!(choose(std::ptr::null_mut(), true, false), Ok(None));
+        assert_eq!(choose(std::ptr::null_mut(), Kind::ExportCsv), Ok(vec![]));
         assert!(closer.join().unwrap());
     }
 }

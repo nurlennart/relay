@@ -52,6 +52,15 @@ impl Terminal {
         if !c.username.is_empty() {
             command.args(["-l", &c.username]);
         }
+        if !c.ssh.jump.is_empty() {
+            command.args(["-J", &c.ssh.jump]);
+        }
+        if !c.ssh.identity.is_empty() {
+            command.args(["-i", &c.ssh.identity]);
+        }
+        for (flag, spec) in c.ssh.forward_args()? {
+            command.args([flag, &spec]);
+        }
         command.args(["--", &c.host]);
         Self::spawn(command, Some(ctx))
     }

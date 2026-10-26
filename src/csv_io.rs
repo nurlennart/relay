@@ -77,6 +77,53 @@ fn unguard(s: &str) -> &str {
     }
 }
 
+/// Validates imported connections, skips duplicates of existing or earlier ones, and assigns
+/// IDs after the existing library.
+pub struct Collector {
+    import: Import,
+    seen: HashSet<String>,
+    next_id: u64,
+}
+
+impl Collector {
+    pub fn new(existing: &[Connection], filename: String) -> Self {
+        Self {
+            import: Import {
+                connections: vec![],
+                skipped: vec![],
+                duplicates: 0,
+                filename,
+            },
+            seen: existing.iter().map(identity).collect(),
+            next_id: existing.iter().map(|c| c.id).max().unwrap_or(0),
+        }
+    }
+    pub fn skip(&mut self, reason: String) {
+        self.import.skipped.push(reason);
+    }
+    /// Adds `c`, or records why it was skipped; `source` names it in that reason.
+    pub fn add(&mut self, source: &str, mut c: Connection) -> Result<(), String> {
+        if let Err(e) = c.validate() {
+            self.skip(format!("{source}: {e}"));
+            return Ok(());
+        }
+        if !self.seen.insert(identity(&c)) {
+            self.import.duplicates += 1;
+            return Ok(());
+        }
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or("Connection ID limit reached")?;
+        c.id = self.next_id;
+        self.import.connections.push(c);
+        Ok(())
+    }
+    pub fn finish(self) -> Import {
+        self.import
+    }
+}
+
 fn identity(c: &Connection) -> String {
     if let Some(id) = c.metadata.get("ConnectionId").filter(|v| !v.is_empty()) {
         format!("id:{}", id.to_lowercase())
@@ -120,19 +167,12 @@ fn parse(text: &str, existing: &[Connection], filename: String) -> Result<Import
     let group = index(&["foldername", "group"]);
     let favorite = index(&["favorite"]);
     let ip = index(&["connectionipaddress"]);
-    let mut result = Import {
-        connections: vec![],
-        skipped: vec![],
-        duplicates: 0,
-        filename,
-    };
-    let mut seen: HashSet<_> = existing.iter().map(identity).collect();
-    let mut next_id = existing.iter().map(|c| c.id).max().unwrap_or(0);
+    let mut result = Collector::new(existing, filename);
     for (i, row) in reader.records().enumerate() {
         let record = match row {
             Ok(row) => row,
             Err(e) => {
-                result.skipped.push(format!("Row {}: {e}", i + 2));
+                result.skip(format!("Row {}: {e}", i + 2));
                 continue;
             }
         };
@@ -143,7 +183,7 @@ fn parse(text: &str, existing: &[Connection], filename: String) -> Result<Import
             "RDP" => Protocol::Rdp,
             "SSH" => Protocol::Ssh,
             _ => {
-                result.skipped.push(format!(
+                result.skip(format!(
                     "Row {}: unsupported protocol {raw_protocol:?}",
                     i + 2
                 ));
@@ -157,7 +197,7 @@ fn parse(text: &str, existing: &[Connection], filename: String) -> Result<Import
             match raw_port.parse::<u16>() {
                 Ok(p) => p,
                 Err(_) => {
-                    result.skipped.push(format!("Row {}: invalid port", i + 2));
+                    result.skip(format!("Row {}: invalid port", i + 2));
                     continue;
                 }
             }
@@ -183,23 +223,10 @@ fn parse(text: &str, existing: &[Connection], filename: String) -> Result<Import
                 c.metadata.insert(column.into(), value(Some(idx)));
             }
         }
-        if let Err(e) = c.validate() {
-            result
-                .skipped
-                .push(format!("Row {} ({}): {e}", i + 2, c.name));
-            continue;
-        }
-        if !seen.insert(identity(&c)) {
-            result.duplicates += 1;
-            continue;
-        }
-        next_id = next_id
-            .checked_add(1)
-            .ok_or("Connection ID limit reached")?;
-        c.id = next_id;
-        result.connections.push(c);
+        let source = format!("Row {} ({})", i + 2, c.name);
+        result.add(&source, c)?;
     }
-    Ok(result)
+    Ok(result.finish())
 }
 
 pub fn export(path: &Path, connections: &[Connection]) -> Result<(), String> {

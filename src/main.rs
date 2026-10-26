@@ -3,6 +3,7 @@
 mod csv_io;
 mod database;
 mod file_dialog;
+mod import;
 mod model;
 mod native_host;
 mod rdp;
@@ -395,6 +396,7 @@ impl App {
         let groups: std::collections::BTreeSet<_> =
             self.connections.iter().map(|c| c.group.clone()).collect();
         let fields_height = (ctx.content_rect().height() - 300.).max(200.);
+        let parent = self.parent;
         dialog("edit-connection", ctx).show(ctx, |ui| {
             ui.set_width(440.);
             ui.add_space(8.);
@@ -489,9 +491,11 @@ impl App {
                         });
                     });
                     ui.checkbox(&mut c.favorite, "Add to favorites");
+                    ui.add_space(4.);
                     if c.protocol == Protocol::Rdp {
-                        ui.add_space(4.);
                         rdp_options(ui, &mut c.rdp);
+                    } else {
+                        ssh_options(ui, &mut c.ssh, parent);
                     }
                 });
             ui.add_space(8.);
@@ -1067,6 +1071,53 @@ fn protocol_badge(ui: &mut egui::Ui, protocol: Protocol) {
                     .monospace()
                     .size(11.)
                     .color(color),
+            );
+        });
+}
+fn ssh_options(ui: &mut egui::Ui, options: &mut model::SshOptions, parent: HWND) {
+    egui::CollapsingHeader::new("SSH options")
+        .id_salt("ssh-options")
+        .default_open(*options != model::SshOptions::default())
+        .show(ui, |ui| {
+            field(
+                ui,
+                "Jump host (optional)",
+                &mut options.jump,
+                "user@bastion.example.com:22",
+            );
+            labeled(ui, "Identity file (optional)", |ui| {
+                ui.horizontal(|ui| {
+                    let browse = 80.;
+                    ui.add_sized(
+                        [
+                            ui.available_width() - browse - ui.spacing().item_spacing.x,
+                            CONTROL_HEIGHT,
+                        ],
+                        input(&mut options.identity, "Uses your SSH config and agent"),
+                    );
+                    let button =
+                        egui::Button::new("Browse…").min_size(Vec2::new(browse, CONTROL_HEIGHT));
+                    if ui.add(button).clicked()
+                        && let Ok(paths) = file_dialog::choose(parent, file_dialog::Kind::Key)
+                        && let Some(path) = paths.first()
+                    {
+                        options.identity = path.display().to_string();
+                    }
+                });
+            });
+            field(
+                ui,
+                "Port forwards (optional)",
+                &mut options.forwards,
+                "L8080:localhost:80, R9000:localhost:9000, D1080",
+            );
+            ui.label(
+                RichText::new(
+                    "L forwards a local port to the remote side, R the reverse, and D opens a \
+                     SOCKS proxy.",
+                )
+                .size(11.)
+                .color(theme::palette(ui.ctx()).muted),
             );
         });
 }

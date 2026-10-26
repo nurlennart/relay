@@ -75,6 +75,7 @@ pub fn seed(app: &mut App) {
         favorite: i < 2,
         metadata: Default::default(),
         rdp: Default::default(),
+        ssh: Default::default(),
     })
     .collect();
     if std::env::var_os("RELAY_UI_EDITOR").is_some() {
@@ -93,6 +94,12 @@ pub fn seed(app: &mut App) {
             app.ctx.clone(),
         ));
         app.active = Some(0);
+    }
+    if std::env::var_os("RELAY_UI_SSH").is_some() {
+        let mut c = app.connections[1].clone();
+        c.ssh.jump = "ops@bastion.example.com".into();
+        c.ssh.forwards = "L8080:localhost:80, D1080".into();
+        app.edit(c);
     }
     if std::env::var_os("RELAY_UI_RDP").is_some() {
         let mut c = app.connections[0].clone();
