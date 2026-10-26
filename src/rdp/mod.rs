@@ -1,17 +1,13 @@
-//! Remote desktops. On Windows they are embedded in Relay's window with Microsoft's RDP
-//! ActiveX control. Elsewhere FreeRDP opens them in its own window, and its prompts show in
-//! the session's tab like an SSH terminal.
+//! Remote desktops, drawn inside Relay's windows. On Windows they use Microsoft's RDP ActiveX
+//! control, the one Remote Desktop Connection uses; elsewhere IronRDP renders them into the
+//! tab. Both backends offer the same `RdpClient` interface and constants, so a platform can
+//! switch by changing the selection below.
 #[cfg(windows)]
 mod activex;
-mod freerdp;
 #[cfg(not(windows))]
-mod unembedded;
+mod ironrdp;
 
 #[cfg(windows)]
 pub use activex::{RdpClient, SAVES_PASSWORDS, SIGN_IN_HELP, forget_credentials};
-pub use freerdp::command as freerdp_command;
 #[cfg(not(windows))]
-pub use unembedded::{RdpClient, SAVES_PASSWORDS, SIGN_IN_HELP, forget_credentials};
-
-/// Whether remote desktops are drawn inside Relay's windows rather than in their own.
-pub const EMBEDDED: bool = cfg!(windows);
+pub use ironrdp::{RdpClient, SAVES_PASSWORDS, SIGN_IN_HELP, forget_credentials};
