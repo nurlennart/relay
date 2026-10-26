@@ -379,10 +379,47 @@ async fn connect(
 
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
     let (stream, leftover) = framed.into_inner();
-    let (tls, certificate) =
-        ironrdp_tls::upgrade_with_certificate_validation_callback(stream, &settings.host, verify)
-            .await
-            .map_err(|e| ironrdp_connector::custom_err!("TLS", e))?;
+    // Without system root certificates nothing validates, so only certificates the user
+    // trusted by fingerprint pass, checked before any credentials are sent.
+    let roots = ironrdp_tls::rustls_client_config(
+        ironrdp_tls::CertificateValidation::Strict,
+        &settings.host,
+        Some(verify.clone()),
+    )
+    .is_ok();
+    let (tls, certificate) = if roots {
+        ironrdp_tls::upgrade_with_certificate_validation_callback(
+            stream,
+            &settings.host,
+            verify.clone(),
+        )
+        .await
+    } else {
+        ironrdp_tls::upgrade_with_certificate_validation(
+            stream,
+            &settings.host,
+            ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate,
+        )
+        .await
+    }
+    .map_err(|e| ironrdp_connector::custom_err!("TLS", e))?;
+    if !roots {
+        let leaf = tls
+            .get_ref()
+            .1
+            .peer_certificates()
+            .and_then(|chain| chain.first())
+            .ok_or_else(|| ironrdp_connector::general_err!("the server sent no certificate"))?;
+        if !verify(
+            leaf,
+            &settings.host,
+            "no trusted root certificates are installed",
+        ) {
+            return Err(ironrdp_connector::general_err!(
+                "the server certificate is not trusted"
+            ));
+        }
+    }
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
     let mut framed = Framed::new_with_leftover(Box::new(tls) as Box<dyn Stream>, leftover);
     let public_key = ironrdp_tls::extract_tls_server_public_key(&certificate)
