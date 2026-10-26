@@ -202,6 +202,7 @@ impl App {
         );
         app.state_path = Some(state_path);
         app.reopen_library();
+        app.restore_tabs();
         app
     }
 
@@ -280,6 +281,22 @@ impl App {
         }
     }
 
+    /// Reopens last run's tabs. Each connects when first shown, starting with the selected one.
+    fn restore_tabs(&mut self) {
+        for connection in self.state.open.clone() {
+            self.sessions
+                .push(Session::restored(connection, self.ctx.clone()));
+        }
+        self.active = self.state.active_tab.filter(|i| *i < self.sessions.len());
+    }
+
+    /// Records the open tabs so the next start can restore them.
+    fn remember_tabs(&mut self) {
+        self.state.open = self.sessions.iter().map(|s| s.connection.clone()).collect();
+        self.state.active_tab = self.active;
+        self.save_state();
+    }
+
     /// Reopens the library used last time, if it was a shared one.
     fn reopen_library(&mut self) {
         let location = match &self.state.library {
@@ -309,6 +326,7 @@ impl App {
         self.sessions.insert(to, session);
         self.active = self.active.map(|i| moved(i, from, to));
         self.shown = self.active;
+        self.remember_tabs();
     }
 
     /// Selects tab `index`, where 0 is the connection library and 1.. are sessions.
@@ -362,6 +380,7 @@ impl App {
                 }
                 self.sessions.push(session);
                 self.active = Some(self.sessions.len() - 1);
+                self.remember_tabs();
                 if id != 0 {
                     self.state.note_recent(&self.location, id);
                     self.save_state();
@@ -689,6 +708,7 @@ impl App {
                                 other => other,
                             };
                             self.modal = Modal::None;
+                            self.remember_tabs();
                         }
                         if ui.button("Keep open").clicked() {
                             self.modal = Modal::None;
@@ -703,6 +723,10 @@ impl App {
 
 impl eframe::App for App {
     fn on_exit(&mut self) {
+        // Quitting ends sessions first; keep the tabs recorded before that.
+        if !self.sessions.is_empty() {
+            self.state.active_tab = self.active;
+        }
         self.save_state();
     }
 
@@ -828,12 +852,14 @@ impl eframe::App for App {
         }
         if self.shown != self.active {
             self.shown = self.active;
-            if let Some(terminal) = self
-                .active
-                .and_then(|i| self.sessions.get_mut(i))
-                .and_then(|s| s.terminal.as_mut())
-            {
-                terminal.focus();
+            if let Some(session) = self.active.and_then(|i| self.sessions.get_mut(i)) {
+                // A tab restored from the last run connects when it is first shown.
+                if let Err(e) = session.resume() {
+                    self.error = Some(e);
+                }
+                if let Some(terminal) = &mut session.terminal {
+                    terminal.focus();
+                }
             }
         }
         // Hide native children before painting overlays; native child HWNDs sit above GPU content.
@@ -936,7 +962,19 @@ impl eframe::App for App {
                     let s = &self.sessions[index];
                     ui.add_space(10.);
                     if s.terminal.is_some() {
-                        if !s.is_running() && ui.button("Reconnect").clicked() {
+                        if let Some(status) = s.status() {
+                            let (mut now, mut stop) = (false, false);
+                            ui.horizontal(|ui| {
+                                ui.colored_label(ui.visuals().warn_fg_color, status);
+                                now = ui.button("Reconnect now").clicked();
+                                stop = ui.button("Stop").clicked();
+                            });
+                            if now {
+                                self.reconnect(index);
+                            } else if stop {
+                                self.sessions[index].stop_retrying();
+                            }
+                        } else if !s.is_running() && ui.button("Reconnect").clicked() {
                             self.reconnect(index);
                         }
                         self.sessions[index].terminal.as_mut().unwrap().show(ui);

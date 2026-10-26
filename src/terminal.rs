@@ -15,6 +15,9 @@ pub struct Terminal {
     pub ended: bool,
     pub focused: bool,
     pub error: Option<String>,
+    /// The ssh exit code once the session has ended.
+    pub exit_code: Option<u32>,
+    started: std::time::Instant,
     /// A mouse selection between two visible cells, in drag order.
     selection: Option<((u16, u16), (u16, u16))>,
     focus_requested: bool,
@@ -61,6 +64,13 @@ impl Terminal {
         for (flag, spec) in c.ssh.forward_args()? {
             command.args([flag, &spec]);
         }
+        // Keepalives notice a dead connection within about 45 seconds, so it can reconnect.
+        command.args([
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
+        ]);
         command.args(["--", &c.host]);
         Self::spawn(command, Some(ctx))
     }
@@ -162,6 +172,8 @@ impl Terminal {
             ended: false,
             focused: false,
             error: None,
+            exit_code: None,
+            started: std::time::Instant::now(),
             selection: None,
             focus_requested: true,
         })
@@ -172,6 +184,7 @@ impl Terminal {
             match self.child.try_wait() {
                 Ok(Some(status)) => {
                     self.ended = true;
+                    self.exit_code = Some(status.exit_code());
                     self.error = Some(format!("Session ended ({status})."));
                 }
                 Err(e) => {
@@ -199,6 +212,11 @@ impl Terminal {
         if let Err(e) = writer.write_all(&bytes).and_then(|_| writer.flush()) {
             self.error = Some(format!("Cannot send terminal input: {e}"));
         }
+    }
+
+    /// How long the session has been running, or ran before it ended.
+    pub fn uptime(&self) -> std::time::Duration {
+        self.started.elapsed()
     }
 
     /// Focuses the terminal the next time it is shown.

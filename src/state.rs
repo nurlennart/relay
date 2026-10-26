@@ -30,6 +30,10 @@ pub struct State {
     pub recent: BTreeMap<String, Vec<u64>>,
     /// Saved commands for SSH sessions.
     pub snippets: Vec<Snippet>,
+    /// Tabs open when Relay last changed them, restored at startup.
+    pub open: Vec<crate::model::Connection>,
+    /// The selected tab among `open`.
+    pub active_tab: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

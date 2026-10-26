@@ -270,7 +270,7 @@ impl App {
                                     let session = session_tab(
                                         ui,
                                         &s.connection,
-                                        s.is_running(),
+                                        s.tab_state(),
                                         self.active == Some(index),
                                     );
                                     rects.push(session.response.rect);
@@ -312,7 +312,12 @@ impl App {
                             #[cfg(feature = "ui-check")]
                             if std::env::var_os("RELAY_UI_TABS").is_some() {
                                 for (i, c) in self.connections.iter().take(2).enumerate() {
-                                    session_tab(ui, c, i == 0, false);
+                                    let state = if i == 0 {
+                                        session::TabState::Open
+                                    } else {
+                                        session::TabState::Ended
+                                    };
+                                    session_tab(ui, c, state, false);
                                 }
                             }
                             if ui
@@ -1837,7 +1842,7 @@ fn tab(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
 fn session_tab(
     ui: &mut egui::Ui,
     connection: &Connection,
-    running: bool,
+    state: session::TabState,
     selected: bool,
 ) -> egui::InnerResponse<(egui::Response, egui::Response)> {
     let colors = theme::palette(ui.ctx());
@@ -1865,10 +1870,10 @@ fn session_tab(
         Stroke::new(1_f32, colors.line),
         egui::StrokeKind::Inside,
     );
-    let status = if running {
-        colors.accent
-    } else {
-        ui.visuals().error_fg_color
+    let (status, state) = match state {
+        session::TabState::Open => (colors.accent, "open"),
+        session::TabState::Ended => (ui.visuals().error_fg_color, "ended"),
+        session::TabState::Waiting => (colors.muted, "connects when selected"),
     };
     ui.painter()
         .circle_filled(egui::pos2(rect.left() + 14., rect.center().y), 3.5, status);
@@ -1887,7 +1892,7 @@ fn session_tab(
             "{} · {} · {}",
             connection.protocol.label(),
             connection.address(),
-            if running { "open" } else { "ended" }
+            state
         ));
     let close = ui
         .put(
@@ -2077,6 +2082,41 @@ mod tests {
     }
 
     #[test]
+    fn tabs_from_the_last_run_come_back_waiting() {
+        let ctx = egui::Context::default();
+        let mut state = state::State::default();
+        let mut desk = Connection::new();
+        desk.name = "Desk".into();
+        desk.host = "desk.example".into();
+        let mut quick = Connection::quick("deploy@10.0.0.9").unwrap();
+        quick.id = 0;
+        state.open = vec![desk, quick];
+        state.active_tab = Some(1);
+        let mut app = App::with(
+            ctx.clone(),
+            PathBuf::from("unused.json"),
+            Ok(vec![]),
+            None,
+            std::ptr::null_mut(),
+            state,
+        );
+        app.restore_tabs();
+        assert_eq!(app.sessions.len(), 2);
+        assert_eq!(app.active, Some(1));
+        assert!(
+            app.sessions
+                .iter()
+                .all(|s| s.tab_state() == session::TabState::Waiting)
+        );
+        assert_eq!(app.sessions[1].connection.username, "deploy");
+        // Out-of-range selections are dropped rather than trusted.
+        app.state.active_tab = Some(9);
+        app.sessions.clear();
+        app.restore_tabs();
+        assert_eq!(app.active, None);
+    }
+
+    #[test]
     fn moving_tabs_keeps_every_index_consistent() {
         let items = ['a', 'b', 'c', 'd'];
         for from in 0..items.len() {
@@ -2146,10 +2186,12 @@ mod tests {
                                 first.name = "Design workstation".into();
                                 let mut second = Connection::new();
                                 second.name = "Build server".into();
-                                let session = session_tab(ui, &first, true, true);
+                                let session =
+                                    session_tab(ui, &first, session::TabState::Open, true);
                                 assert!(session.response.rect.contains_rect(session.inner.1.rect));
                                 assert!(!session.inner.0.rect.intersects(session.inner.1.rect));
-                                let next = session_tab(ui, &second, false, false);
+                                let next =
+                                    session_tab(ui, &second, session::TabState::Waiting, false);
                                 assert_eq!(
                                     session.response.rect.center().y,
                                     next.response.rect.center().y
