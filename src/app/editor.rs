@@ -289,4 +289,15 @@ pub(super) fn rdp_options(ui: &mut egui::Ui, options: &mut model::RdpOptions) {
                     ui.end_row();
                 });
         });
+    // Shown outside the collapsed options too, since the defaults can be affected.
+    let missing = rdp::unsupported(options);
+    if !missing.is_empty() {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            format!(
+                "Not supported on this platform, so not used: {}.",
+                missing.join("; ")
+            ),
+        );
+    }
 }

@@ -8,7 +8,7 @@ mod frame;
 mod input;
 
 use crate::{
-    model::{Connection, Display},
+    model::{Audio, Connection, Display, Keys, RdpOptions},
     platform::Window,
 };
 use connection::{Command, Event, Outcome, Settings, Untrusted, Worker};
@@ -22,6 +22,30 @@ pub const SAVES_PASSWORDS: bool = false;
 pub const SIGN_IN_HELP: &str = "The tab asks for the password each time it connects and keeps it \
     only while the session is open.\nCertificates your system does not trust are shown for you \
     to accept.";
+
+/// The options of `options` this backend cannot honor, as the editor lists them.
+pub fn unsupported(options: &RdpOptions) -> Vec<&'static str> {
+    let mut missing = vec![];
+    for (on, name) in [
+        (options.drives, "Local drives"),
+        (options.printers, "Printers"),
+        (options.smart_cards, "Smart cards"),
+        (options.microphone, "Microphone"),
+    ] {
+        if on {
+            missing.push(name);
+        }
+    }
+    match options.audio {
+        Audio::Local => missing.push("Playing remote audio on this computer"),
+        Audio::Remote => missing.push("Leaving audio on the remote computer"),
+        Audio::Off => {}
+    }
+    if options.keys != Keys::Local {
+        missing.push("Sending system key combinations such as Alt+Tab to the remote computer");
+    }
+    missing
+}
 
 pub fn forget_credentials(_host: &str) -> Result<bool, String> {
     Ok(false)
@@ -536,6 +560,37 @@ fn trust(ui: &mut egui::Ui, certificate: &Untrusted) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_unsupported_options_are_listed() {
+        let mut options = RdpOptions {
+            audio: Audio::Off,
+            keys: Keys::Local,
+            ..RdpOptions::default()
+        };
+        options.gateway = "gw.example.com".into();
+        options.display = Display::Fixed {
+            width: 1600,
+            height: 900,
+        };
+        assert!(
+            unsupported(&options).is_empty(),
+            "clipboard, gateway and display work"
+        );
+        options.drives = true;
+        options.smart_cards = true;
+        options.audio = Audio::Local;
+        options.keys = Keys::FullScreen;
+        assert_eq!(
+            unsupported(&options),
+            [
+                "Local drives",
+                "Smart cards",
+                "Playing remote audio on this computer",
+                "Sending system key combinations such as Alt+Tab to the remote computer",
+            ]
+        );
+    }
 
     #[test]
     fn tab_sizes_become_valid_resolutions() {

@@ -8,6 +8,6 @@ mod activex;
 mod ironrdp;
 
 #[cfg(windows)]
-pub use activex::{RdpClient, SAVES_PASSWORDS, SIGN_IN_HELP, forget_credentials};
+pub use activex::{RdpClient, SAVES_PASSWORDS, SIGN_IN_HELP, forget_credentials, unsupported};
 #[cfg(not(windows))]
-pub use ironrdp::{RdpClient, SAVES_PASSWORDS, SIGN_IN_HELP, forget_credentials};
+pub use ironrdp::{RdpClient, SAVES_PASSWORDS, SIGN_IN_HELP, forget_credentials, unsupported};
