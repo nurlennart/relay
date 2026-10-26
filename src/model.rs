@@ -26,7 +26,7 @@ impl Protocol {
     }
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Connection {
     pub id: u64,
     pub name: String,
@@ -194,6 +194,73 @@ impl Connection {
         }
         Ok(())
     }
+    /// Parses a quick-connect target: `host`, `host:port`, `user@host`, `[IPv6]:port`, with
+    /// an optional `ssh `, `rdp `, `ssh://` or `rdp://` prefix. Without a prefix, `user@host`
+    /// and port 22 mean SSH and anything else RDP, matching how people write each.
+    pub fn quick(text: &str) -> Option<Self> {
+        // Trailing space matters: "ssh " is a prefix still being typed, not a host.
+        let mut rest = text.trim_start();
+        let mut protocol = None;
+        for (prefix, kind) in [
+            ("ssh://", Protocol::Ssh),
+            ("rdp://", Protocol::Rdp),
+            ("ssh ", Protocol::Ssh),
+            ("rdp ", Protocol::Rdp),
+        ] {
+            if rest
+                .get(..prefix.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+            {
+                protocol = Some(kind);
+                rest = rest[prefix.len()..].trim();
+                break;
+            }
+        }
+        let rest = rest.trim_end();
+        if rest.is_empty() || rest.contains(char::is_whitespace) {
+            return None;
+        }
+        let rest = rest.trim_end_matches('/');
+        let (user, address) = rest.rsplit_once('@').unwrap_or(("", rest));
+        let (host, port) = if let Some(inner) = address.strip_prefix('[') {
+            let (host, after) = inner.split_once(']')?;
+            let port = match after {
+                "" => None,
+                after => Some(after.strip_prefix(':')?.parse::<u16>().ok()?),
+            };
+            (host, port)
+        } else if address.matches(':').count() == 1 {
+            let (host, port) = address.split_once(':')?;
+            (host, Some(port.parse::<u16>().ok()?))
+        } else {
+            // No colon, or a bare IPv6 address.
+            (address, None)
+        };
+        let protocol = protocol.unwrap_or(if !user.is_empty() || port == Some(22) {
+            Protocol::Ssh
+        } else {
+            Protocol::Rdp
+        });
+        let mut connection = Self::new();
+        connection.protocol = protocol;
+        connection.port = port.unwrap_or(protocol.port());
+        connection.host = host.into();
+        connection.username = user.into();
+        connection.name = if user.is_empty() {
+            host.into()
+        } else {
+            format!("{user}@{host}")
+        };
+        connection.validate().ok()?;
+        Some(connection)
+    }
+    /// Whether `other` reaches the same endpoint as the same user.
+    pub fn same_target(&self, other: &Self) -> bool {
+        self.protocol == other.protocol
+            && self.host.eq_ignore_ascii_case(&other.host)
+            && self.port == other.port
+            && self.username == other.username
+    }
     pub fn address(&self) -> String {
         if self.host.contains(':') {
             format!("[{}]:{}", self.host, self.port)
@@ -330,6 +397,66 @@ mod tests {
             serde_json::from_str::<Connection>(&json).unwrap().host,
             "::1"
         );
+    }
+    #[test]
+    fn quick_targets_parse_like_people_write_them() {
+        let target = |text| {
+            Connection::quick(text).map(|c| (c.protocol, c.username, c.host, c.port, c.name))
+        };
+        let expect = |protocol, user: &str, host: &str, port, name: &str| {
+            Some((protocol, user.into(), host.into(), port, name.into()))
+        };
+        assert_eq!(
+            target("build"),
+            expect(Protocol::Rdp, "", "build", 3389, "build")
+        );
+        assert_eq!(
+            target("10.0.0.5:3390"),
+            expect(Protocol::Rdp, "", "10.0.0.5", 3390, "10.0.0.5")
+        );
+        assert_eq!(
+            target("deploy@build.example.com"),
+            expect(
+                Protocol::Ssh,
+                "deploy",
+                "build.example.com",
+                22,
+                "deploy@build.example.com"
+            )
+        );
+        assert_eq!(target("gw:22"), expect(Protocol::Ssh, "", "gw", 22, "gw"));
+        assert_eq!(
+            target("  SSH root@[2001:db8::1]:2222 "),
+            expect(
+                Protocol::Ssh,
+                "root",
+                "2001:db8::1",
+                2222,
+                "root@2001:db8::1"
+            )
+        );
+        assert_eq!(
+            target("rdp://desk/"),
+            expect(Protocol::Rdp, "", "desk", 3389, "desk")
+        );
+        assert_eq!(
+            target("rdp alex@desk"),
+            expect(Protocol::Rdp, "alex", "desk", 3389, "alex@desk")
+        );
+        assert_eq!(
+            target("2001:db8::1"),
+            expect(Protocol::Rdp, "", "2001:db8::1", 3389, "2001:db8::1")
+        );
+        for invalid in [
+            "",
+            "ssh ",
+            "two words",
+            "host:notaport",
+            "-oProxyCommand=x",
+            "host:0",
+        ] {
+            assert_eq!(target(invalid), None, "{invalid:?}");
+        }
     }
     #[test]
     fn rdp_options_default_quietly_and_validate() {

@@ -853,6 +853,7 @@ impl eframe::App for App {
                 }
                 if let Some(index) = self.active {
                     let mut full_screen = false;
+                    let mut save = false;
                     let s = &self.sessions[index];
                     ui.horizontal(|ui| {
                         protocol_badge(ui, s.connection.protocol);
@@ -864,26 +865,38 @@ impl eframe::App for App {
                                 .color(colors.muted),
                         );
                         let desktop = s.terminal.is_none() && !s.window.is_null();
-                        if desktop && s.is_running() && s.error.is_none() && !s.full_screen() {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Quick connections are not in the library until saved.
+                        let unsaved = s.connection.id == 0
+                            && !self.connections.iter().any(|c| c.same_target(&s.connection));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if unsaved {
+                                save = ui
+                                    .button("Save to library")
+                                    .on_hover_text("Keep this connection in the library")
+                                    .clicked();
+                            }
+                            if desktop && s.is_running() && s.error.is_none() && !s.full_screen() {
                                 full_screen = ui
                                     .button("Full screen")
                                     .on_hover_text("Ctrl+Alt+Break leaves and re-enters full screen")
                                     .clicked();
                                 ui.label(
                                     RichText::new(
-                                        "Ctrl+Alt+PgUp/PgDn switch tabs ·                                          Ctrl+Alt+Home returns to Relay",
+                                        "Ctrl+Alt+PgUp/PgDn switch tabs · Ctrl+Alt+Home returns to Relay",
                                     )
                                     .size(11.)
                                     .color(colors.muted),
                                 );
-                            });
-                        }
+                            }
+                        });
                     });
                     if full_screen
                         && let Err(e) = self.sessions[index].enter_full_screen()
                     {
                         self.error = Some(e);
+                    }
+                    if save {
+                        self.edit(self.sessions[index].connection.clone());
                     }
                     let s = &self.sessions[index];
                     ui.add_space(10.);

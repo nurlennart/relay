@@ -324,10 +324,6 @@ impl App {
         let colors = theme::palette(ui.ctx());
         let connections = self.filtered();
         let total = self.connections.len();
-        if total == 0 {
-            self.empty_library(ui);
-            return;
-        }
         let search_id = egui::Id::new("library-search");
         let focused = ui.memory(|m| m.focused());
         let mut index = self
@@ -448,7 +444,19 @@ impl App {
         if search.lost_focus() && escape {
             self.query.clear();
         }
-        if (search.lost_focus() && enter || enter_idle)
+        // Anything that parses as a host can be reached without a saved profile: Enter does
+        // that when nothing matches, and Alt+Enter always does.
+        let quick = Connection::quick(&self.query);
+        let submitted = search.lost_focus() && enter;
+        let alt = ui.input(|i| i.modifiers.alt);
+        if submitted
+            && (alt || connections.is_empty())
+            && let Some(target) = &quick
+        {
+            self.connect(target.clone());
+            return;
+        }
+        if (submitted || enter_idle)
             && let Some(c) = connections.get(index.unwrap_or(0))
         {
             self.selected = Some(c.id);
@@ -456,7 +464,38 @@ impl App {
             return;
         }
         ui.add_space(14.);
+        if let Some(target) = &quick {
+            let label = format!("{} {}", target.protocol.label(), target_label(target));
+            if connections.is_empty() {
+                ui.horizontal(|ui| {
+                    if accent_button(ui, &format!("Connect to {label}"), 0.)
+                        .on_hover_text("Enter")
+                        .clicked()
+                    {
+                        self.connect(target.clone());
+                    }
+                    ui.label(
+                        RichText::new(
+                            "Enter connects. Not in your library; save it from the session to keep it.",
+                        )
+                        .size(12.)
+                        .color(colors.muted),
+                    );
+                });
+                return;
+            }
+            ui.label(
+                RichText::new(format!("Alt+Enter connects to {label} directly"))
+                    .size(11.)
+                    .color(colors.muted),
+            );
+            ui.add_space(4.);
+        }
         if connections.is_empty() {
+            if total == 0 {
+                self.empty_library(ui);
+                return;
+            }
             ui.horizontal(|ui| {
                 ui.label(RichText::new("No connections match.").color(colors.muted));
                 if !self.query.is_empty() && ui.button("Clear search").clicked() {
@@ -1308,6 +1347,15 @@ fn table_columns(width: f32) -> Vec<(Column, f32)> {
         .collect()
 }
 
+/// A connection's user and address, as typed for quick connect.
+fn target_label(c: &Connection) -> String {
+    if c.username.is_empty() {
+        c.address()
+    } else {
+        format!("{}@{}", c.username, c.address())
+    }
+}
+
 fn section_label(ui: &mut egui::Ui, text: &str) {
     let colors = theme::palette(ui.ctx());
     ui.add_space(2.);
@@ -1626,6 +1674,27 @@ mod tests {
             app.error.as_deref(),
             Some("Cannot obtain the native application window."),
             "Enter did not try to connect"
+        );
+    }
+
+    #[test]
+    fn enter_quick_connects_when_nothing_matches() {
+        let ctx = egui::Context::default();
+        let mut app = test_app(&ctx);
+        app.search_focus = true;
+        library_frame(&mut app, &ctx, vec![]);
+        library_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Text("deploy@10.0.0.9".into())],
+        );
+        library_frame(&mut app, &ctx, vec![]);
+        assert!(app.filtered().is_empty());
+        library_frame(&mut app, &ctx, vec![press(egui::Key::Enter)]);
+        assert_eq!(
+            app.error.as_deref(),
+            Some("Cannot obtain the native application window."),
+            "Enter did not try to quick connect"
         );
     }
 

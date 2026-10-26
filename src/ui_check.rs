@@ -25,6 +25,9 @@ pub fn seed(app: &mut App) {
     if std::env::var_os("RELAY_UI_SETTINGS").is_some() {
         app.modal = Modal::Settings;
     }
+    if let Ok(query) = std::env::var("RELAY_UI_QUERY") {
+        app.query = query;
+    }
     app.selected = std::env::var("RELAY_UI_SELECT")
         .ok()
         .and_then(|id| id.parse().ok());
