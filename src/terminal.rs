@@ -151,7 +151,7 @@ impl Terminal {
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new(
-                    "Click terminal to type · Ctrl+Shift+C copies screen · Ctrl+Shift+V pastes",
+                    "Click terminal to type · Ctrl+Shift+C copies screen · Ctrl+V pastes",
                 )
                 .size(11.)
                 .color(colors.muted),
@@ -169,6 +169,7 @@ impl Terminal {
         if response.clicked() {
             response.request_focus();
         }
+        lock_focus(ui, &response);
         self.focused = response.has_focus();
         let rows = ((rect.height() / cell.y) as u16).clamp(2, 300);
         let cols = ((rect.width() / cell.x) as u16).clamp(2, 500);
@@ -203,7 +204,28 @@ impl Terminal {
         let screen = parser.screen();
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 4., colors.bg);
+        // Paint runs of same-styled ASCII cells as one string; other glyphs may not share the
+        // monospace advance, so they are painted per cell to stay on the grid.
+        let paint = |col: u16, row: u16, text: &str, cells: usize, fg: Color32, underline: bool| {
+            let pos = rect.min + Vec2::new(col as f32 * cell.x, row as f32 * cell.y);
+            if !text.trim_end().is_empty() {
+                painter.text(pos, egui::Align2::LEFT_TOP, text, font.clone(), fg);
+            }
+            if underline {
+                let y = pos.y + cell.y - 1.;
+                painter.line_segment(
+                    [
+                        Pos2::new(pos.x, y),
+                        Pos2::new(pos.x + cells as f32 * cell.x, y),
+                    ],
+                    Stroke::new(1_f32, fg),
+                );
+            }
+        };
         for row in 0..rows {
+            let mut run = String::new();
+            let mut run_start = 0;
+            let mut run_style = None;
             for col in 0..cols {
                 let Some(c) = screen.cell(row, col) else {
                     continue;
@@ -211,24 +233,38 @@ impl Terminal {
                 if c.is_wide_continuation() {
                     continue;
                 }
-                let pos = rect.min + Vec2::new(col as f32 * cell.x, row as f32 * cell.y);
                 let mut fg = color(c.fgcolor(), colors.text);
                 let mut bg = color(c.bgcolor(), colors.bg);
                 if c.inverse() {
                     std::mem::swap(&mut fg, &mut bg);
                 }
                 let width = if c.is_wide() { cell.x * 2. } else { cell.x };
-                painter.rect_filled(Rect::from_min_size(pos, Vec2::new(width, cell.y)), 0., bg);
-                painter.text(pos, egui::Align2::LEFT_TOP, c.contents(), font.clone(), fg);
-                if c.underline() {
-                    painter.line_segment(
-                        [
-                            pos + Vec2::new(0., cell.y - 1.),
-                            pos + Vec2::new(width, cell.y - 1.),
-                        ],
-                        Stroke::new(1_f32, fg),
-                    );
+                if bg != colors.bg {
+                    let pos = rect.min + Vec2::new(col as f32 * cell.x, row as f32 * cell.y);
+                    painter.rect_filled(Rect::from_min_size(pos, Vec2::new(width, cell.y)), 0., bg);
                 }
+                let contents = c.contents();
+                let text = if contents.is_empty() { " " } else { contents };
+                let style = (fg, c.underline());
+                let batchable = !c.is_wide() && text.len() == 1 && text.is_ascii();
+                if run_style != Some(style) || !batchable {
+                    if let Some((fg, underline)) = run_style.take() {
+                        paint(run_start, row, &run, run.len(), fg, underline);
+                    }
+                    run.clear();
+                }
+                if batchable {
+                    if run.is_empty() {
+                        run_start = col;
+                        run_style = Some(style);
+                    }
+                    run.push_str(text);
+                } else {
+                    paint(col, row, text, if c.is_wide() { 2 } else { 1 }, fg, style.1);
+                }
+            }
+            if let Some((fg, underline)) = run_style {
+                paint(run_start, row, &run, run.len(), fg, underline);
             }
         }
         if response.has_focus() && !screen.hide_cursor() && screen.scrollback() == 0 {
@@ -246,35 +282,15 @@ impl Terminal {
         }
         let mut input = vec![];
         if response.has_focus() && !self.ended {
-            let events = ui.input(|i| i.events.clone());
-            for event in events {
-                match event {
-                    egui::Event::Text(text) => input.extend(text.as_bytes()),
-                    egui::Event::Paste(text) => {
-                        if screen.bracketed_paste() {
-                            input.extend(b"\x1b[200~");
-                        }
-                        input.extend(text.replace("\r\n", "\n").replace('\n', "\r").as_bytes());
-                        if screen.bracketed_paste() {
-                            input.extend(b"\x1b[201~");
-                        }
-                    }
-                    egui::Event::Copy => ui.ctx().copy_text(screen.contents()),
-                    egui::Event::Key {
-                        key,
-                        pressed: true,
-                        modifiers,
-                        ..
-                    } => {
-                        if modifiers.ctrl && modifiers.shift && key == egui::Key::C {
-                            ui.ctx().copy_text(screen.contents());
-                        } else if modifiers.ctrl && modifiers.shift && key == egui::Key::V {
-                        } else {
-                            input.extend(key_bytes(key, modifiers, screen.application_cursor()));
-                        }
-                    }
-                    _ => {}
-                }
+            let (events, modifiers) = ui.input(|i| (i.events.clone(), i.modifiers));
+            let mode = Mode {
+                application_cursor: screen.application_cursor(),
+                bracketed_paste: screen.bracketed_paste(),
+            };
+            let copy;
+            (input, copy) = translate(&events, modifiers, mode);
+            if copy {
+                ui.ctx().copy_text(screen.contents());
             }
         }
         if !input.is_empty() {
@@ -293,6 +309,81 @@ impl Drop for Terminal {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+fn lock_focus(ui: &egui::Ui, response: &egui::Response) {
+    // Without a lock filter, egui moves focus on Tab and arrows and drops it on Escape.
+    if response.has_focus() {
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                response.id,
+                egui::EventFilter {
+                    tab: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                },
+            )
+        });
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct Mode {
+    application_cursor: bool,
+    bracketed_paste: bool,
+}
+
+/// Converts one frame of egui input into terminal bytes, and reports whether to copy the screen.
+fn translate(events: &[egui::Event], modifiers: egui::Modifiers, mode: Mode) -> (Vec<u8>, bool) {
+    let mut input = vec![];
+    let mut copy = false;
+    // egui-winit reports Ctrl+C/X and Shift+Delete only as Copy/Cut, and sends the text of an
+    // Alt combination after its key event.
+    let mut meta = false;
+    for event in events {
+        match event {
+            egui::Event::Text(text) => {
+                if std::mem::take(&mut meta) {
+                    input.push(0x1b);
+                }
+                input.extend(text.as_bytes());
+            }
+            egui::Event::Paste(text) => {
+                if mode.bracketed_paste {
+                    input.extend(b"\x1b[200~");
+                }
+                input.extend(text.replace("\r\n", "\n").replace('\n', "\r").as_bytes());
+                if mode.bracketed_paste {
+                    input.extend(b"\x1b[201~");
+                }
+            }
+            egui::Event::Copy if modifiers.shift => copy = true,
+            egui::Event::Copy => input.push(0x03),
+            egui::Event::Cut if modifiers.ctrl => input.push(0x18),
+            egui::Event::Cut => input.extend(b"\x1b[3;2~"),
+            egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } => {
+                let bytes = key_bytes(*key, *modifiers, mode.application_cursor);
+                if modifiers.alt && !modifiers.ctrl {
+                    if bytes.is_empty() {
+                        meta = true;
+                    } else {
+                        input.push(0x1b);
+                        input.extend(bytes);
+                    }
+                } else {
+                    input.extend(bytes);
+                }
+            }
+            _ => {}
+        }
+    }
+    (input, copy)
 }
 
 fn key_bytes(key: egui::Key, modifiers: egui::Modifiers, application_cursor: bool) -> Vec<u8> {
@@ -391,6 +482,54 @@ mod tests {
             key_bytes(egui::Key::ArrowUp, egui::Modifiers::NONE, true),
             b"\x1bOA"
         );
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let mode = Mode::default();
+        assert_eq!(
+            translate(&[egui::Event::Copy], egui::Modifiers::CTRL, mode),
+            (vec![3], false)
+        );
+        assert_eq!(
+            translate(
+                &[egui::Event::Copy],
+                egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+                mode
+            ),
+            (vec![], true)
+        );
+        assert_eq!(
+            translate(&[egui::Event::Cut], egui::Modifiers::CTRL, mode).0,
+            vec![0x18]
+        );
+        assert_eq!(
+            translate(
+                &[
+                    key(egui::Key::B, egui::Modifiers::ALT),
+                    egui::Event::Text("b".into())
+                ],
+                egui::Modifiers::ALT,
+                mode
+            )
+            .0,
+            b"\x1bb"
+        );
+        assert_eq!(
+            translate(
+                &[egui::Event::Paste("a\r\nb".into())],
+                egui::Modifiers::NONE,
+                Mode {
+                    bracketed_paste: true,
+                    ..mode
+                }
+            )
+            .0,
+            b"\x1b[200~a\rb\x1b[201~"
+        );
         let mut parser = vt100::Parser::new(24, 80, 100);
         parser.process(b"\x1b[31mred\x1b[0m\r\nnext");
         assert!(parser.screen().contents().contains("red\nnext"));
@@ -398,6 +537,56 @@ mod tests {
             parser.screen().cell(0, 0).unwrap().fgcolor(),
             vt100::Color::Idx(1)
         );
+    }
+    #[test]
+    fn focused_terminal_keeps_navigation_keys() {
+        let ctx = egui::Context::default();
+        let frame = |key: Option<egui::Key>, focus: bool| {
+            let events = key
+                .map(|key| egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                })
+                .into_iter()
+                .collect();
+            let mut focused = false;
+            let _ = ctx.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let (_, response) =
+                            ui.allocate_exact_size(Vec2::splat(100.), Sense::click());
+                        if focus {
+                            response.request_focus();
+                        }
+                        lock_focus(ui, &response);
+                        let _ = ui.button("Other");
+                        focused = response.has_focus();
+                    });
+                },
+            );
+            focused
+        };
+        frame(None, true);
+        assert!(frame(None, false));
+        for key in [
+            egui::Key::Tab,
+            egui::Key::ArrowDown,
+            egui::Key::ArrowRight,
+            egui::Key::Escape,
+        ] {
+            frame(Some(key), false);
+            assert!(
+                frame(None, false),
+                "{key:?} moved focus out of the terminal"
+            );
+        }
     }
     #[test]
     fn conpty_runs_and_receives_input() {
