@@ -9,15 +9,15 @@ Download the archive for your platform from the [latest release](https://github.
 | Platform | Download | Notes |
 | --- | --- | --- |
 | Windows 10/11 (x64, Arm64) | `relay-<version>-windows-*.zip` | Unzip and run `relay.exe`. SSH uses the **OpenSSH Client** optional feature. |
-| macOS 11+ (Apple silicon and Intel) | `relay-<version>-macos-universal.zip` | Unzip and move **Relay.app** to Applications. The app is not notarized: the first time, right-click it and choose **Open**. RDP needs FreeRDP: `brew install freerdp`. |
-| Linux (x86_64, aarch64) | `relay-<version>-linux-*.tar.gz` | Extract and run `./install.sh` to install into `~/.local`. RDP needs FreeRDP 2 or 3, such as `sudo apt install freerdp3-x11` or `sudo dnf install freerdp`. |
+| macOS 11+ (Apple silicon and Intel) | `relay-<version>-macos-universal.zip` | Unzip and move **Relay.app** to Applications. The app is not notarized: the first time, right-click it and choose **Open**. |
+| Linux (x86_64, aarch64) | `relay-<version>-linux-*.tar.gz` | Extract and run `./install.sh` to install into `~/.local`. |
 
 SSH uses the system's OpenSSH client everywhere, so your SSH config, keys, and agent work as usual.
 
 ### How remote desktops open
 
 - **Windows:** the remote desktop is embedded in the tab with the Windows RDP control, the same one Remote Desktop Connection uses.
-- **macOS and Linux:** the tab starts FreeRDP, which shows the remote desktop in its own window. The tab works like a terminal for FreeRDP, so its certificate and password prompts are answered there, and it shows when the session ends.
+- **macOS and Linux:** Relay's built-in RDP client, based on [IronRDP](https://github.com/Devolutions/IronRDP), draws the remote desktop in the tab. Nothing else needs to be installed.
 
 To build from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -113,7 +113,11 @@ While a remote desktop has the keyboard, it receives normal shortcuts. Relay res
 
 ### Remote desktops on macOS and Linux
 
-An RDP tab runs FreeRDP (`xfreerdp3`, `sdl-freerdp3`, `wlfreerdp3`, or their version 2 equivalents, whichever is installed first; Homebrew's folders are searched too). The remote desktop opens in FreeRDP's window, and the tab shows FreeRDP's output: answer certificate and password prompts there. Relay never stores passwords. The connection's options are passed on the command line: **Fit to tab** becomes dynamic resolution that follows FreeRDP's window, and **Fixed** a fixed size with smart sizing. FreeRDP reconnects by itself after network drops; when it exits, **Reconnect** starts it again. Embedded display and full-screen controls are Windows-only.
+The remote desktop is drawn inside the tab by Relay's built-in client. The tab asks for the user name (`DOMAIN\user` or `user@domain`) and password each time it connects; the password stays in memory only while the session is open and is never saved. Sign-in uses NLA (CredSSP with NTLM) when the server supports it, and TLS otherwise. A certificate your system does not trust, such as a self-signed one, is shown with its SHA-256 fingerprint for you to accept; Relay then trusts it for that host until it quits.
+
+Click the desktop to give it the keyboard; click elsewhere in Relay to take it back. Keys are sent by their position, so the remote computer's keyboard layout applies, and on macOS `Cmd` acts as `Ctrl`. `Ctrl+Alt+PageUp`/`PageDown` (or `Ctrl+Tab`) still switch tabs. **Fit to tab** changes the remote resolution as the tab is resized (through the display control channel; servers without it are scaled instead, with a warning), and **Fixed** scales a fixed resolution to the tab. Clipboard text is shared in both directions. Sessions reconnect after network drops (up to 5 attempts); when one ends, **Reconnect** asks for the password again.
+
+Some options are not available here and are listed in the connection editor when selected: local drives, printers, smart cards, microphone, remote audio (sound is turned off), and sending system key combinations such as `Alt+Tab` to the remote computer. There is no full-screen mode and no Kerberos sign-in.
 
 ### Remote desktop options
 

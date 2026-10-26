@@ -2,7 +2,7 @@
 
 ## Building
 
-Relay builds with stable Rust (1.88 or newer) on Windows, macOS, and Linux:
+Relay builds with stable Rust (1.94 or newer, which IronRDP requires) on Windows, macOS, and Linux:
 
 ```sh
 cargo run --release
@@ -19,14 +19,14 @@ cargo run --release
 | `src/main.rs` | Module list and entry point. |
 | `src/app/` | The `App` state and frame loop (`mod.rs`) and its screens: `sidebar`, `tabs`, `library`, `sessions`, `editor`, `settings`, `storage`, plus shared `widgets` and the UI tests. |
 | `src/platform/` | Everything that differs per OS: data folders, fonts, the ssh binary, and the Windows-only native window code (`windows.rs`); `other.rs` covers macOS and Linux. |
-| `src/rdp/` | Remote desktops: the embedded Windows ActiveX control (`activex.rs`) and the FreeRDP command line used elsewhere (`freerdp.rs`). |
-| `src/session.rs`, `src/terminal.rs` | Open tabs and the terminal they run ssh or FreeRDP in. |
+| `src/rdp/` | Remote desktops: the Windows ActiveX control (`activex.rs`) and the IronRDP client used elsewhere (`ironrdp.rs`, with its connection thread, input mapping, frame bookkeeping, and clipboard in `ironrdp/`). Both expose the same `RdpClient` interface. |
+| `src/session.rs`, `src/terminal.rs` | Open tabs and the terminal SSH sessions run in. |
 | `src/model.rs`, `src/database.rs`, `src/state.rs` | Connections, libraries (JSON, SQLite, MSSQL), and saved workspace state. |
 | `src/csv_io.rs`, `src/import.rs` | CSV import and export, SSH config and `.rdp` import. |
 | `src/secret.rs`, `src/file_dialog.rs`, `src/theme.rs` | Credential store, file pickers, color themes. |
 | `packaging/` | The macOS app bundle and Linux desktop entry used by releases. |
 
-Platform-specific code stays in `src/platform` and `src/rdp`; the rest of the app uses their cross-platform interface and `rdp::EMBEDDED` rather than `cfg` attributes.
+Platform-specific code stays in `src/platform` and `src/rdp`; the rest of the app uses their cross-platform interface rather than `cfg` attributes. `src/rdp/mod.rs` picks the remote desktop backend per platform; the IronRDP backend has no platform-specific code, so Windows could use it by changing that selection.
 
 ## Checks
 
@@ -38,7 +38,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-Tests cover the CSV export schema (including UTF-16), formula-guard round trips, duplicate detection, validation, serialization, atomic saves, corrupt-file preservation, SQLite stale-write rejection, MSSQL configuration, FreeRDP arguments, terminal parsing, keys and focus, and a real pseudo-terminal's input, output, and resize. On Windows, the RDP checks create the installed ActiveX control and verify credential prompting and viewport sizes without contacting a remote host. Live MSSQL access, RDP and SSH authentication, and SMB locking need real infrastructure.
+Tests cover the CSV export schema (including UTF-16), formula-guard round trips, duplicate detection, validation, serialization, atomic saves, corrupt-file preservation, SQLite stale-write rejection, MSSQL configuration, IronRDP input mapping, option and connector configuration, certificate trust, clipboard text, frame and texture bookkeeping, terminal parsing, keys and focus, and a real pseudo-terminal's input, output, and resize. On Windows, the RDP checks create the installed ActiveX control and verify credential prompting and viewport sizes without contacting a remote host. Live MSSQL access, RDP sessions and SSH authentication, and SMB locking need real infrastructure.
 
 ### Rendering checks
 
