@@ -772,9 +772,16 @@ mod tests {
     fn get(object: &IDispatch, name: &str) -> VARIANT {
         invoke(object, name, DISPATCH_PROPERTYGET, vec![]).unwrap()
     }
+    /// Creating RDP controls on several test threads at once intermittently crashes the
+    /// process, so tests that create one take turns. Relay creates them on one thread.
+    fn one_control_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        static CONTROLS: Mutex<()> = Mutex::new(());
+        CONTROLS.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn activex_creates_and_tracks_viewport_without_connecting() {
+        let _turn = one_control_at_a_time();
         let parent = parent();
         let mut connection = Connection::new();
         connection.host = "localhost".into();
@@ -822,6 +829,7 @@ mod tests {
 
     #[test]
     fn viewport_moves_to_another_window() {
+        let _turn = one_control_at_a_time();
         let (first, second) = (parent(), parent());
         let mut connection = Connection::new();
         connection.host = "localhost".into();
@@ -845,6 +853,7 @@ mod tests {
 
     #[test]
     fn connection_options_reach_the_control() {
+        let _turn = one_control_at_a_time();
         let parent = parent();
         let mut connection = Connection::new();
         connection.host = "desk.example".into();
@@ -922,6 +931,7 @@ mod tests {
 
     #[test]
     fn display_updates_skip_connect_settings_and_retry_quietly() {
+        let _turn = one_control_at_a_time();
         let parent = parent();
         let mut connection = Connection::new();
         connection.host = "localhost".into();
