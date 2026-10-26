@@ -88,6 +88,33 @@ enum LibraryKind {
     Personal,
     Sqlite,
     Mssql,
+    Mysql,
+}
+
+/// What the library dialog holds for one kind of database server.
+struct ServerForm {
+    connection: String,
+    /// Keep the connection string in the credential store after it opens successfully.
+    remember: bool,
+    tls: bool,
+}
+
+impl ServerForm {
+    /// A form filled from a remembered connection string, or starting from `example`.
+    fn new(saved: Option<String>, example: &str, without_tls: bool) -> Self {
+        Self {
+            remember: saved.is_some(),
+            connection: saved.unwrap_or_else(|| example.into()),
+            tls: !without_tls,
+        }
+    }
+
+    fn server(&self) -> database::Server {
+        database::Server {
+            connection: self.connection.clone(),
+            tls: self.tls,
+        }
+    }
 }
 
 /// Integrated authentication needs Windows; elsewhere the example uses an SQL login.
@@ -124,9 +151,8 @@ struct App {
     pending_editor: Option<Connection>,
     db_kind: LibraryKind,
     db_path: String,
-    db_mssql: String,
-    /// Keep the MSSQL connection string in the credential store after it opens successfully.
-    db_remember: bool,
+    db_mssql: ServerForm,
+    db_mysql: ServerForm,
     db_reveal: bool,
     /// A short confirmation shown as a toast until it expires.
     notice: Option<(String, Instant)>,
@@ -203,7 +229,8 @@ impl App {
             cc.egui_ctx.clone(),
             path,
             loaded,
-            secret::load(),
+            secret::load(secret::Account::Mssql),
+            secret::load(secret::Account::Mysql),
             parent,
             state::load(&state_path),
         );
@@ -218,6 +245,7 @@ impl App {
         path: PathBuf,
         loaded: Result<Vec<Connection>, String>,
         saved_mssql: Option<String>,
+        saved_mysql: Option<String>,
         parent: Option<platform::Window>,
         state: state::State,
     ) -> Self {
@@ -249,8 +277,8 @@ impl App {
             pending_editor: None,
             db_kind: LibraryKind::Personal,
             db_path: String::new(),
-            db_remember: saved_mssql.is_some(),
-            db_mssql: saved_mssql.unwrap_or_else(|| MSSQL_EXAMPLE.into()),
+            db_mssql: ServerForm::new(saved_mssql, MSSQL_EXAMPLE, state.mssql_without_tls),
+            db_mysql: ServerForm::new(saved_mysql, "", state.mysql_without_tls),
             db_reveal: false,
             notice: None,
             group: None,
@@ -318,12 +346,16 @@ impl App {
                 self.db_path = path.display().to_string();
                 database::Location::Sqlite(path.clone())
             }
-            // Only a remembered connection string can reopen an MSSQL library.
-            state::Library::Mssql if self.db_remember => {
+            // Only a remembered connection string can reopen a server library.
+            state::Library::Mssql if self.db_mssql.remember => {
                 self.db_kind = LibraryKind::Mssql;
-                database::Location::Mssql(self.db_mssql.clone())
+                database::Location::Mssql(self.db_mssql.server())
             }
-            state::Library::Mssql => return,
+            state::Library::Mysql if self.db_mysql.remember => {
+                self.db_kind = LibraryKind::Mysql;
+                database::Location::Mysql(self.db_mysql.server())
+            }
+            state::Library::Mssql | state::Library::Mysql => return,
         };
         self.pending_location = Some(location.clone());
         self.pending = Some(database::start(location, 0, None, self.ctx.clone()));

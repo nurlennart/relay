@@ -24,15 +24,10 @@ impl App {
                     self.storage_ok = true;
                     let mut remember_error = None;
                     let saved = self.pending_save;
-                    let opened = self
-                        .pending_location
-                        .as_ref()
-                        .map(|l| l.label().to_lowercase());
+                    let opened = self.pending_location.as_ref().map(|l| l.label());
                     if let Some(location) = self.pending_location.take() {
-                        if let database::Location::Mssql(connection) = &location {
-                            remember_error = self.remember_mssql(connection).err();
-                        }
-                        self.state.library = state::Library::of(&location);
+                        remember_error = self.remember_server(&location).err();
+                        self.state.use_library(&location);
                         self.save_state();
                         self.location = location;
                         if matches!(self.modal, Modal::Library) {
@@ -40,8 +35,10 @@ impl App {
                         }
                         self.group = None;
                         self.filter = Filter::All;
-                        if !self.db_remember {
-                            self.db_mssql.clear();
+                        for form in [&mut self.db_mssql, &mut self.db_mysql] {
+                            if !form.remember {
+                                form.connection.clear();
+                            }
                         }
                     }
                     if self.pending_save {
@@ -53,7 +50,7 @@ impl App {
                     self.error = remember_error;
                     // Routine saves stay silent; loads say what happened.
                     if let Some(opened) = opened {
-                        self.notify(format!("Opened {opened}."));
+                        self.notify(format!("Opened the {opened}."));
                     } else if !saved {
                         self.notify("Library refreshed.");
                     }
@@ -182,6 +179,7 @@ impl App {
                         (LibraryKind::Personal, "Personal"),
                         (LibraryKind::Sqlite, "SQLite file"),
                         (LibraryKind::Mssql, "MSSQL server"),
+                        (LibraryKind::Mysql, "MySQL server"),
                     ] {
                         ui.selectable_value(&mut self.db_kind, kind, label);
                     }
@@ -210,7 +208,8 @@ impl App {
                                 ("Create new…", file_dialog::Kind::NewDatabase),
                             ] {
                                 if ui.button(label).clicked()
-                                    && let Some(path) = file_dialog::choose(self.parent, kind).first()
+                                    && let Some(path) =
+                                        file_dialog::choose(self.parent, kind).first()
                                 {
                                     self.db_path = path.display().to_string();
                                 }
@@ -228,12 +227,29 @@ impl App {
                         ui.colored_label(
                             ui.visuals().warn_fg_color,
                             "For network drives, use a reliable share with file locking and \
-                             backups. MSSQL is the better choice for concurrent team editing.",
+                             backups. A database server is the better choice for concurrent \
+                             team editing.",
                         );
                     }
-                    LibraryKind::Mssql => {
-                        ui.label("ADO.NET connection string");
-                        let hint = "Server=tcp:sql,1433;Database=Relay;Integrated Security=true";
+                    LibraryKind::Mssql | LibraryKind::Mysql => {
+                        let mysql = self.db_kind == LibraryKind::Mysql;
+                        let form = if mysql {
+                            &mut self.db_mysql
+                        } else {
+                            &mut self.db_mssql
+                        };
+                        let (label, hint) = if mysql {
+                            (
+                                "Connection URL",
+                                "mysql://user:password@db.example.com:3306/relay",
+                            )
+                        } else {
+                            (
+                                "ADO.NET connection string",
+                                "Server=tcp:sql,1433;Database=Relay;Integrated Security=true",
+                            )
+                        };
+                        ui.label(label);
                         ui.horizontal(|ui| {
                             let show = 64.;
                             ui.add_sized(
@@ -241,7 +257,7 @@ impl App {
                                     ui.available_width() - show - ui.spacing().item_spacing.x,
                                     CONTROL_HEIGHT,
                                 ],
-                                input(&mut self.db_mssql, hint).password(!self.db_reveal),
+                                input(&mut form.connection, hint).password(!self.db_reveal),
                             );
                             let reveal = egui::Button::new("Show")
                                 .selected(self.db_reveal)
@@ -251,32 +267,56 @@ impl App {
                             }
                         });
                         ui.checkbox(
-                            &mut self.db_remember,
+                            &mut form.remember,
                             "Remember on this computer (in your system credential store)",
                         );
-                        let storage = if self.db_remember {
+                        ui.checkbox(
+                            &mut form.tls,
+                            "Encrypt the connection with TLS (recommended)",
+                        );
+                        let storage = if form.remember {
                             "Saved to your credential store after the library opens."
                         } else {
                             "Held in memory for this session only. \
                              Opening without this option removes a saved string."
                         };
+                        let auth = match (mysql, cfg!(windows)) {
+                            (true, _) => "MySQL and MariaDB logins are supported.",
+                            (false, true) => {
+                                "Windows integrated authentication and SQL logins are supported."
+                            }
+                            (false, false) => "SQL logins are supported.",
+                        };
                         ui.label(
-                            RichText::new(format!(
-                                "{} TLS is required. {storage}",
-                                if cfg!(windows) {
-                                    "Windows integrated authentication and SQL logins are supported."
-                                } else {
-                                    "SQL logins are supported."
-                                }
-                            ))
-                            .size(12.)
-                            .color(colors.muted),
+                            RichText::new(format!("{auth} {storage}"))
+                                .size(12.)
+                                .color(colors.muted),
                         );
+                        if !form.tls {
+                            ui.colored_label(
+                                ui.visuals().warn_fg_color,
+                                "Without TLS, the password and your connection library cross the \
+                                 network unencrypted. Use this only on a network you trust.",
+                            );
+                        } else if mysql {
+                            ui.label(
+                                RichText::new(
+                                    "The server's certificate must be trusted. For a private \
+                                     certificate authority, add ?root_cert_path=/path/to/ca.pem \
+                                     to the URL.",
+                                )
+                                .size(12.)
+                                .color(colors.muted),
+                            );
+                        }
                         ui.add_space(10.);
-                        ui.label(
+                        ui.label(if mysql {
+                            "Run sql/mysql.sql once in an existing database. \
+                             Your team needs SELECT and UPDATE on RelayLibrary."
+                        } else {
                             "Run sql/mssql.sql once in an existing database. \
-                             Your team needs SELECT and UPDATE on dbo.RelayLibrary.",
-                        );
+                             Your team needs SELECT and UPDATE on dbo.RelayLibrary."
+                        });
                     }
                 }
                 ui.add_space(12.);
@@ -312,7 +352,14 @@ impl App {
             dialog("import", ctx).show(ctx, |ui| {
                 ui.set_width(dialog_width(ctx, 680.));
                 ui.heading("Review CSV import");
-                ui.label(RichText::new(&import.filename).color(colors.muted));
+                ui.label(
+                    RichText::new(format!(
+                        "{}, into the {}",
+                        import.filename,
+                        self.location.label()
+                    ))
+                    .color(colors.muted),
+                );
                 ui.add_space(16.);
                 ui.horizontal(|ui| {
                     ui.colored_label(
@@ -386,14 +433,19 @@ impl App {
         }
     }
 
-    /// Stores or removes the encrypted connection string after it opened successfully.
-    pub(super) fn remember_mssql(&self, connection: &str) -> Result<(), String> {
-        if self.db_remember {
-            secret::save(connection).map_err(|e| {
+    /// Stores or removes a server library's connection string after it opened successfully.
+    pub(super) fn remember_server(&self, location: &database::Location) -> Result<(), String> {
+        let (form, account, server) = match location {
+            database::Location::Mssql(server) => (&self.db_mssql, secret::Account::Mssql, server),
+            database::Location::Mysql(server) => (&self.db_mysql, secret::Account::Mysql, server),
+            database::Location::Local(_) | database::Location::Sqlite(_) => return Ok(()),
+        };
+        if form.remember {
+            secret::save(account, &server.connection).map_err(|e| {
                 format!("The library opened, but the connection string could not be saved: {e}")
             })
         } else {
-            secret::forget().map_err(|e| {
+            secret::forget(account).map_err(|e| {
                 format!(
                     "The library opened, but the saved connection string could not be removed: {e}"
                 )
@@ -407,8 +459,11 @@ impl App {
             LibraryKind::Sqlite if !self.db_path.trim().is_empty() => {
                 database::Location::Sqlite(PathBuf::from(self.db_path.trim()))
             }
-            LibraryKind::Mssql if !self.db_mssql.trim().is_empty() => {
-                database::Location::Mssql(self.db_mssql.clone())
+            LibraryKind::Mssql if !self.db_mssql.connection.trim().is_empty() => {
+                database::Location::Mssql(self.db_mssql.server())
+            }
+            LibraryKind::Mysql if !self.db_mysql.connection.trim().is_empty() => {
+                database::Location::Mysql(self.db_mysql.server())
             }
             _ => {
                 self.error = Some("Enter a database path or connection string.".into());

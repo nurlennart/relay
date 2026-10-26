@@ -153,9 +153,14 @@ git pull && ./deploy.sh",
         };
         app.edit(c);
     }
-    if std::env::var_os("RELAY_UI_DATABASE").is_some() {
+    if let Some(kind) = std::env::var_os("RELAY_UI_DATABASE") {
         app.modal = Modal::Library;
-        app.db_kind = LibraryKind::Mssql;
+        app.db_kind = if kind == "mysql" {
+            LibraryKind::Mysql
+        } else {
+            LibraryKind::Mssql
+        };
+        app.db_mysql.tls = std::env::var_os("RELAY_UI_NO_TLS").is_none();
     }
     if std::env::var_os("RELAY_UI_IMPORT").is_some() {
         app.modal = Modal::Import(

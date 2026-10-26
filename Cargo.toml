@@ -30,6 +30,7 @@ vt100 = "0.16"
 # Each platform gets its native GPU backend and TLS stack. Windows also hosts the
 # Microsoft RDP ActiveX control and supports integrated MSSQL authentication.
 [target.'cfg(windows)'.dependencies]
+mysql = { version = "28", default-features = false, features = ["minimal-rust", "native-tls"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "native-tls", "winauth"] }
 wgpu = { version = "27", default-features = false, features = ["dx12", "wgsl"] }
 windows = { version = "0.61.3", features = ["Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant"] }
@@ -55,10 +56,12 @@ ironrdp-tokio = "0.11"
 sha2 = "0.11"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+mysql = { version = "28", default-features = false, features = ["minimal-rust", "native-tls"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "native-tls"] }
 wgpu = { version = "27", default-features = false, features = ["metal", "wgsl"] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+mysql = { version = "28", default-features = false, features = ["minimal-rust", "rustls-tls"] }
 eframe = { version = "0.33.3", default-features = false, features = ["wayland", "x11"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls"] }

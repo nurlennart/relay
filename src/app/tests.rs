@@ -23,6 +23,7 @@ fn test_app(ctx: &egui::Context) -> App {
         Ok(connections),
         None,
         None,
+        None,
         state::State::default(),
     )
 }
@@ -180,6 +181,7 @@ fn tabs_from_the_last_run_come_back_waiting() {
         ctx.clone(),
         PathBuf::from("unused.json"),
         Ok(vec![]),
+        None,
         None,
         None,
         state,

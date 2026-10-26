@@ -9,13 +9,15 @@ use std::{
 /// How many recent connections each library keeps.
 const RECENT: usize = 12;
 
-/// The library to reopen at startup. MSSQL reopens only with a remembered connection string.
+/// The library to reopen at startup. Server libraries reopen only with a remembered
+/// connection string.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Library {
     #[default]
     Personal,
     Sqlite(PathBuf),
     Mssql,
+    Mysql,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -26,6 +28,9 @@ pub struct State {
     pub maximized: bool,
     pub sidebar_collapsed: Option<bool>,
     pub library: Library,
+    /// Server libraries opened without TLS; the default is to require it.
+    pub mssql_without_tls: bool,
+    pub mysql_without_tls: bool,
     /// Recently opened connection IDs per library, most recent first.
     pub recent: BTreeMap<String, Vec<u64>>,
     /// Saved commands for SSH sessions.
@@ -83,6 +88,16 @@ impl State {
             .unwrap_or_default()
     }
 
+    /// Records `location` as the library to reopen, with its TLS choice.
+    pub fn use_library(&mut self, location: &Location) {
+        self.library = Library::of(location);
+        match location {
+            Location::Mssql(server) => self.mssql_without_tls = !server.tls,
+            Location::Mysql(server) => self.mysql_without_tls = !server.tls,
+            Location::Local(_) | Location::Sqlite(_) => {}
+        }
+    }
+
     pub fn note_recent(&mut self, location: &Location, id: u64) {
         let list = self.recent.entry(key(location)).or_default();
         list.retain(|v| *v != id);
@@ -97,17 +112,19 @@ impl Library {
             Location::Local(_) => Self::Personal,
             Location::Sqlite(path) => Self::Sqlite(path.clone()),
             Location::Mssql(_) => Self::Mssql,
+            Location::Mysql(_) => Self::Mysql,
         }
     }
 }
 
-/// Identifies a library for recents. MSSQL connection strings can hold passwords, so all MSSQL
-/// libraries share one key.
+/// Identifies a library for recents. Server connection strings can hold passwords, so all
+/// libraries of one server kind share a key.
 fn key(location: &Location) -> String {
     match location {
         Location::Local(_) => "personal".into(),
         Location::Sqlite(path) => format!("sqlite:{}", path.display()),
         Location::Mssql(_) => "mssql".into(),
+        Location::Mysql(_) => "mysql".into(),
     }
 }
 
@@ -129,7 +146,20 @@ mod tests {
         }
         assert_eq!(state.recent(&team).len(), RECENT);
         assert_eq!(state.recent(&team)[0], 19);
-        state.note_recent(&Location::Mssql("Password=secret".into()), 7);
+        for location in [
+            Location::Mssql(crate::database::Server {
+                connection: "Password=secret".into(),
+                tls: true,
+            }),
+            Location::Mysql(crate::database::Server {
+                connection: "mysql://relay:secret@db/relay".into(),
+                tls: false,
+            }),
+        ] {
+            state.note_recent(&location, 7);
+            state.use_library(&location);
+        }
+        assert!(state.mysql_without_tls && !state.mssql_without_tls);
         let json = serde_json::to_string(&state).unwrap();
         assert!(!json.contains("secret"), "{json}");
     }

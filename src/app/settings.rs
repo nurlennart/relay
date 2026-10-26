@@ -69,7 +69,7 @@ impl App {
                     });
                     ui.label(
                         RichText::new(
-                            "Personal storage, shared SQLite files, or Microsoft SQL Server.",
+                            "Personal storage, shared SQLite files, Microsoft SQL Server, or MySQL.",
                         )
                         .size(12.)
                         .color(colors.muted),

@@ -37,7 +37,7 @@ Open **Settings** at the bottom of the sidebar and use **Appearance** to switch 
 - Below 1000 px wide the sidebar collapses to icons, and narrow tables hide the group and then the protocol column. The window can shrink to 720×560.
 - Session tabs show a status dot: accent while open, red once the session has ended. Drag a tab to reorder it, or use `Ctrl+Shift+PageUp`/`Ctrl+Shift+PageDown`.
 - **Recent** lists the connections you opened in the current library, newest first.
-- Relay remembers the window size, the sidebar choice, the last library, recent connections, snippets and open tabs in `state.json`. A shared SQLite library reopens at startup, and an MSSQL library reopens when its connection string is remembered. No connection strings are written to this file. Open tabs come back at startup; each connects when it is first selected, starting with the tab that was selected, so a restart does not open every login prompt at once.
+- Relay remembers the window size, the sidebar choice, the last library, recent connections, snippets and open tabs in `state.json`. A shared SQLite library reopens at startup, and an MSSQL or MySQL library reopens when its connection string is remembered. No connection strings are written to this file; only whether a server library uses TLS. Open tabs come back at startup; each connects when it is first selected, starting with the tab that was selected, so a restart does not open every login prompt at once.
 - The **Library** tab returns to the list while sessions stay open.
 - Closing a tab or quitting with active sessions asks for confirmation.
 - The **···** menu edits, duplicates, copies the address of, or deletes a profile. Changes apply to future connections. The editor suggests existing groups.
@@ -69,7 +69,7 @@ RDP and SSH records can be imported; VNC and other protocols are listed as unsup
 
 ## Shared team libraries
 
-Open **Settings → Manage library**. Switching does not move or merge profiles and does not close sessions. Use CSV to populate an empty shared library. Library selection is session-local; the personal library remains the startup default.
+Open **Settings → Manage library**, or click the library name at the bottom of the sidebar, and choose **Personal**, **SQLite file**, **MSSQL server**, or **MySQL server**. Switching does not move or merge profiles and does not close sessions. To fill a library, open it and use **Settings → Import CSV** (or SSH config or `.rdp` import): imports always go into the library that is open, and the review names it before anything is saved. To move a library to another backend, export CSV from the old one, open the new one, and import.
 
 ### MSSQL
 
@@ -89,23 +89,39 @@ SQL authentication:
 Server=tcp:sql.example.com,1433;Database=Relay;User ID=relay;Password=your-password;Encrypt=true;TrustServerCertificate=false
 ```
 
-Use an explicit TCP port. Relay requires encrypted transport and trusts the system's certificate store. SQL logins work everywhere; Windows integrated authentication works on Windows. By default the connection string stays in memory for the session and is not saved to disk. Tick **Remember on this computer** to keep it in the system credential store (Windows Credential Manager, the macOS Keychain, or the Secret Service on Linux, such as GNOME Keyring or KWallet); it is saved only after the library opens, and opening without the option removes it. The app does not create the database or alter other tables. A library is one revisioned JSON document in `dbo.RelayLibrary`.
+Use an explicit TCP port. Relay requires encrypted transport and trusts the system's certificate store; `TrustServerCertificate=true` accepts a self-signed server certificate. SQL logins work everywhere; Windows integrated authentication works on Windows. By default the connection string stays in memory for the session and is not saved to disk. Tick **Remember on this computer** to keep it in the system credential store (Windows Credential Manager, the macOS Keychain, or the Secret Service on Linux, such as GNOME Keyring or KWallet); it is saved only after the library opens, and opening without the option removes it. The app does not create the database or alter other tables. A library is one revisioned JSON document in `dbo.RelayLibrary`.
+
+### MySQL
+
+1. Use an existing MySQL 8.0.16+ or MariaDB 10.4+ database and run [sql/mysql.sql](sql/mysql.sql) once.
+2. Give your team `SELECT` and `UPDATE` permissions on `RelayLibrary`.
+3. Choose **MySQL server** and enter a connection URL that names the database:
+
+```text
+mysql://relay:your-password@db.example.com:3306/relay
+```
+
+Percent-encode special characters in the user name or password (for example `@` as `%40`). Relay requires encrypted transport and verifies the server's certificate: on Windows and macOS against the system's certificate store, on Linux against the bundled Mozilla roots. For a private certificate authority, add `?root_cert_path=/path/to/ca.pem`; to accept a self-signed certificate, add `?danger_accept_invalid_certs=true` (and `&danger_skip_domain_validation=true` if the certificate's name does not match the host). **Remember on this computer** works as for MSSQL, in its own credential store entry. A library is one revisioned JSON document in `RelayLibrary`.
+
+### Connecting without TLS
+
+MSSQL and MySQL libraries use TLS by default. For a server on a trusted network that cannot offer TLS, clear **Encrypt the connection with TLS** before opening the library. The password and the library then cross the network unencrypted, so use this only where that is acceptable. Relay remembers the choice for that kind of server and uses it when the library reopens at startup.
 
 ### SQLite file
 
 Choose **SQLite file** and enter a local, mapped-drive, or UNC path such as `\\fileserver\team\relay.sqlite`. A missing database file is created automatically; its parent directory must exist. All users need read/write/create/delete permissions in that directory for database journals.
 
-SQLite uses rollback journaling, full synchronization, a five-second busy timeout, and revision checks. **MSSQL is the preferred team backend.** SQLite on a share depends on reliable filesystem locking; broken locks or interrupted network I/O can still cause corruption. Keep backups and test your actual share. See [SQLite's network filesystem guidance](https://www.sqlite.org/useovernet.html).
+SQLite uses rollback journaling, full synchronization, a five-second busy timeout, and revision checks. **A database server (MSSQL or MySQL) is the preferred team backend.** SQLite on a share depends on reliable filesystem locking; broken locks or interrupted network I/O can still cause corruption. Keep backups and test your actual share. See [SQLite's network filesystem guidance](https://www.sqlite.org/useovernet.html).
 
 ### Concurrent edits
 
-Click **Refresh** to load teammates' changes. Shared saves compare the revision read by your client and reject stale updates. Failed changes remain in memory with **Export unsaved changes** available. Export, refresh, and reapply deliberately. Quitting warns if unsaved changes remain. Database operations run off the UI thread; MSSQL operations have a 15-second timeout. If a save times out, refresh before retrying because the server may have committed it.
+Click **Refresh** to load teammates' changes. Shared saves compare the revision read by your client and reject stale updates. Failed changes remain in memory with **Export unsaved changes** available. Export, refresh, and reapply deliberately. Quitting warns if unsaved changes remain. Database operations run off the UI thread; MSSQL and MySQL operations have a 15-second timeout. If a save times out, refresh before retrying because the server may have committed it.
 
 ## Sessions
 
 ### Remote desktops on Windows
 
-RDP is hosted directly inside each tab using the Windows desktop RDP control. Relay does not launch `mstsc.exe` or generate RDP files. Windows asks for credentials and offers **Remember me**, which stores them in Windows Credential Manager (`TERMSRV/<host>`), exactly like Remote Desktop Connection; Relay never receives or stores passwords. **··· → Forget saved password** removes them. Windows authentication and certificate dialogs can appear outside the tab. Certificate verification and NLA remain enabled.
+RDP is hosted directly inside each tab using the Windows desktop RDP control. Relay does not launch `mstsc.exe` or generate RDP files. Windows asks for credentials and offers **Remember me**, which stores them in Windows Credential Manager (`TERMSRV/<host>`), exactly like Remote Desktop Connection; Relay never receives or stores passwords. **More actions (···) → Forget saved password**, also on a row's right-click menu, removes them. Windows authentication and certificate dialogs can appear outside the tab. Certificate verification and NLA remain enabled.
 
 By default the remote resolution follows the tab, in physical pixels, and the remote display scale matches the monitor Relay is on (for example 150% on a high-DPI laptop), so text keeps its usual size. After login, resizing, or moving to a monitor with a different scale, Relay updates the remote display; smart sizing covers the moment in between and servers that cannot change resolution. A failed display update shows a warning in the tab. Closing RDP disconnects without logging out the remote Windows session.
 
