@@ -21,18 +21,26 @@ Open **Settings** at the bottom of the sidebar and use **Appearance** to switch 
 - **New connection** saves a name, host, port, optional username, group, and favorite.
 - Click **Connect**, double-click a row, or select it and press `Enter` to open a tab.
 - Sidebar filters and groups narrow the library. Search matches names, addresses, usernames, groups, and protocols.
+- **Quick connect:** type a host in search and press `Enter` when nothing in the library matches, or `Alt+Enter` to connect directly even when something does. Search accepts `host`, `host:port`, `user@host`, `[IPv6]:port`, and an `ssh`/`rdp` prefix or `ssh://`/`rdp://`. Without a prefix, `user@host` and port 22 mean SSH and anything else RDP. An unsaved session offers **Save to library**.
 - Keyboard: `Ctrl+K` searches; `↑`/`↓` move the selection and `Enter` connects (from the search box or the list); `Esc` clears the search and closes dialogs; `Enter` saves the connection editor. `Ctrl+N` adds a profile, `Ctrl+W` closes the selected tab, `Ctrl+1`–`Ctrl+9` jump to tabs, and `Ctrl+B` toggles the sidebar. `Ctrl+Tab`/`Ctrl+Shift+Tab` cycle tabs, even from an SSH terminal; the terminal receives the other shortcuts while focused. Click the manager chrome to regain focus.
 - Below 1000 px wide the sidebar collapses to icons, and narrow tables hide the group and then the protocol column. The window can shrink to 720×560.
 - Session tabs show a status dot: accent while open, red once the session has ended. Drag a tab to reorder it, or use `Ctrl+Shift+PageUp`/`Ctrl+Shift+PageDown`.
 - **Recent** lists the connections you opened in the current library, newest first.
-- Relay remembers the window size, the sidebar choice, the last library and recent connections in `%LOCALAPPDATA%\Relay\state.json`. A shared SQLite library reopens at startup, and an MSSQL library reopens when its connection string is remembered. No connection strings are written to this file.
+- Relay remembers the window size, the sidebar choice, the last library, recent connections, snippets and open tabs in `%LOCALAPPDATA%\Relay\state.json`. A shared SQLite library reopens at startup, and an MSSQL library reopens when its connection string is remembered. No connection strings are written to this file. Open tabs come back at startup; each connects when it is first selected, starting with the tab that was selected, so a restart does not open every login prompt at once.
 - **Connection library** returns to the list while sessions stay open.
 - Closing a tab or quitting with active sessions asks for confirmation.
 - The **···** menu edits, duplicates, copies the address of, or deletes a profile. Changes apply to future connections. The editor suggests existing groups.
+- **Split view:** right-click a tab and choose **Open beside current tab**, or press `Ctrl+\` to pair the current tab with its neighbour. Drag the divider to resize; selecting the right-hand tab swaps the sides. **Move to new window** in the same menu detaches a session into its own window; its tab brings the window forward, and **Back to tabs** or closing the window returns it.
 
 The personal library is `%LOCALAPPDATA%\Relay\connections.json`. Writes use atomic replacement. Invalid libraries remain untouched and cannot be overwritten through the editor. Profiles contain plaintext hostnames, usernames, groups, and imported metadata; remote passwords are never stored.
 
-## CSV import and export
+## Import and export
+
+**Settings → Import SSH config** reads `%USERPROFILE%\.ssh\config`. Each concrete `Host` alias becomes an SSH profile with its `HostName`, `User`, `Port`, `ProxyJump`, `IdentityFile`, and local, remote and dynamic forwards. As in OpenSSH, an alias collects options from every matching block, including wildcard and negated patterns, and the first value wins. `Match` blocks and `Include` are listed as skipped.
+
+**Settings → Import .rdp files** accepts one or more Remote Desktop files (UTF-16 or UTF-8) and maps the address, user, RD Gateway, redirections, audio, keyboard and resolution settings.
+
+Every import shows a review before anything is saved, skips duplicates, and lists skipped entries with reasons.
 
 Open **Settings → Import CSV** and review the preview before committing. The importer supports the full export schema (see [tests/fixtures/export-sample.csv](tests/fixtures/export-sample.csv)), including semicolon delimiters, quoted fields, UTF-8, UTF-16, and Windows-1252. A simpler `Name,Host,Protocol,Port,Username,Group,Favorite` schema also works. Blank ports use protocol defaults. Blank destinations fall back to `ConnectionIpAddress`.
 
@@ -89,6 +97,10 @@ While a remote desktop has the keyboard, it receives normal shortcuts. Relay res
 Each RDP connection has **Remote desktop options** in its editor: an optional **RD Gateway** host (used with the same credentials), which local resources to use on the remote computer (clipboard, local drives, printers, smart cards, microphone), where remote audio plays, where Windows key combinations such as `Alt+Tab` apply (default: remote only in full screen), and the resolution (fit to tab, or a fixed size scaled to the tab). Options are saved with the connection in personal and shared libraries; CSV export does not include them.
 
 SSH runs in a dark terminal panel that keeps its own colors in every app theme, using Cascadia Mono (or Consolas). It supports 256 and true colors, bold, dim, underline and inverse text, scrolling through 5,000 lines with a scrollbar, resizing, bracketed paste, and navigation, function, control and Alt keys. The terminal is focused when its tab opens; Tab, Escape and the arrow keys stay in it. `Ctrl+C` sends an interrupt. Drag to select text; `Ctrl+Shift+C` or a right-click copies the selection (or the whole screen when nothing is selected), and a right-click without a selection, `Ctrl+V` or `Shift+Insert` pastes. Mouse reporting, hyperlinks and complete xterm compatibility are not implemented. Closing SSH may terminate remote foreground work.
+
+SSH profiles have **SSH options**: a jump host (`ssh -J`), an identity file (`ssh -i`), and port forwards written as `L8080:localhost:80`, `R9000:localhost:9000` or `D1080`, separated by commas. Relay passes `ServerAliveInterval=15`, so a dropped connection is noticed within about 45 seconds. When ssh exits with 255 after the session had been up, Relay reconnects in the same tab after 1, 2, 4, 8, 16, then 30 seconds, up to ten times; **Reconnect now** and **Stop** are shown meanwhile. Wrong passwords, unknown hosts and `exit` are not retried.
+
+**Snippets** are saved commands, managed in **Settings → Snippets**. In an SSH tab, `Ctrl+Shift+P` or **Snippets** opens a palette: type to filter, `↑`/`↓` and `Enter` send, `Esc` closes. A snippet types its command and can press Enter afterwards; multi-line snippets use bracketed paste.
 
 ## Icon
 
