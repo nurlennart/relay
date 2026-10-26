@@ -39,7 +39,26 @@ impl RdpClient {
     pub fn display_warning(&self) -> Option<&str> {
         match *self {}
     }
+    pub fn can_full_screen(&self) -> bool {
+        match *self {}
+    }
+    pub fn focused(&self) -> bool {
+        match *self {}
+    }
+    pub fn poll(&mut self) {
+        match *self {}
+    }
+    pub fn show(&mut self, _ui: &mut egui::Ui) -> egui::Rect {
+        match *self {}
+    }
 }
+
+/// FreeRDP asks for passwords itself and does not save them.
+pub const SAVES_PASSWORDS: bool = false;
+
+/// How signing in works, for the connection editor.
+pub const SIGN_IN_HELP: &str = "Opens in a FreeRDP window. Certificate and password prompts \
+    appear in the tab.\nRelay never stores passwords.";
 
 /// FreeRDP does not save passwords, so there is nothing to forget.
 pub fn forget_credentials(_host: &str) -> Result<bool, String> {

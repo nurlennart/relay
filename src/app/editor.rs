@@ -117,19 +117,11 @@ impl App {
                     }
                 });
             ui.add_space(8.);
-            let help = match (rdp, rdp::EMBEDDED) {
-                (true, true) => {
-                    "Windows asks for credentials; tick “Remember me” to skip the prompt next \
-                     time.\nWindows keeps them in Credential Manager. Relay never sees passwords."
-                }
-                (true, false) => {
-                    "Opens in a FreeRDP window. Certificate and password prompts appear in the \
-                     tab.\nRelay never stores passwords."
-                }
-                (false, _) => {
-                    "Uses your OpenSSH client, including your SSH config and agent.\n\
-                     Host verification and password prompts appear in the terminal."
-                }
+            let help = if rdp {
+                rdp::SIGN_IN_HELP
+            } else {
+                "Uses your OpenSSH client, including your SSH config and agent.\n\
+                 Host verification and password prompts appear in the terminal."
             };
             ui.label(RichText::new(help).size(12.).color(colors.muted));
             if !self.editor_error.is_empty() {

@@ -632,13 +632,12 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.quitting = true;
         }
-        // Either side of a split view can hold the focused terminal.
+        // Either side of a split view can hold the focused terminal or remote desktop.
         let terminal_focused = [self.active, self.split]
             .into_iter()
             .flatten()
             .filter_map(|i| self.sessions.get(i))
-            .filter_map(|s| s.terminal.as_ref())
-            .any(|t| t.focused);
+            .any(|s| s.keyboard_focused());
         let shortcut = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
         // Cmd on macOS, Ctrl elsewhere.
         let ctrl = egui::Modifiers::COMMAND;

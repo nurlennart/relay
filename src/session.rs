@@ -136,6 +136,9 @@ impl Session {
                 }
             }
         }
+        if let Some(rdp) = &mut self.rdp {
+            rdp.poll();
+        }
         if let Some(rdp) = &self.rdp
             && rdp.ended()
         {
@@ -200,6 +203,9 @@ impl Session {
             .filter(|r| r.reconnecting())
             .map(|_| "Connection interrupted. Reconnecting…".into())
     }
+    pub fn can_full_screen(&self) -> bool {
+        self.rdp.as_ref().is_some_and(|r| r.can_full_screen())
+    }
     pub fn full_screen(&self) -> bool {
         self.rdp.as_ref().is_some_and(|r| r.full_screen())
     }
@@ -209,9 +215,19 @@ impl Session {
             None => Err("The remote desktop is not ready yet.".into()),
         }
     }
-    /// Whether an embedded remote desktop has been created for this session.
+    /// Whether a remote desktop has been created for this session.
     pub fn has_desktop(&self) -> bool {
         self.rdp.is_some()
+    }
+    /// Shows the remote desktop, or its prompts, in the rest of `ui`. Returns the area a
+    /// native desktop window should cover.
+    pub fn show_desktop(&mut self, ui: &mut eframe::egui::Ui) -> Option<eframe::egui::Rect> {
+        self.rdp.as_mut().map(|rdp| rdp.show(ui))
+    }
+    /// Whether the session's terminal or desktop has the keyboard.
+    pub fn keyboard_focused(&self) -> bool {
+        self.terminal.as_ref().is_some_and(|t| t.focused)
+            || self.rdp.as_ref().is_some_and(|r| r.focused())
     }
     pub fn is_running(&self) -> bool {
         !self.ended

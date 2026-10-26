@@ -8,10 +8,10 @@ mod freerdp;
 mod unembedded;
 
 #[cfg(windows)]
-pub use activex::{RdpClient, forget_credentials};
+pub use activex::{RdpClient, SAVES_PASSWORDS, SIGN_IN_HELP, forget_credentials};
 pub use freerdp::command as freerdp_command;
 #[cfg(not(windows))]
-pub use unembedded::{RdpClient, forget_credentials};
+pub use unembedded::{RdpClient, SAVES_PASSWORDS, SIGN_IN_HELP, forget_credentials};
 
 /// Whether remote desktops are drawn inside Relay's windows rather than in their own.
 pub const EMBEDDED: bool = cfg!(windows);
