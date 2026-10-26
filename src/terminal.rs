@@ -379,7 +379,7 @@ impl Terminal {
             )
         } else if room {
             (
-                "Drag to select · Right-click copies or pastes · Ctrl+Shift+C".into(),
+                format!("Drag to select · Right-click copies or pastes · {COPY_SHORTCUT}"),
                 TITLE_MUTED,
             )
         } else {
@@ -544,6 +544,13 @@ fn shell(script: &str) -> CommandBuilder {
     }
     command
 }
+
+/// Copies the selection; Ctrl+C alone interrupts, except on macOS where Cmd is free.
+const COPY_SHORTCUT: &str = if cfg!(target_os = "macos") {
+    "Cmd+C"
+} else {
+    "Ctrl+Shift+C"
+};
 
 // The terminal keeps its own dark palette in every app theme.
 const TERMINAL_BG: Color32 = Color32::from_rgb(14, 17, 22);
