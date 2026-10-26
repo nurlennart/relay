@@ -68,7 +68,9 @@ impl Connection {
             );
         }
         if self.host.contains(':') && self.host.parse::<std::net::Ipv6Addr>().is_err() {
-            return Err("Use the separate Port field. IPv6 addresses must be bare addresses, such as 2001:db8::1.".into());
+            return Err("Use the separate Port field. \
+                 IPv6 addresses must be bare addresses, such as 2001:db8::1."
+                .into());
         }
         if self.username.starts_with('-') || self.username.chars().any(|c| c.is_control()) {
             return Err(

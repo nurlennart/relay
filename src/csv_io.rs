@@ -305,7 +305,10 @@ mod tests {
     }
     #[test]
     fn quoted_fields_defaults_and_rejected_rows() {
-        let text = "Name,Host,Protocol,Group\n\"A, B\",localhost,SSH,Office\nBad,-host,RDP,Office\nOther,localhost,VNC,Office\n";
+        let text = "Name,Host,Protocol,Group\n\
+            \"A, B\",localhost,SSH,Office\n\
+            Bad,-host,RDP,Office\n\
+            Other,localhost,VNC,Office\n";
         let result = parse(text, &[], "test.csv".into()).unwrap();
         assert_eq!(result.connections[0].name, "A, B");
         assert_eq!(result.connections[0].port, 22);

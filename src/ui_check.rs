@@ -13,7 +13,9 @@ pub fn seed(app: &mut App) {
     {
         theme.apply(&app.ctx);
     }
-    app.settings_open = std::env::var_os("RELAY_UI_SETTINGS").is_some();
+    if std::env::var_os("RELAY_UI_SETTINGS").is_some() {
+        app.modal = Modal::Settings;
+    }
     app.storage_ok = false;
     app.connections = [
         (
@@ -63,11 +65,11 @@ pub fn seed(app: &mut App) {
         app.new_connection();
     }
     if std::env::var_os("RELAY_UI_DATABASE").is_some() {
-        app.db_open = true;
-        app.db_kind = 2;
+        app.modal = Modal::Library;
+        app.db_kind = LibraryKind::Mssql;
     }
     if std::env::var_os("RELAY_UI_IMPORT").is_some() {
-        app.import = Some(
+        app.modal = Modal::Import(
             csv_io::read(
                 &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(csv_io::FIXTURE),
                 &[],

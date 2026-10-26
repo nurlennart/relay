@@ -109,7 +109,7 @@ impl App {
                     );
                     ui.add_space(8.);
                     if outline_button(ui, "Settings", ui.available_width()).clicked() {
-                        self.settings_open = true;
+                        self.modal = Modal::Settings;
                     }
                     ui.add_space(12.);
                     egui::Frame::new()
@@ -142,7 +142,7 @@ impl App {
                                 )
                                 .clicked()
                             {
-                                self.settings_open = true;
+                                self.modal = Modal::Settings;
                             }
                         });
                     ui.add_space(10.);
@@ -215,7 +215,7 @@ impl App {
                                         self.active = Some(index);
                                     }
                                     if session.inner.1.clicked() {
-                                        self.close = Some(index);
+                                        self.modal = Modal::Close(index);
                                     }
                                 });
                             }
@@ -541,13 +541,12 @@ impl App {
                                                     }
                                                     ui.menu_button("···", |ui| {
                                                         if ui.button("Edit connection").clicked() {
-                                                            self.editor = Some(c.clone());
-                                                            self.editor_error.clear();
+                                                            self.edit(c.clone());
                                                             ui.close();
                                                         }
                                                         if ui.button("Delete connection").clicked()
                                                         {
-                                                            self.delete = Some(c.id);
+                                                            self.modal = Modal::Delete(c.id);
                                                             ui.close();
                                                         }
                                                     });
@@ -590,7 +589,9 @@ impl App {
                     self.storage_ok = true;
                     if let Some(location) = self.pending_location.take() {
                         self.location = location;
-                        self.db_open = false;
+                        if matches!(self.modal, Modal::Library) {
+                            self.modal = Modal::None;
+                        }
                         self.group = None;
                         self.filter = Filter::All;
                         self.db_mssql.clear();
@@ -609,8 +610,9 @@ impl App {
                     self.error = Some(e);
                     self.pending = None;
                     self.pending_location = None;
+                    // Reopen the editor so a rejected edit is not lost.
                     if let Some(editor) = self.pending_editor.take() {
-                        self.editor = Some(editor);
+                        self.modal = Modal::Editor(editor);
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -631,7 +633,7 @@ impl App {
         }
         match file_dialog::choose(self.parent, false, false) {
             Ok(Some(path)) => match csv_io::read(&path, &self.connections) {
-                Ok(import) => self.import = Some(import),
+                Ok(import) => self.modal = Modal::Import(import),
                 Err(e) => self.error = Some(e),
             },
             Ok(None) => {}
@@ -665,7 +667,7 @@ impl App {
         }
     }
     pub fn settings(&mut self, ctx: &egui::Context) {
-        if !self.settings_open {
+        if !matches!(self.modal, Modal::Settings) {
             return;
         }
         let colors = theme::palette(ctx);
@@ -771,17 +773,14 @@ impl App {
             }
         }
         if close || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            self.settings_open = false;
+            self.modal = Modal::None;
         }
         if manage {
-            self.settings_open = false;
-            self.db_open = true;
+            self.modal = Modal::Library;
         }
         if import {
+            // Replaces settings with the import preview once a file is read.
             self.import_csv();
-            if self.import.is_some() {
-                self.settings_open = false;
-            }
         }
         if export {
             self.export_csv(false);
@@ -793,62 +792,211 @@ impl App {
 
     pub fn library_dialogs(&mut self, ctx: &egui::Context) {
         let colors = theme::palette(ctx);
-        if self.db_open {
-            dialog("database", ctx).show(ctx,|ui|{
-                ui.set_width(600.);ui.heading("Choose your connection library");ui.label(RichText::new("Switch libraries without interrupting your open sessions.").color(colors.muted));ui.add_space(16.);
-                ui.horizontal(|ui|{ui.selectable_value(&mut self.db_kind,0,"Personal");ui.selectable_value(&mut self.db_kind,1,"SQLite file");ui.selectable_value(&mut self.db_kind,2,"MSSQL server");});ui.add_space(16.);
+        if matches!(self.modal, Modal::Library) {
+            let mut open = false;
+            let mut cancel = false;
+            dialog("database", ctx).show(ctx, |ui| {
+                ui.set_width(600.);
+                ui.heading("Choose your connection library");
+                ui.label(
+                    RichText::new("Switch libraries without interrupting your open sessions.")
+                        .color(colors.muted),
+                );
+                ui.add_space(16.);
+                ui.horizontal(|ui| {
+                    for (kind, label) in [
+                        (LibraryKind::Personal, "Personal"),
+                        (LibraryKind::Sqlite, "SQLite file"),
+                        (LibraryKind::Mssql, "MSSQL server"),
+                    ] {
+                        ui.selectable_value(&mut self.db_kind, kind, label);
+                    }
+                });
+                ui.add_space(16.);
                 match self.db_kind {
-                    0 => {ui.label("Your personal library stays on this computer.");ui.label(RichText::new(self.path.display().to_string()).monospace().size(12.).color(colors.muted));},
-                    1 => {
-                        field(ui,"Database path (local, mapped drive, or UNC)",&mut self.db_path,"\\\\server\\share\\relay.sqlite");
-                        if ui.button("Browse…").clicked(){match file_dialog::choose(self.parent,false,true){Ok(Some(path))=>self.db_path=path.display().to_string(),Err(e)=>self.error=Some(e),_=>{}}}
-                        ui.label(RichText::new("Creates a new database if the file does not exist. Existing personal connections are not moved; use CSV import to add them.").size(12.).color(colors.muted));
-                        ui.add_space(10.);ui.colored_label(ui.visuals().warn_fg_color,"For network drives, use a reliable share with file locking and backups. MSSQL is the better choice for concurrent team editing.");
-                    },
-                    _ => {
-                        ui.label("ADO.NET connection string");ui.add_sized([ui.available_width(),36.],egui::TextEdit::singleline(&mut self.db_mssql).password(true).hint_text("Server=tcp:sql,1433;Database=Relay;Integrated Security=true"));
-                        ui.label(RichText::new("Windows integrated authentication and SQL logins are supported. TLS is required. The string is held in memory for this session only.").size(12.).color(colors.muted));
-                        ui.add_space(10.);ui.label("Run sql/mssql.sql once in an existing database. Your team needs SELECT and UPDATE on dbo.RelayLibrary.");
+                    LibraryKind::Personal => {
+                        ui.label("Your personal library stays on this computer.");
+                        ui.label(
+                            RichText::new(self.path.display().to_string())
+                                .monospace()
+                                .size(12.)
+                                .color(colors.muted),
+                        );
+                    }
+                    LibraryKind::Sqlite => {
+                        field(
+                            ui,
+                            "Database path (local, mapped drive, or UNC)",
+                            &mut self.db_path,
+                            "\\\\server\\share\\relay.sqlite",
+                        );
+                        if ui.button("Browse…").clicked() {
+                            match file_dialog::choose(self.parent, false, true) {
+                                Ok(Some(path)) => self.db_path = path.display().to_string(),
+                                Ok(None) => {}
+                                Err(e) => self.error = Some(e),
+                            }
+                        }
+                        ui.label(
+                            RichText::new(
+                                "Creates a new database if the file does not exist. Existing \
+                                 personal connections are not moved; use CSV import to add them.",
+                            )
+                            .size(12.)
+                            .color(colors.muted),
+                        );
+                        ui.add_space(10.);
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            "For network drives, use a reliable share with file locking and \
+                             backups. MSSQL is the better choice for concurrent team editing.",
+                        );
+                    }
+                    LibraryKind::Mssql => {
+                        ui.label("ADO.NET connection string");
+                        let hint = "Server=tcp:sql,1433;Database=Relay;Integrated Security=true";
+                        ui.add_sized(
+                            [ui.available_width(), 36.],
+                            egui::TextEdit::singleline(&mut self.db_mssql)
+                                .password(true)
+                                .hint_text(hint),
+                        );
+                        ui.label(
+                            RichText::new(
+                                "Windows integrated authentication and SQL logins are supported. \
+                                 TLS is required. The string is held in memory for this session \
+                                 only.",
+                            )
+                            .size(12.)
+                            .color(colors.muted),
+                        );
+                        ui.add_space(10.);
+                        ui.label(
+                            "Run sql/mssql.sql once in an existing database. \
+                             Your team needs SELECT and UPDATE on dbo.RelayLibrary.",
+                        );
                     }
                 }
-                ui.add_space(18.);ui.horizontal(|ui|{
-                    if ui.add_enabled(self.pending.is_none(),egui::Button::new(RichText::new("Open library").color(colors.bg).strong()).fill(colors.accent).min_size(Vec2::new(150.,36.))).clicked(){
-                        let location=match self.db_kind{0=>Some(database::Location::Local(self.path.clone())),1 if !self.db_path.trim().is_empty()=>Some(database::Location::Sqlite(PathBuf::from(self.db_path.trim()))),2 if !self.db_mssql.trim().is_empty()=>Some(database::Location::Mssql(self.db_mssql.clone())),_=>None};
-                        if let Some(location)=location{self.pending_save=false;self.pending_location=Some(location.clone());self.pending=Some(database::start(location,0,None,self.ctx.clone()));}else{self.error=Some("Enter a database path or connection string.".into());}
+                ui.add_space(18.);
+                ui.horizontal(|ui| {
+                    let idle = self.pending.is_none();
+                    let button =
+                        egui::Button::new(RichText::new("Open library").color(colors.bg).strong())
+                            .fill(colors.accent)
+                            .min_size(Vec2::new(150., 36.));
+                    open = ui.add_enabled(idle, button).clicked();
+                    cancel = ui.add_enabled(idle, egui::Button::new("Cancel")).clicked();
+                    if !idle {
+                        ui.spinner();
+                        ui.label("Opening library…");
                     }
-                    if ui.add_enabled(self.pending.is_none(),egui::Button::new("Cancel")).clicked(){self.db_open=false;}
-                    if self.pending.is_some(){ui.spinner();ui.label("Opening library…");}
                 });
-                if let Some(error)=&self.error{ui.colored_label(ui.visuals().error_fg_color,error);}
+                if let Some(error) = &self.error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
             });
+            if open {
+                self.open_library();
+            } else if cancel {
+                self.modal = Modal::None;
+            }
         }
-        if let Some(import) = &self.import {
+        if let Modal::Import(import) = &self.modal {
             let mut confirm = false;
             let mut cancel = false;
-            dialog("import", ctx).show(ctx,|ui|{
-                ui.set_width(680.);ui.heading("Review CSV import");ui.label(RichText::new(&import.filename).color(colors.muted));ui.add_space(16.);
-                ui.horizontal(|ui|{ui.colored_label(colors.accent,format!("{} ready to import",import.connections.len()));ui.label(format!("{} duplicates",import.duplicates));ui.colored_label(ui.visuals().warn_fg_color,format!("{} skipped",import.skipped.len()));});
-                ui.add_space(12.);
-                egui::ScrollArea::vertical().id_salt("import-preview").max_height(260.).show(ui,|ui|{
-                    for c in &import.connections{ui.horizontal(|ui|{protocol_badge(ui,c.protocol);ui.add(egui::Label::new(&c.name).truncate());ui.add(egui::Label::new(RichText::new(&c.group).size(11.).color(colors.muted)).truncate());});}
+            dialog("import", ctx).show(ctx, |ui| {
+                ui.set_width(680.);
+                ui.heading("Review CSV import");
+                ui.label(RichText::new(&import.filename).color(colors.muted));
+                ui.add_space(16.);
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        colors.accent,
+                        format!("{} ready to import", import.connections.len()),
+                    );
+                    ui.label(format!("{} duplicates", import.duplicates));
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!("{} skipped", import.skipped.len()),
+                    );
                 });
-                if !import.skipped.is_empty(){ui.collapsing("Skipped rows — inspect reasons",|ui|{egui::ScrollArea::vertical().id_salt("skip-reasons").max_height(150.).show(ui,|ui|{for reason in &import.skipped{ui.label(reason);}});});}
-                ui.add_space(16.);ui.label(RichText::new("Existing connections stay unchanged. Unsupported VNC records are not imported.").size(12.).color(colors.muted));
-                ui.horizontal(|ui|{
-                    if ui.add_enabled(!import.connections.is_empty()&&self.pending.is_none(),egui::Button::new(RichText::new(format!("Import {} connections",import.connections.len())).color(colors.bg).strong()).fill(colors.accent)).clicked(){confirm=true;}
-                    if ui.button("Cancel").clicked(){cancel=true;}
+                ui.add_space(12.);
+                egui::ScrollArea::vertical()
+                    .id_salt("import-preview")
+                    .max_height(260.)
+                    .show(ui, |ui| {
+                        for c in &import.connections {
+                            ui.horizontal(|ui| {
+                                protocol_badge(ui, c.protocol);
+                                ui.add(egui::Label::new(&c.name).truncate());
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&c.group).size(11.).color(colors.muted),
+                                    )
+                                    .truncate(),
+                                );
+                            });
+                        }
+                    });
+                if !import.skipped.is_empty() {
+                    ui.collapsing("Skipped rows — inspect reasons", |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("skip-reasons")
+                            .max_height(150.)
+                            .show(ui, |ui| {
+                                for reason in &import.skipped {
+                                    ui.label(reason);
+                                }
+                            });
+                    });
+                }
+                ui.add_space(16.);
+                ui.label(
+                    RichText::new(
+                        "Existing connections stay unchanged. \
+                         Unsupported protocols such as VNC are not imported.",
+                    )
+                    .size(12.)
+                    .color(colors.muted),
+                );
+                ui.horizontal(|ui| {
+                    let label = format!("Import {} connections", import.connections.len());
+                    let button = egui::Button::new(RichText::new(label).color(colors.bg).strong())
+                        .fill(colors.accent);
+                    let ready = !import.connections.is_empty() && self.pending.is_none();
+                    confirm = ui.add_enabled(ready, button).clicked();
+                    cancel = ui.button("Cancel").clicked();
                 });
             });
             if confirm {
                 let mut next = self.connections.clone();
-                next.extend(self.import.as_ref().unwrap().connections.clone());
+                next.extend(import.connections.iter().cloned());
                 if self.persist(next) {
-                    self.import = None;
+                    self.modal = Modal::None;
                 }
             } else if cancel {
-                self.import = None;
+                self.modal = Modal::None;
             }
         }
+    }
+
+    fn open_library(&mut self) {
+        let location = match self.db_kind {
+            LibraryKind::Personal => database::Location::Local(self.path.clone()),
+            LibraryKind::Sqlite if !self.db_path.trim().is_empty() => {
+                database::Location::Sqlite(PathBuf::from(self.db_path.trim()))
+            }
+            LibraryKind::Mssql if !self.db_mssql.trim().is_empty() => {
+                database::Location::Mssql(self.db_mssql.clone())
+            }
+            _ => {
+                self.error = Some("Enter a database path or connection string.".into());
+                return;
+            }
+        };
+        self.pending_save = false;
+        self.pending_location = Some(location.clone());
+        self.pending = Some(database::start(location, 0, None, self.ctx.clone()));
     }
 }
 

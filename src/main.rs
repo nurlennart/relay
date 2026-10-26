@@ -47,22 +47,44 @@ enum Filter {
     Ssh,
 }
 
+/// The dialog covering the workspace. Only one is open at a time.
+#[derive(Default)]
+enum Modal {
+    #[default]
+    None,
+    Editor(Connection),
+    Delete(u64),
+    Close(usize),
+    Settings,
+    Library,
+    Import(csv_io::Import),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum LibraryKind {
+    Personal,
+    Sqlite,
+    Mssql,
+}
+
+const MSSQL_EXAMPLE: &str = "Server=tcp:sql.example.com,1433;Database=Relay;\
+    Integrated Security=true;Encrypt=true;TrustServerCertificate=false";
+
 struct App {
     connections: Vec<Connection>,
     sessions: Vec<Session>,
     active: Option<usize>,
     filter: Filter,
     query: String,
-    editor: Option<Connection>,
+    modal: Modal,
+    /// The quit confirmation overlays `modal`, which returns when the user keeps working.
+    quitting: bool,
     editor_error: String,
-    delete: Option<u64>,
-    close: Option<usize>,
     error: Option<String>,
     storage_ok: bool,
     path: PathBuf,
     parent: HWND,
     search_focus: bool,
-    quitting: bool,
     ctx: egui::Context,
     location: database::Location,
     revision: i64,
@@ -70,12 +92,9 @@ struct App {
     pending_location: Option<database::Location>,
     recovery: Option<Vec<Connection>>,
     pending_editor: Option<Connection>,
-    db_open: bool,
-    settings_open: bool,
-    db_kind: usize,
+    db_kind: LibraryKind,
     db_path: String,
     db_mssql: String,
-    import: Option<csv_io::Import>,
     notice: Option<String>,
     group: Option<String>,
     selected: Option<u64>,
@@ -125,34 +144,54 @@ impl App {
             active: None,
             filter: Filter::All,
             query: String::new(),
-            editor: None,
+            modal: Modal::None,
+            quitting: false,
             editor_error: String::new(),
-            delete: None,
-            close: None,
             storage_ok: error.is_none(),
             error,
             path,
             parent,
             search_focus: false,
-            quitting: false,
             ctx: cc.egui_ctx.clone(),
-            location, revision: 0, pending: None, pending_location: None, recovery: None, pending_editor: None,
-            settings_open: false, db_open: false, db_kind: 0, db_path: String::new(),
-            db_mssql: "Server=tcp:sql.example.com,1433;Database=Relay;Integrated Security=true;Encrypt=true;TrustServerCertificate=false".into(),
-            import: None, notice: None, group: None, selected: None, pending_save: false,
+            location,
+            revision: 0,
+            pending: None,
+            pending_location: None,
+            recovery: None,
+            pending_editor: None,
+            db_kind: LibraryKind::Personal,
+            db_path: String::new(),
+            db_mssql: MSSQL_EXAMPLE.into(),
+            notice: None,
+            group: None,
+            selected: None,
+            pending_save: false,
         }
+    }
+
+    /// Whether a dialog covers the workspace. Native RDP windows sit above GPU content, so
+    /// they are hidden while this is true.
+    fn covered(&self) -> bool {
+        self.quitting || !matches!(self.modal, Modal::None)
     }
 
     fn persist(&mut self, next: Vec<Connection>) -> bool {
         if !self.storage_ok {
-            self.error = Some("Repair the saved connections file and restart Relay before making changes. Your existing file has been preserved.".into());
+            self.error = Some(
+                "Repair the saved connections file and restart Relay before making changes. \
+                 Your existing file has been preserved."
+                    .into(),
+            );
             return false;
         }
         if self.pending.is_some() {
             return false;
         }
         self.recovery = Some(next.clone());
-        self.pending_editor = self.editor.clone();
+        self.pending_editor = match &self.modal {
+            Modal::Editor(c) => Some(c.clone()),
+            _ => None,
+        };
         self.pending_save = true;
         self.pending = Some(database::start(
             self.location.clone(),
@@ -185,72 +224,117 @@ impl App {
             self.notice = Some("Wait for the current library operation to finish.".into());
             return;
         }
-        self.editor = Some(Connection::new());
+        self.edit(Connection::new());
+    }
+
+    fn edit(&mut self, connection: Connection) {
+        self.modal = Modal::Editor(connection);
         self.editor_error.clear();
     }
 
     fn editor(&mut self, ctx: &egui::Context) {
         let colors = theme::palette(ctx);
-        let Some(mut c) = self.editor.clone() else {
+        let Modal::Editor(c) = &self.modal else {
             return;
         };
+        let mut c = c.clone();
         let mut save = false;
         let mut cancel = false;
+        let rdp = c.protocol == Protocol::Rdp;
         dialog("edit-connection", ctx).show(ctx, |ui| {
-            ui.set_width(440.); ui.add_space(8.);
-            ui.label(RichText::new(if c.id == 0 { "New connection" } else { "Edit connection" }).size(25.).strong());
-            ui.label(RichText::new("A familiar name. A machine to reach.").color(colors.muted)); ui.add_space(15.);
+            ui.set_width(440.);
+            ui.add_space(8.);
+            let title = if c.id == 0 {
+                "New connection"
+            } else {
+                "Edit connection"
+            };
+            ui.label(RichText::new(title).size(25.).strong());
+            ui.label(RichText::new("A familiar name. A machine to reach.").color(colors.muted));
+            ui.add_space(15.);
             ui.horizontal(|ui| {
                 for protocol in [Protocol::Rdp, Protocol::Ssh] {
-                    if ui.add_sized([210., 40.], egui::Button::new(protocol.label()).selected(c.protocol == protocol)).clicked() {
-                        if c.port == c.protocol.port() { c.port = protocol.port(); } c.protocol = protocol;
+                    let button =
+                        egui::Button::new(protocol.label()).selected(c.protocol == protocol);
+                    if ui.add_sized([210., 40.], button).clicked() {
+                        if c.port == c.protocol.port() {
+                            c.port = protocol.port();
+                        }
+                        c.protocol = protocol;
                     }
                 }
-            }); ui.add_space(10.);
-            field(ui, "Connection name", &mut c.name, "e.g. Office workstation");
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| { ui.label("Host / IP address"); ui.add_sized([330., 32.], egui::TextEdit::singleline(&mut c.host).hint_text("e.g. 192.168.1.20")); });
-                ui.vertical(|ui| { ui.label("Port"); ui.add_sized([90., 32.], egui::DragValue::new(&mut c.port).range(1..=65535).speed(1)); });
             });
-            field(ui, "Username (optional)", &mut c.username, if c.protocol == Protocol::Rdp { "DOMAIN\\username" } else { "username" });
+            ui.add_space(10.);
+            field(
+                ui,
+                "Connection name",
+                &mut c.name,
+                "e.g. Office workstation",
+            );
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label("Host / IP address");
+                    ui.add_sized(
+                        [330., 32.],
+                        egui::TextEdit::singleline(&mut c.host).hint_text("e.g. 192.168.1.20"),
+                    );
+                });
+                ui.vertical(|ui| {
+                    ui.label("Port");
+                    ui.add_sized(
+                        [90., 32.],
+                        egui::DragValue::new(&mut c.port).range(1..=65535).speed(1),
+                    );
+                });
+            });
+            let user_hint = if rdp { "DOMAIN\\username" } else { "username" };
+            field(ui, "Username (optional)", &mut c.username, user_hint);
             field(ui, "Group", &mut c.group, "Personal");
-            ui.checkbox(&mut c.favorite, "Add to favorites"); ui.add_space(8.);
-            ui.label(RichText::new(if c.protocol == Protocol::Rdp { "Credentials are handled by Windows Remote Desktop.\nPasswords are never stored by Relay." } else { "Uses Windows OpenSSH, including your SSH config and agent.\nHost verification and password prompts appear in the terminal." }).size(12.).color(colors.muted));
-            if !self.editor_error.is_empty() { ui.colored_label(ui.visuals().error_fg_color, &self.editor_error); }
+            ui.checkbox(&mut c.favorite, "Add to favorites");
+            ui.add_space(8.);
+            let help = if rdp {
+                "Credentials are handled by Windows Remote Desktop.\n\
+                 Passwords are never stored by Relay."
+            } else {
+                "Uses Windows OpenSSH, including your SSH config and agent.\n\
+                 Host verification and password prompts appear in the terminal."
+            };
+            ui.label(RichText::new(help).size(12.).color(colors.muted));
+            if !self.editor_error.is_empty() {
+                ui.colored_label(ui.visuals().error_fg_color, &self.editor_error);
+            }
             ui.add_space(14.);
             ui.horizontal(|ui| {
-                if accent_button(ui, "Save connection", 175.).clicked() { save = true; }
-                if ui.button("Cancel").clicked() { cancel = true; }
-            }); ui.add_space(6.);
+                save = accent_button(ui, "Save connection", 175.).clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+            ui.add_space(6.);
         });
         if cancel {
-            self.editor = None;
-        } else if save {
-            match c.validate() {
-                Err(e) => {
-                    self.editor_error = e;
-                    self.editor = Some(c);
-                }
-                Ok(()) => {
-                    let mut next = self.connections.clone();
-                    if c.id == 0 {
-                        c.id = next
-                            .iter()
-                            .map(|c| c.id)
-                            .max()
-                            .unwrap_or(0)
-                            .saturating_add(1);
-                        next.push(c);
-                    } else if let Some(existing) = next.iter_mut().find(|v| v.id == c.id) {
-                        *existing = c;
-                    }
-                    if self.persist(next) {
-                        self.editor = None;
-                    }
-                }
+            self.modal = Modal::None;
+            return;
+        }
+        if save && let Err(e) = c.validate() {
+            self.editor_error = e;
+            save = false;
+        }
+        self.modal = Modal::Editor(c.clone());
+        if save {
+            let mut next = self.connections.clone();
+            if c.id == 0 {
+                c.id = next
+                    .iter()
+                    .map(|c| c.id)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_add(1);
+                next.push(c);
+            } else if let Some(existing) = next.iter_mut().find(|v| v.id == c.id) {
+                *existing = c;
             }
-        } else {
-            self.editor = Some(c);
+            if self.persist(next) {
+                self.modal = Modal::None;
+            }
         }
     }
 
@@ -260,15 +344,16 @@ impl App {
                 ui.set_width(380.);
                 ui.heading("Close Relay?");
                 ui.label("Save your work on each remote machine before closing.");
-                if self.recovery.is_some(){ui.colored_label(ui.visuals().error_fg_color,"There are unsaved library changes in memory. Export them before closing or they will be lost.");}
+                if self.recovery.is_some() {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        "There are unsaved library changes in memory. \
+                         Export them before closing or they will be lost.",
+                    );
+                }
                 ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(
-                            self.pending.is_none(),
-                            egui::Button::new("End sessions and quit"),
-                        )
-                        .clicked()
-                    {
+                    let quit = egui::Button::new("End sessions and quit");
+                    if ui.add_enabled(self.pending.is_none(), quit).clicked() {
                         self.sessions.clear();
                         self.active = None;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -280,49 +365,54 @@ impl App {
             });
             return;
         }
-        if let Some(id) = self.delete {
-            dialog("delete", ctx).show(ctx, |ui| {
-                ui.set_width(360.);
-                ui.heading("Delete saved connection?");
-                ui.label("This removes the saved entry. Any open session stays open.");
-                ui.horizontal(|ui| {
-                    if ui.button("Delete connection").clicked() {
-                        let next = self
-                            .connections
-                            .iter()
-                            .filter(|c| c.id != id)
-                            .cloned()
-                            .collect();
-                        if self.persist(next) {
-                            self.delete = None;
+        match self.modal {
+            Modal::Delete(id) => {
+                dialog("delete", ctx).show(ctx, |ui| {
+                    ui.set_width(360.);
+                    ui.heading("Delete saved connection?");
+                    ui.label("This removes the saved entry. Any open session stays open.");
+                    ui.horizontal(|ui| {
+                        if ui.button("Delete connection").clicked() {
+                            let next = self
+                                .connections
+                                .iter()
+                                .filter(|c| c.id != id)
+                                .cloned()
+                                .collect();
+                            if self.persist(next) {
+                                self.modal = Modal::None;
+                            }
                         }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.delete = None;
-                    }
+                        if ui.button("Cancel").clicked() {
+                            self.modal = Modal::None;
+                        }
+                    });
                 });
-            });
-        }
-        if let Some(index) = self.close {
-            dialog("close", ctx).show(ctx, |ui| {
-                ui.set_width(380.);
-                ui.heading("Close this session?");
-                ui.label("The connection will end. Save your work on the remote machine first.");
-                ui.horizontal(|ui| {
-                    if ui.button("Close session").clicked() {
-                        self.sessions.remove(index);
-                        self.active = match self.active {
-                            Some(a) if a == index => None,
-                            Some(a) if a > index => Some(a - 1),
-                            other => other,
-                        };
-                        self.close = None;
-                    }
-                    if ui.button("Keep open").clicked() {
-                        self.close = None;
-                    }
+            }
+            Modal::Close(index) => {
+                dialog("close", ctx).show(ctx, |ui| {
+                    ui.set_width(380.);
+                    ui.heading("Close this session?");
+                    ui.label(
+                        "The connection will end. Save your work on the remote machine first.",
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Close session").clicked() {
+                            self.sessions.remove(index);
+                            self.active = match self.active {
+                                Some(a) if a == index => None,
+                                Some(a) if a > index => Some(a - 1),
+                                other => other,
+                            };
+                            self.modal = Modal::None;
+                        }
+                        if ui.button("Keep open").clicked() {
+                            self.modal = Modal::None;
+                        }
+                    });
                 });
-            });
+            }
+            _ => {}
         }
     }
 }
@@ -349,35 +439,28 @@ impl eframe::App for App {
             .and_then(|i| self.sessions.get(i))
             .and_then(|s| s.terminal.as_ref())
             .is_some_and(|t| t.focused);
-        if !terminal_focused
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::N))
-        {
-            self.new_connection();
-        }
-        if !terminal_focused
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::K))
-        {
-            self.search_focus = true;
-            self.active = None;
-        }
-        if !terminal_focused
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::W))
-        {
-            self.close = self.active;
+        let shortcut = |key| ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, key));
+        if !terminal_focused && !self.covered() {
+            if shortcut(egui::Key::N) {
+                self.new_connection();
+            }
+            if shortcut(egui::Key::K) {
+                self.search_focus = true;
+                self.active = None;
+            }
+            if shortcut(egui::Key::W)
+                && let Some(active) = self.active
+            {
+                self.modal = Modal::Close(active);
+            }
         }
         for s in &mut self.sessions {
             s.poll(self.parent);
         }
         // Hide native children before painting overlays; native child HWNDs sit above GPU content.
-        let modal = self.editor.is_some()
-            || self.delete.is_some()
-            || self.close.is_some()
-            || self.quitting
-            || self.settings_open
-            || self.db_open
-            || self.import.is_some();
+        let covered = self.covered();
         for (i, s) in self.sessions.iter_mut().enumerate() {
-            if self.active != Some(i) || modal {
+            if self.active != Some(i) || covered {
                 s.place(None);
             }
         }
@@ -508,16 +591,10 @@ impl eframe::App for App {
         self.confirmations(ctx);
         self.settings(ctx);
         self.library_dialogs(ctx);
-        let modal = self.editor.is_some()
-            || self.delete.is_some()
-            || self.close.is_some()
-            || self.quitting
-            || self.settings_open
-            || self.db_open
-            || self.import.is_some();
+        let covered = self.covered();
         let ppp = ctx.pixels_per_point();
         for (i, s) in self.sessions.iter_mut().enumerate() {
-            let rect = if !modal && self.active == Some(i) {
+            let rect = if !covered && self.active == Some(i) {
                 session_rect.map(|r| {
                     [
                         (r.min.x * ppp).round() as i32,
