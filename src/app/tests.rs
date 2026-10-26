@@ -365,7 +365,7 @@ fn navigation_and_theme_clicks_include_label_and_both_edges() {
                         clicked = if theme_row {
                             theme_option(ui, theme::Theme::Midnight, false).clicked()
                         } else {
-                            nav_row(ui, "▱", "Infrastructure", 10, false)
+                            nav_row(ui, Icon::Folder, "Infrastructure", 10, false)
                         };
                     });
                 },

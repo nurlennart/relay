@@ -24,6 +24,10 @@ pub struct Palette {
     pub text: Color32,
     pub accent: Color32,
     pub selected: Color32,
+    /// A quieter line than `line`, for dividers between rows.
+    pub divider: Color32,
+    /// Hover outlines and the edges of raised controls.
+    pub edge: Color32,
     pub rdp: Color32,
     pub error_bg: Color32,
 }
@@ -75,26 +79,18 @@ impl Theme {
         let rgb = |v: [u8; 3]| Color32::from_rgb(v[0], v[1], v[2]);
         let surface = rgb(surface);
         let accent = rgb(accent);
+        let contrast = if self.is_light() {
+            Color32::BLACK
+        } else {
+            Color32::WHITE
+        };
+        let panel = rgb(panel);
         Palette {
             bg: rgb(bg),
-            panel: rgb(panel),
+            panel,
             surface,
-            hover: surface.lerp_to_gamma(
-                if self.is_light() {
-                    Color32::BLACK
-                } else {
-                    Color32::WHITE
-                },
-                if self.is_light() { 0.035 } else { 0.07 },
-            ),
-            line: surface.lerp_to_gamma(
-                if self.is_light() {
-                    Color32::BLACK
-                } else {
-                    Color32::WHITE
-                },
-                if self.is_light() { 0.20 } else { 0.09 },
-            ),
+            hover: surface.lerp_to_gamma(contrast, if self.is_light() { 0.035 } else { 0.07 }),
+            line: surface.lerp_to_gamma(contrast, if self.is_light() { 0.20 } else { 0.09 }),
             muted: if self.is_light() {
                 rgb([77, 88, 104])
             } else {
@@ -107,6 +103,8 @@ impl Theme {
             },
             accent,
             selected: surface.lerp_to_gamma(accent, if self.is_light() { 0.10 } else { 0.16 }),
+            divider: panel.lerp_to_gamma(contrast, if self.is_light() { 0.08 } else { 0.06 }),
+            edge: surface.lerp_to_gamma(contrast, if self.is_light() { 0.30 } else { 0.18 }),
             rdp: if self.is_light() {
                 rgb([24, 77, 145])
             } else {
@@ -150,7 +148,7 @@ impl Theme {
         v.widgets.inactive.bg_stroke = Stroke::new(1_f32, c.line);
         v.widgets.hovered.bg_fill = c.hover;
         v.widgets.hovered.weak_bg_fill = c.hover;
-        v.widgets.hovered.bg_stroke = Stroke::new(1_f32, c.accent);
+        v.widgets.hovered.bg_stroke = Stroke::new(1_f32, c.edge);
         v.widgets.active.bg_fill = c.selected;
         v.widgets.active.weak_bg_fill = c.selected;
         v.widgets.active.bg_stroke = Stroke::new(1_f32, c.accent);
@@ -162,7 +160,18 @@ impl Theme {
         ] {
             widget.corner_radius = egui::CornerRadius::same(6);
         }
-        v.window_corner_radius = egui::CornerRadius::same(12);
+        v.window_corner_radius = egui::CornerRadius::same(10);
+        v.menu_corner_radius = egui::CornerRadius::same(8);
+        v.window_stroke = Stroke::new(1_f32, c.line);
+        // Soft shadows lift dialogs and menus; light themes need less to read as depth.
+        let shadow = |offset: i8, blur: u8, alpha: u8| egui::Shadow {
+            offset: [0, offset],
+            blur,
+            spread: 0,
+            color: Color32::from_black_alpha(if self.is_light() { alpha / 3 } else { alpha }),
+        };
+        v.window_shadow = shadow(12, 32, 120);
+        v.popup_shadow = shadow(4, 14, 90);
         ctx.set_visuals(v);
         ctx.data_mut(|data| data.insert_temp(egui::Id::new("relay-theme"), self));
         ctx.request_repaint();

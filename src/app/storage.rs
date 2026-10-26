@@ -279,15 +279,18 @@ impl App {
                         );
                     }
                 }
-                ui.add_space(18.);
+                ui.add_space(12.);
                 ui.horizontal(|ui| {
                     let idle = self.pending.is_none();
                     let button =
                         egui::Button::new(RichText::new("Open library").color(colors.bg).strong())
                             .fill(colors.accent)
-                            .min_size(Vec2::new(150., 36.));
+                            .min_size(Vec2::new(130., CONTROL_HEIGHT));
                     open = ui.add_enabled(idle, button).clicked();
-                    cancel = ui.add_enabled(idle, egui::Button::new("Cancel")).clicked();
+                    cancel = ui
+                        .add_enabled_ui(idle, |ui| outline_button(ui, "Cancel", 80.))
+                        .inner
+                        .clicked();
                     if !idle {
                         ui.spinner();
                         ui.label("Opening library…");
@@ -364,10 +367,11 @@ impl App {
                 ui.horizontal(|ui| {
                     let label = format!("Import {} connections", import.connections.len());
                     let button = egui::Button::new(RichText::new(label).color(colors.bg).strong())
-                        .fill(colors.accent);
+                        .fill(colors.accent)
+                        .min_size(Vec2::new(0., CONTROL_HEIGHT));
                     let ready = !import.connections.is_empty() && self.pending.is_none();
                     confirm = ui.add_enabled(ready, button).clicked();
-                    cancel = ui.button("Cancel").clicked();
+                    cancel = outline_button(ui, "Cancel", 80.).clicked();
                 });
             });
             if confirm {

@@ -1,35 +1,26 @@
 //! The tab strip above the workspace.
 use super::*;
-use egui::{FontId, Margin, Rect, Sense};
+use egui::{Margin, Rect, Sense};
 
 impl App {
     pub(super) fn tabs(&mut self, ctx: &egui::Context) {
         let colors = theme::palette(ctx);
         egui::TopBottomPanel::top("tabs")
-            .exact_height(58.)
+            .exact_height(BAR_HEIGHT)
             .frame(
                 egui::Frame::new()
                     .fill(colors.panel)
-                    .inner_margin(Margin::symmetric(20, 10))
-                    .stroke(Stroke::new(1_f32, colors.line)),
+                    .inner_margin(Margin::symmetric(8, 6)),
             )
             .show(ctx, |ui| {
                 egui::ScrollArea::horizontal()
                     .id_salt("tabs-scroll")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let library =
-                                tab(ui, "      Connection library", self.active.is_none())
-                                    .on_hover_text("Ctrl+1");
-                            library_icon(
-                                ui,
-                                egui::pos2(library.rect.left() + 18., library.rect.center().y),
-                                if self.active.is_none() {
-                                    colors.accent
-                                } else {
-                                    colors.muted
-                                },
-                            );
+                        ui.horizontal_centered(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.;
+                            let library = library_tab(ui, self.active.is_none())
+                                .on_hover_text("Connection library (Ctrl+1)");
                             if library.clicked() {
                                 self.active = None;
                             }
@@ -143,10 +134,7 @@ impl App {
                                     session_tab(ui, c, state, false);
                                 }
                             }
-                            if ui
-                                .add_sized([32., 34.], egui::Button::new("+").frame(false))
-                                .on_hover_text("New connection (Ctrl+N)")
-                                .clicked()
+                            if icon_button(ui, Icon::Plus, 26., "New connection (Ctrl+N)").clicked()
                             {
                                 self.new_connection();
                             }
@@ -156,23 +144,59 @@ impl App {
     }
 }
 
-pub(super) fn tab(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+/// The fill behind a tab: raised when selected, faint while hovered.
+fn tab_background(ui: &egui::Ui, rect: Rect, selected: bool, hovered: bool) {
     let colors = theme::palette(ui.ctx());
-    ui.add(
-        egui::Button::new(RichText::new(label).size(13.).color(if selected {
-            colors.text
+    if selected {
+        ui.painter().rect(
+            rect,
+            6.,
+            colors.surface,
+            Stroke::new(1_f32, colors.line),
+            egui::StrokeKind::Inside,
+        );
+    } else if hovered {
+        ui.painter()
+            .rect_filled(rect, 6., colors.hover.gamma_multiply(0.6));
+    }
+}
+
+/// The widest a session tab's name gets before it is shortened.
+const TAB_LABEL_MAX: f32 = 180.;
+
+/// The first tab, which shows the connection library.
+pub(super) fn library_tab(ui: &mut egui::Ui, selected: bool) -> egui::Response {
+    let colors = theme::palette(ui.ctx());
+    let text = if selected { colors.text } else { colors.muted };
+    let galley = egui::WidgetText::from(RichText::new("Library").size(13.)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Body,
+    );
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(galley.size().x + 40., 28.), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, "Library")
+    });
+    tab_background(ui, rect, selected, response.hovered());
+    icons::paint_sized(
+        ui.painter(),
+        Icon::Library,
+        egui::pos2(rect.left() + 16., rect.center().y),
+        14.,
+        if selected {
+            colors.accent
         } else {
             colors.muted
-        }))
-        .fill(if selected {
-            colors.surface
-        } else {
-            Color32::TRANSPARENT
-        })
-        .stroke(Stroke::NONE)
-        .corner_radius(6)
-        .min_size(Vec2::new(0., 36.)),
-    )
+        },
+    );
+    ui.painter().galley(
+        egui::pos2(rect.left() + 30., rect.center().y - galley.size().y / 2.),
+        galley,
+        text,
+    );
+    response
 }
 
 pub(super) fn session_tab(
@@ -184,60 +208,74 @@ pub(super) fn session_tab(
     let colors = theme::palette(ui.ctx());
     let text = if selected { colors.text } else { colors.muted };
     let label = connection.name.as_str();
-    let label_width = ui.fonts_mut(|fonts| {
-        fonts
-            .layout_no_wrap(label.to_owned(), FontId::proportional(13.), text)
-            .size()
-            .x
-    });
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(label_width + 82., 36.), Sense::drag());
-    ui.painter().rect_filled(
-        rect,
-        6.,
-        if selected {
-            colors.surface
-        } else {
-            colors.panel
-        },
+    let galley = egui::WidgetText::from(RichText::new(label).size(13.)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        TAB_LABEL_MAX,
+        egui::TextStyle::Body,
     );
-    ui.painter().rect_stroke(
-        rect,
-        6.,
-        Stroke::new(1_f32, colors.line),
-        egui::StrokeKind::Inside,
-    );
+    // Protocol icon, name, then the close button.
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(galley.size().x + 62., 28.), Sense::drag());
+    let hovered = ui.rect_contains_pointer(rect);
+    tab_background(ui, rect, selected, hovered);
+    // The protocol's icon carries the session state in its color.
     let (status, state) = match state {
         session::TabState::Open => (colors.accent, "open"),
         session::TabState::Ended => (ui.visuals().error_fg_color, "ended"),
         session::TabState::Waiting => (colors.muted, "connects when selected"),
     };
-    ui.painter()
-        .circle_filled(egui::pos2(rect.left() + 14., rect.center().y), 3.5, status);
-    let select_rect =
-        Rect::from_min_max(rect.min + Vec2::new(22., 0.), rect.max - Vec2::new(36., 0.));
+    icons::paint_sized(
+        ui.painter(),
+        Icon::protocol(connection.protocol),
+        egui::pos2(rect.left() + 16., rect.center().y),
+        14.,
+        status,
+    );
+    let select_rect = Rect::from_min_max(rect.min, rect.max - Vec2::new(30., 0.));
     let close_rect = Rect::from_center_size(
-        egui::pos2(rect.right() - 18., rect.center().y),
-        Vec2::splat(28.),
+        egui::pos2(rect.right() - 16., rect.center().y),
+        Vec2::splat(20.),
     );
     let select = ui
-        .put(
-            select_rect,
-            egui::Button::new(RichText::new(label).size(13.).color(text)).frame(false),
-        )
+        .interact(select_rect, response.id.with("select"), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(format!(
             "{} · {} · {}",
             connection.protocol.label(),
             connection.address(),
             state
         ));
-    let close = ui
-        .put(
-            close_rect,
-            egui::Button::new(RichText::new("×").size(17.))
-                .small()
-                .frame(false),
-        )
-        .on_hover_text(format!("Close {label} (Ctrl+W)"));
+    select.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label)
+    });
+    ui.painter().galley(
+        egui::pos2(rect.left() + 30., rect.center().y - galley.size().y / 2.),
+        galley,
+        text,
+    );
+    let close = ui.interact(close_rect, response.id.with("close"), Sense::click());
+    close.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Close {label}"))
+    });
+    // The close button shows on the selected tab and under the pointer, as in browsers.
+    if selected || hovered {
+        if close.hovered() {
+            ui.painter().rect_filled(close_rect, 4., colors.hover);
+        }
+        icons::paint_sized(
+            ui.painter(),
+            Icon::Close,
+            close_rect.center(),
+            13.,
+            if close.hovered() {
+                colors.text
+            } else {
+                colors.muted
+            },
+        );
+    }
+    let close = close.on_hover_text(format!("Close {label} (Ctrl+W)"));
     egui::InnerResponse {
         inner: (select, close),
         response,

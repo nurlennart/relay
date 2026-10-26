@@ -17,15 +17,13 @@ impl App {
         let parent = self.parent;
         dialog("edit-connection", ctx).show(ctx, |ui| {
             ui.set_width(440.);
-            ui.add_space(8.);
             let title = if c.id == 0 {
                 "New connection"
             } else {
                 "Edit connection"
             };
-            ui.label(RichText::new(title).size(25.).strong());
-            ui.label(RichText::new("A familiar name. A machine to reach.").color(colors.muted));
-            ui.add_space(15.);
+            ui.label(RichText::new(title).size(TITLE_SIZE).strong());
+            ui.add_space(8.);
             egui::ScrollArea::vertical()
                 .id_salt("editor-fields")
                 .max_height(fields_height)
@@ -35,7 +33,7 @@ impl App {
                         for protocol in [Protocol::Rdp, Protocol::Ssh] {
                             let button = egui::Button::new(protocol.label())
                                 .selected(c.protocol == protocol);
-                            if ui.add_sized([half, 40.], button).clicked() {
+                            if ui.add_sized([half, CONTROL_HEIGHT], button).clicked() {
                                 if c.port == c.protocol.port() {
                                     c.port = protocol.port();
                                 }
@@ -95,10 +93,20 @@ impl App {
                             let choose = ui
                                 .add_enabled(
                                     !groups.is_empty(),
-                                    egui::Button::new(RichText::new("▼").size(10.))
-                                        .min_size(Vec2::splat(button)),
+                                    egui::Button::new("").min_size(Vec2::splat(button)),
                                 )
                                 .on_hover_text("Choose an existing group");
+                            icons::paint_sized(
+                                ui.painter(),
+                                Icon::ChevronDown,
+                                choose.rect.center(),
+                                14.,
+                                if choose.enabled() {
+                                    colors.text
+                                } else {
+                                    colors.muted
+                                },
+                            );
                             egui::Popup::menu(&choose).show(|ui| {
                                 for group in &groups {
                                     if ui.button(group).clicked() {
@@ -127,10 +135,10 @@ impl App {
             if !self.editor_error.is_empty() {
                 ui.colored_label(ui.visuals().error_fg_color, &self.editor_error);
             }
-            ui.add_space(14.);
+            ui.add_space(12.);
             ui.horizontal(|ui| {
-                save = accent_button(ui, "Save connection", 175.).clicked();
-                cancel = ui.button("Cancel").clicked();
+                save = accent_button(ui, "Save connection", 140.).clicked();
+                cancel = outline_button(ui, "Cancel", 80.).clicked();
             });
             ui.label(
                 RichText::new("Enter saves · Esc cancels")

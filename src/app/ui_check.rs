@@ -78,6 +78,9 @@ pub fn seed(app: &mut App) {
         ssh: Default::default(),
     })
     .collect();
+    if std::env::var_os("RELAY_UI_EMPTY").is_some() {
+        app.connections.clear();
+    }
     if std::env::var_os("RELAY_UI_EDITOR").is_some() {
         app.new_connection();
     }

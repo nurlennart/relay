@@ -1,5 +1,6 @@
 //! Relay's workspace: the `App` state, its frame loop, and the screens drawn from it.
 mod editor;
+mod icons;
 mod library;
 mod sessions;
 mod settings;
@@ -20,6 +21,7 @@ use crate::{
     state, theme,
 };
 use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
+use icons::{Icon, icon_button};
 use sessions::*;
 use sidebar::*;
 use std::{
@@ -479,13 +481,21 @@ impl App {
                     .fill(colors.surface)
                     .stroke(Stroke::new(1_f32, colors.line))
                     .corner_radius(8)
-                    .inner_margin(egui::Margin::symmetric(14, 10))
+                    .shadow(ui.visuals().popup_shadow)
+                    .inner_margin(egui::Margin {
+                        left: 12,
+                        right: 6,
+                        top: 6,
+                        bottom: 6,
+                    })
                     .show(ui, |ui| {
                         ui.set_max_width(420.);
                         ui.horizontal(|ui| {
-                            ui.colored_label(colors.accent, "●");
+                            let (dot, _) =
+                                ui.allocate_exact_size(Vec2::splat(8.), egui::Sense::hover());
+                            ui.painter().circle_filled(dot.center(), 3.5, colors.accent);
                             ui.label(text);
-                            dismiss = ui.small_button("×").clicked();
+                            dismiss = icon_button(ui, Icon::Close, 22., "Dismiss").clicked();
                         });
                     });
             });
@@ -763,12 +773,12 @@ impl eframe::App for App {
         // Sessions on screen, with the area each remote desktop should cover.
         let mut session_rects: Vec<(usize, egui::Rect)> = vec![];
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(colors.bg).inner_margin(24.))
+            .frame(egui::Frame::new().fill(colors.bg).inner_margin(16.))
             .show(ctx, |ui| {
                 if let Some(error) = self.error.clone() {
                     egui::Frame::new()
                         .fill(colors.error_bg)
-                        .inner_margin(12.)
+                        .inner_margin(egui::Margin::symmetric(12, 8))
                         .corner_radius(6)
                         .show(ui, |ui| {
                             ui.horizontal_wrapped(|ui| {

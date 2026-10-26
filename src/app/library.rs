@@ -1,6 +1,6 @@
 //! The connection library: search, the connection table, and its rows.
 use super::*;
-use egui::{Align, Align2, FontId, Layout, Margin, Rect, Sense, UiBuilder};
+use egui::{Align, FontId, Layout, Margin, Rect, Sense, UiBuilder};
 
 impl App {
     pub(super) fn filtered(&self) -> Vec<Connection> {
@@ -67,15 +67,42 @@ impl App {
         let enter_idle = focused.is_none()
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
 
+        // One toolbar: the view's title and count, search, then actions.
+        let mut search = None;
         ui.horizontal(|ui| {
+            ui.set_min_height(CONTROL_HEIGHT);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if accent_button(ui, "+  New connection", 166.)
-                    .on_hover_text("Ctrl+N")
-                    .clicked()
+                // An empty library offers the same action in its welcome.
+                if total > 0
+                    && accent_button(ui, "New connection", 0.)
+                        .on_hover_text("Ctrl+N")
+                        .clicked()
                 {
                     self.new_connection();
                 }
-                ui.with_layout(Layout::left_to_right(Align::Max), |ui| {
+                if !matches!(self.location, database::Location::Local(_))
+                    && outline_button(ui, "Refresh", 0.)
+                        .on_hover_text("Load the latest team changes")
+                        .clicked()
+                {
+                    self.refresh();
+                }
+                let width = (ui.available_width() - 180.).clamp(160., 320.);
+                search = Some(
+                    search_field(
+                        ui,
+                        &mut self.query,
+                        "Search or type a host",
+                        "Ctrl+K",
+                        search_id,
+                        width,
+                    )
+                    .on_hover_text(
+                        "Arrow keys select · Enter connects · Esc clears\n\
+                         Alt+Enter connects to a typed host without saving it",
+                    ),
+                );
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     let title = self.group.as_deref().unwrap_or(match self.filter {
                         Filter::All => "All connections",
                         Filter::Recent => "Recent",
@@ -83,10 +110,12 @@ impl App {
                         Filter::Rdp => "Remote desktops",
                         Filter::Ssh => "SSH terminals",
                     });
-                    ui.add(egui::Label::new(RichText::new(title).size(24.).strong()).truncate());
+                    ui.add(
+                        egui::Label::new(RichText::new(title).size(TITLE_SIZE).strong()).truncate(),
+                    );
                     let open = self.sessions.iter().filter(|s| s.is_running()).count();
                     let mut summary = if connections.len() == total {
-                        format!("{total} connections")
+                        total.to_string()
                     } else {
                         format!("{} of {total}", connections.len())
                     };
@@ -94,37 +123,9 @@ impl App {
                         summary.push_str(&format!(" · {open} open"));
                     }
                     ui.add(
-                        egui::Label::new(RichText::new(summary).size(13.).color(colors.muted))
+                        egui::Label::new(RichText::new(summary).size(12.).color(colors.muted))
                             .truncate(),
                     );
-                });
-            });
-        });
-        ui.add_space(14.);
-        let mut search = None;
-        ui.horizontal(|ui| {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if !matches!(self.location, database::Location::Local(_))
-                    && outline_button(ui, "Refresh", 86.)
-                        .on_hover_text("Load the latest team changes")
-                        .clicked()
-                {
-                    self.refresh();
-                }
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    let response = ui.add_sized(
-                        [ui.available_width().min(420.), CONTROL_HEIGHT],
-                        input(&mut self.query, "Search name, address, or group   Ctrl+K")
-                            .id(search_id),
-                    );
-                    if ui.available_width() > 230. {
-                        ui.label(
-                            RichText::new("↑↓ select · Enter connects · Esc clears")
-                                .size(11.)
-                                .color(colors.muted),
-                        );
-                    }
-                    search = Some(response);
                 });
             });
         });
@@ -173,7 +174,7 @@ impl App {
             self.request_connect(c.clone());
             return;
         }
-        ui.add_space(14.);
+        ui.add_space(10.);
         if let Some(target) = &quick {
             let label = format!("{} {}", target.protocol.label(), target_label(target));
             if connections.is_empty() {
@@ -199,7 +200,6 @@ impl App {
                     .size(11.)
                     .color(colors.muted),
             );
-            ui.add_space(4.);
         }
         if connections.is_empty() {
             if total == 0 {
@@ -225,59 +225,65 @@ impl App {
 
     pub(super) fn empty_library(&mut self, ui: &mut egui::Ui) {
         let colors = theme::palette(ui.ctx());
-        ui.add_space(8.);
-        egui::Frame::new()
-            .fill(colors.panel)
-            .corner_radius(10)
-            .stroke(Stroke::new(1_f32, colors.line))
-            .inner_margin(30.)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.add_space(45.);
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new("Your workspace, ready to connect.")
-                            .size(23.)
-                            .strong(),
-                    );
-                    ui.add_space(8.);
-                    ui.label(
-                        RichText::new("Add a machine or bring your existing connection library.")
-                            .color(colors.muted),
-                    );
-                    ui.add_space(22.);
-                    ui.horizontal(|ui| {
-                        ui.add_space((ui.available_width() - 330.).max(0.) / 2.);
-                        if accent_button(ui, "+  New connection", 166.).clicked() {
-                            self.new_connection();
-                        }
-                        if outline_button(ui, "Import CSV", 145.).clicked() {
-                            self.import_csv();
-                        }
-                    });
-                });
-                ui.add_space(55.);
+        ui.add_space((ui.available_height() * 0.22).clamp(16., 160.));
+        ui.vertical_centered(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.;
+            logo(ui, 44., colors.surface, colors.accent);
+            ui.add_space(10.);
+            ui.label(RichText::new("No connections yet").size(15.).strong());
+            ui.label(
+                RichText::new("Add a machine, or bring an existing library from CSV.")
+                    .color(colors.muted),
+            );
+            ui.add_space(12.);
+            let (new, import) = (140., 110.);
+            ui.horizontal(|ui| {
+                let gap = ui.spacing().item_spacing.x;
+                ui.add_space(((ui.available_width() - new - import - gap) / 2.).max(0.));
+                if accent_button(ui, "New connection", new)
+                    .on_hover_text("Ctrl+N")
+                    .clicked()
+                {
+                    self.new_connection();
+                }
+                if outline_button(ui, "Import CSV", import)
+                    .on_hover_text("SSH config and .rdp files import from Settings")
+                    .clicked()
+                {
+                    self.import_csv();
+                }
             });
+            ui.add_space(10.);
+            ui.label(
+                RichText::new("Or type a host in search and press Enter to connect right away.")
+                    .size(11.)
+                    .color(colors.muted),
+            );
+        });
     }
 
     pub(super) fn connection_table(&mut self, ui: &mut egui::Ui, connections: &[Connection]) {
         let colors = theme::palette(ui.ctx());
         egui::Frame::new()
             .fill(colors.panel)
-            .corner_radius(10)
+            .corner_radius(8)
             .stroke(Stroke::new(1_f32, colors.line))
-            .inner_margin(Margin::symmetric(20, 4))
+            .inner_margin(Margin::symmetric(8, 2))
             .show(ui, |ui| {
                 let width = ui.available_width();
                 let columns = table_columns(width);
-                let (header, _) = ui.allocate_exact_size(Vec2::new(width, 32.), Sense::hover());
+                ui.spacing_mut().item_spacing.y = 0.;
+                let (header, _) = ui.allocate_exact_size(Vec2::new(width, 30.), Sense::hover());
                 let mut x = header.min.x;
                 for (column, w) in &columns {
-                    ui.painter().text(
-                        egui::pos2(x, header.center().y),
-                        Align2::LEFT_CENTER,
-                        column.title(),
-                        FontId::proportional(11.),
+                    let galley = ui.painter().layout_no_wrap(
+                        column.title().into(),
+                        FontId::proportional(10.),
+                        colors.muted,
+                    );
+                    ui.painter().galley(
+                        egui::pos2(x, header.center().y - galley.size().y / 2.),
+                        galley,
                         colors.muted,
                     );
                     x += w + GAP;
@@ -286,11 +292,12 @@ impl App {
                     [header.left_bottom(), header.right_bottom()],
                     Stroke::new(1_f32, colors.line),
                 );
-                let height = (ui.available_height() - 8.).max(ROW * 3.);
+                let height = (ui.available_height() - 2.).max(ROW * 3.);
                 let mut area = egui::ScrollArea::vertical()
                     .id_salt("connection-list")
                     .max_height(height)
-                    .auto_shrink([false, false]);
+                    // The table ends with its last row instead of filling the window.
+                    .auto_shrink([false, true]);
                 let selected = self
                     .selected
                     .and_then(|id| connections.iter().position(|c| c.id == id));
@@ -305,7 +312,6 @@ impl App {
                         area = area.vertical_scroll_offset(top + ROW - visible);
                     }
                 }
-                ui.spacing_mut().item_spacing.y = 0.;
                 let output = area.show_rows(ui, ROW, connections.len(), |ui, range| {
                     for index in range {
                         let divider = index + 1 < connections.len();
@@ -330,19 +336,20 @@ impl App {
         if divider {
             ui.painter().line_segment(
                 [rect.left_bottom(), rect.right_bottom()],
-                Stroke::new(1_f32, colors.line),
+                Stroke::new(1_f32, colors.divider),
             );
         }
         let selected = self.selected == Some(c.id);
         // The star, name and buttons take the hover from the row itself, so use the pointer.
-        if selected || ui.rect_contains_pointer(rect) {
+        let hovered = ui.rect_contains_pointer(rect);
+        if selected || hovered {
             let fill = if selected {
                 colors.selected
             } else {
                 colors.hover
             };
             ui.painter()
-                .rect_filled(rect.shrink2(Vec2::new(0., 2.)), 6., fill);
+                .rect_filled(rect.shrink2(Vec2::new(0., 2.)), 5., fill);
         }
         if response.clicked() {
             self.selected = Some(c.id);
@@ -350,6 +357,7 @@ impl App {
         if response.double_clicked() {
             self.request_connect(c.clone());
         }
+        response.context_menu(|ui| self.connection_menu(ui, c));
         let description = c
             .metadata
             .get("ConnectionDescription")
@@ -357,7 +365,7 @@ impl App {
         let mut x = rect.min.x;
         for (column, w) in columns {
             let cell =
-                Rect::from_min_size(egui::pos2(x, rect.min.y + 6.), Vec2::new(*w, height - 12.));
+                Rect::from_min_size(egui::pos2(x, rect.min.y + 4.), Vec2::new(*w, height - 8.));
             x += w + gap;
             // A child ui does not move the row cursor, so rows keep their exact height.
             let align = match column {
@@ -374,20 +382,27 @@ impl App {
             ui.spacing_mut().item_spacing.y = 2.;
             match column {
                 Column::Star => {
-                    ui.spacing_mut().button_padding.x = 0.;
                     ui.add_space(3.);
-                    let star = egui::Button::new(
-                        RichText::new(if c.favorite { "★" } else { "☆" })
-                            .size(17.)
-                            .color(if c.favorite {
-                                colors.accent
-                            } else {
-                                colors.muted
-                            }),
-                    )
-                    .frame(false)
-                    .min_size(Vec2::new(28., 28.));
-                    if ui.add(star).on_hover_text("Toggle favorite").clicked() {
+                    let (star, response) = ui.allocate_exact_size(Vec2::splat(26.), Sense::click());
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::Checkbox,
+                            true,
+                            c.favorite,
+                            "Favorite",
+                        )
+                    });
+                    let (icon, color) = match (c.favorite, response.hovered()) {
+                        (true, _) => (Icon::StarFilled, colors.accent),
+                        (false, true) => (Icon::Star, colors.text),
+                        (false, false) => (Icon::Star, colors.muted.gamma_multiply(0.7)),
+                    };
+                    icons::paint_sized(ui.painter(), icon, star.center(), 15., color);
+                    if response
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Toggle favorite")
+                        .clicked()
+                    {
                         let mut next = self.connections.clone();
                         if let Some(item) = next.iter_mut().find(|v| v.id == c.id) {
                             item.favorite = !item.favorite;
@@ -397,10 +412,10 @@ impl App {
                 }
                 Column::Name => {
                     if description.is_none() {
-                        ui.add_space(8.);
+                        ui.add_space(7.);
                     }
                     let name = ui.add(
-                        egui::Label::new(RichText::new(&c.name).size(14.).strong())
+                        egui::Label::new(RichText::new(&c.name).size(13.).strong())
                             .truncate()
                             .sense(Sense::click()),
                     );
@@ -421,7 +436,7 @@ impl App {
                     }
                 }
                 Column::Protocol => {
-                    ui.add_space(5.);
+                    ui.add_space(6.);
                     protocol_badge(ui, c.protocol);
                 }
                 Column::Host => {
@@ -446,7 +461,7 @@ impl App {
                     );
                 }
                 Column::Group => {
-                    ui.add_space(9.);
+                    ui.add_space(7.);
                     ui.add(
                         egui::Label::new(RichText::new(&c.group).size(12.).color(colors.muted))
                             .truncate(),
@@ -454,71 +469,75 @@ impl App {
                     .on_hover_text(&c.group);
                 }
                 Column::Actions => {
-                    ui.add_space(4.);
-                    ui.spacing_mut().button_padding = Vec2::new(10., 4.);
-                    ui.horizontal(|ui| {
-                        let connect =
-                            egui::Button::new(RichText::new("Connect").size(12.)).corner_radius(5);
-                        if ui.add_sized([72., 28.], connect).clicked() {
-                            self.request_connect(c.clone());
+                    ui.add_space(3.);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.;
+                        let more = icon_button(ui, Icon::More, 26., "More actions");
+                        egui::Popup::menu(&more).show(|ui| self.connection_menu(ui, c));
+                        // Connect appears where the pointer or keyboard is; double-click and
+                        // Enter connect any row.
+                        if selected || hovered {
+                            ui.spacing_mut().button_padding = Vec2::new(10., 3.);
+                            let connect = egui::Button::new(RichText::new("Connect").size(12.))
+                                .corner_radius(5);
+                            if ui.add_sized([68., 26.], connect).clicked() {
+                                self.request_connect(c.clone());
+                            }
                         }
-                        ui.menu_button("···", |ui| {
-                            if ui.button("Edit connection").clicked() {
-                                self.edit(c.clone());
-                                ui.close();
-                            }
-                            if ui.button("Duplicate").clicked() {
-                                let mut copy = c.clone();
-                                copy.id = 0;
-                                copy.name = format!("{} (copy)", c.name);
-                                copy.metadata.remove("ConnectionId");
-                                self.edit(copy);
-                                ui.close();
-                            }
-                            if ui.button("Copy address").clicked() {
-                                ui.ctx().copy_text(c.address());
-                                self.notify(format!("Copied {}", c.address()));
-                                ui.close();
-                            }
-                            if rdp::SAVES_PASSWORDS
-                                && c.protocol == Protocol::Rdp
-                                && ui
-                                    .button("Forget saved password")
-                                    .on_hover_text(
-                                        "Removes the credentials Windows saved for this host",
-                                    )
-                                    .clicked()
-                            {
-                                match rdp::forget_credentials(&c.host) {
-                                    Ok(true) => self.notify(format!(
-                                        "Removed saved credentials for {}",
-                                        c.host
-                                    )),
-                                    Ok(false) => self.notify(format!(
-                                        "Windows has no saved credentials for {}",
-                                        c.host
-                                    )),
-                                    Err(e) => {
-                                        self.error =
-                                            Some(format!("Cannot remove saved credentials: {e}"))
-                                    }
-                                }
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui.button("Delete connection").clicked() {
-                                self.modal = Modal::Delete(c.id);
-                                ui.close();
-                            }
-                        });
                     });
                 }
             }
         }
     }
+
+    /// Actions on a saved connection, from its row's menu or a right-click.
+    pub(super) fn connection_menu(&mut self, ui: &mut egui::Ui, c: &Connection) {
+        if ui.button("Connect").clicked() {
+            self.request_connect(c.clone());
+            ui.close();
+        }
+        if ui.button("Edit connection").clicked() {
+            self.edit(c.clone());
+            ui.close();
+        }
+        if ui.button("Duplicate").clicked() {
+            let mut copy = c.clone();
+            copy.id = 0;
+            copy.name = format!("{} (copy)", c.name);
+            copy.metadata.remove("ConnectionId");
+            self.edit(copy);
+            ui.close();
+        }
+        if ui.button("Copy address").clicked() {
+            ui.ctx().copy_text(c.address());
+            self.notify(format!("Copied {}", c.address()));
+            ui.close();
+        }
+        if rdp::SAVES_PASSWORDS
+            && c.protocol == Protocol::Rdp
+            && ui
+                .button("Forget saved password")
+                .on_hover_text("Removes the credentials Windows saved for this host")
+                .clicked()
+        {
+            match rdp::forget_credentials(&c.host) {
+                Ok(true) => self.notify(format!("Removed saved credentials for {}", c.host)),
+                Ok(false) => {
+                    self.notify(format!("Windows has no saved credentials for {}", c.host))
+                }
+                Err(e) => self.error = Some(format!("Cannot remove saved credentials: {e}")),
+            }
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Delete connection").clicked() {
+            self.modal = Modal::Delete(c.id);
+            ui.close();
+        }
+    }
 }
 
-pub(super) const ROW: f32 = 48.;
+pub(super) const ROW: f32 = 40.;
 
 pub(super) const GAP: f32 = 16.;
 
@@ -547,7 +566,7 @@ impl Column {
 /// Table columns with their widths; narrow tables drop the group, then the protocol column.
 pub(super) fn table_columns(width: f32) -> Vec<(Column, f32)> {
     // Widths above 1 are fixed pixels; the rest are shares of the flexible space.
-    let mut columns = vec![(Column::Star, 40.), (Column::Name, 0.41)];
+    let mut columns = vec![(Column::Star, 28.), (Column::Name, 0.41)];
     if width >= 560. {
         columns.push((Column::Protocol, 56.));
     }
@@ -555,7 +574,7 @@ pub(super) fn table_columns(width: f32) -> Vec<(Column, f32)> {
     if width >= 720. {
         columns.push((Column::Group, 0.24));
     }
-    columns.push((Column::Actions, 120.));
+    columns.push((Column::Actions, 100.));
     let fixed: f32 = columns.iter().filter(|c| c.1 > 1.).map(|c| c.1).sum();
     let weights: f32 = columns.iter().filter(|c| c.1 <= 1.).map(|c| c.1).sum();
     let flexible = (width - fixed - GAP * (columns.len() - 1) as f32).max(120.);

@@ -39,19 +39,20 @@ impl App {
     pub(super) fn detached_placeholder(&mut self, ui: &mut egui::Ui, index: usize) {
         let colors = theme::palette(ui.ctx());
         let key = self.sessions[index].key;
-        ui.add_space(60.);
+        ui.add_space((ui.available_height() * 0.22).clamp(16., 160.));
         ui.vertical_centered(|ui| {
             ui.label(
                 RichText::new(format!(
                     "{} is open in its own window.",
                     self.sessions[index].connection.name
                 ))
-                .size(18.),
+                .size(15.)
+                .strong(),
             );
-            ui.add_space(12.);
+            ui.add_space(8.);
             ui.horizontal(|ui| {
-                ui.add_space((ui.available_width() - 260.).max(0.) / 2.);
-                if accent_button(ui, "Show window", 130.).clicked() {
+                ui.add_space((ui.available_width() - 248.).max(0.) / 2.);
+                if accent_button(ui, "Show window", 120.).clicked() {
                     ui.ctx()
                         .send_viewport_cmd_to(session_viewport(key), egui::ViewportCommand::Focus);
                 }
@@ -160,8 +161,19 @@ impl App {
         let mut snippets = false;
         let s = &self.sessions[index];
         ui.horizontal(|ui| {
-            protocol_badge(ui, s.connection.protocol);
-            ui.label(RichText::new(&s.connection.name).size(19.).strong());
+            ui.set_min_height(26.);
+            ui.spacing_mut().button_padding = Vec2::new(10., 3.);
+            let (icon, _) = ui.allocate_exact_size(Vec2::splat(16.), egui::Sense::hover());
+            icons::paint(
+                ui.painter(),
+                Icon::protocol(s.connection.protocol),
+                icon.center(),
+                match s.connection.protocol {
+                    Protocol::Rdp => colors.rdp,
+                    Protocol::Ssh => colors.accent,
+                },
+            );
+            ui.label(RichText::new(&s.connection.name).size(14.).strong());
             ui.label(
                 RichText::new(s.connection.address())
                     .monospace()
@@ -241,7 +253,7 @@ impl App {
             self.attach(self.sessions[index].key);
         }
         let s = &self.sessions[index];
-        ui.add_space(10.);
+        ui.add_space(6.);
         if s.terminal.is_some() {
             if let Some(status) = s.status() {
                 let (mut now, mut stop) = (false, false);
@@ -262,7 +274,7 @@ impl App {
         } else if let Some(error) = &s.error {
             let error = error.clone();
             ui.add_space(40.);
-            ui.label(RichText::new(error).size(18.));
+            ui.label(RichText::new(error).size(15.));
             ui.add_space(12.);
             if ui.button("Reconnect").clicked() {
                 self.reconnect(index);

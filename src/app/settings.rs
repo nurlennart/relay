@@ -18,9 +18,9 @@ impl App {
         dialog("settings", ctx).show(ctx, |ui| {
             ui.set_width(dialog_width(ctx, 540.));
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Settings").size(25.).strong());
+                ui.label(RichText::new("Settings").size(TITLE_SIZE).strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    close = ui.button("Close").clicked();
+                    close = icon_button(ui, Icon::Close, 26., "Close (Esc)").clicked();
                 });
             });
             egui::ScrollArea::vertical()
@@ -28,7 +28,7 @@ impl App {
                 .min_scrolled_height((ctx.content_rect().height() - 180.).clamp(200., 900.))
                 .max_height((ctx.content_rect().height() - 180.).clamp(200., 900.))
                 .show(ui, |ui| {
-                    ui.add_space(14.);
+                    ui.add_space(8.);
                     section_label(ui, "APPEARANCE");
                     ui.label(
                         RichText::new("Choose a workspace theme. Saved on this computer.")
@@ -292,13 +292,17 @@ impl App {
                     .fill(colors.panel)
                     .stroke(Stroke::new(1_f32, colors.line))
                     .corner_radius(10)
-                    .inner_margin(14.)
-                    .shadow(ui.visuals().popup_shadow)
+                    .inner_margin(12.)
+                    .shadow(ui.visuals().window_shadow)
                     .show(ui, |ui| {
                         ui.set_width(width);
-                        let search = ui.add_sized(
-                            [width, CONTROL_HEIGHT],
-                            input(&mut palette.query, "Search snippets").id(search_id),
+                        let search = search_field(
+                            ui,
+                            &mut palette.query,
+                            "Search snippets",
+                            "",
+                            search_id,
+                            width,
                         );
                         if !palette.focused {
                             search.request_focus();
@@ -316,7 +320,7 @@ impl App {
                         for (row, &i) in matches.iter().enumerate().take(8) {
                             let snippet = &self.state.snippets[i];
                             let (rect, response) =
-                                ui.allocate_exact_size(Vec2::new(width, 46.), Sense::click());
+                                ui.allocate_exact_size(Vec2::new(width, 42.), Sense::click());
                             if response.hovered() {
                                 palette.selected = row;
                             }
@@ -353,7 +357,7 @@ impl App {
                         ui.add_space(8.);
                         ui.horizontal(|ui| {
                             ui.label(
-                                RichText::new("↑↓ select · Enter sends · Esc closes")
+                                RichText::new("Arrow keys select · Enter sends · Esc closes")
                                     .size(11.)
                                     .color(colors.muted),
                             );
@@ -396,7 +400,7 @@ pub(super) fn theme_option(
 ) -> egui::Response {
     let colors = theme::palette(ui.ctx());
     let response = ui.add_sized(
-        [ui.available_width(), 40.],
+        [ui.available_width(), 34.],
         egui::Button::new("").selected(selected),
     );
     response.widget_info(|| {
@@ -404,23 +408,23 @@ pub(super) fn theme_option(
     });
     let center = response.rect.center();
     ui.painter().circle_filled(
-        egui::pos2(response.rect.left() + 20., center.y),
+        egui::pos2(response.rect.left() + 16., center.y),
         5.,
         candidate.colors().accent,
     );
     ui.painter().text(
-        egui::pos2(response.rect.left() + 40., center.y),
+        egui::pos2(response.rect.left() + 30., center.y),
         Align2::LEFT_CENTER,
         candidate.name(),
-        FontId::proportional(14.),
+        FontId::proportional(13.),
         colors.text,
     );
     if selected {
         ui.painter().text(
-            egui::pos2(response.rect.right() - 16., center.y),
+            egui::pos2(response.rect.right() - 12., center.y),
             Align2::RIGHT_CENTER,
             "Selected",
-            FontId::proportional(12.),
+            FontId::proportional(11.),
             colors.accent,
         );
     }
