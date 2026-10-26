@@ -26,7 +26,13 @@ use std::{
 use windows_sys::Win32::Foundation::HWND;
 
 fn main() -> eframe::Result {
-    let saved = state::load(&state::path());
+    // Rendering checks start from defaults and never touch the user's saved state.
+    let check = cfg!(feature = "ui-check") && std::env::var_os("RELAY_UI_CHECK").is_some();
+    let saved = if check {
+        state::State::default()
+    } else {
+        state::load(&state::path())
+    };
     eframe::run_native(
         "Relay · Remote workspace",
         eframe::NativeOptions {
@@ -164,17 +170,7 @@ impl App {
         }
         cc.egui_ctx.set_fonts(fonts);
         theme::load(&theme::path()).apply(&cc.egui_ctx);
-        let mut style = (*cc.egui_ctx.style()).clone();
-        style.spacing.window_margin = egui::Margin::same(24);
-        style.spacing.item_spacing = Vec2::new(10., 10.);
-        style.spacing.button_padding = Vec2::new(12., 8.);
-        style
-            .text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::proportional(14.));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Button, egui::FontId::proportional(14.));
-        cc.egui_ctx.set_style(style);
+        apply_style(&cc.egui_ctx);
         let path = model::data_path();
         let loaded = model::load(&path);
         let parent = match cc.window_handle().map(|h| h.as_raw()) {
@@ -692,6 +688,11 @@ impl eframe::App for App {
         self.save_state();
     }
 
+    #[cfg(feature = "ui-check")]
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        ui_check::hover(raw_input);
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let colors = theme::palette(ctx);
         self.poll_storage();
@@ -1004,6 +1005,23 @@ fn moved(index: usize, from: usize, to: usize) -> usize {
     } else {
         index
     }
+}
+
+/// Spacing and text styles shared by every screen.
+fn apply_style(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    style.spacing.window_margin = egui::Margin::same(24);
+    style.spacing.item_spacing = Vec2::new(10., 10.);
+    style.spacing.button_padding = Vec2::new(12., 8.);
+    // Labels are not selectable text: hovering them should not show a text cursor.
+    style.interaction.selectable_labels = false;
+    style
+        .text_styles
+        .insert(egui::TextStyle::Body, egui::FontId::proportional(14.));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Button, egui::FontId::proportional(14.));
+    ctx.set_style(style);
 }
 
 /// A dialog width that leaves a margin in narrow windows.

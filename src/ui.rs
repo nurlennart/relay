@@ -610,12 +610,17 @@ impl App {
                 Rect::from_min_size(egui::pos2(x, rect.min.y + 6.), Vec2::new(*w, height - 12.));
             x += w + gap;
             // A child ui does not move the row cursor, so rows keep their exact height.
+            let align = match column {
+                Column::Star => Align::Center,
+                _ => Align::LEFT,
+            };
             let ui = &mut ui.new_child(
                 UiBuilder::new()
                     .max_rect(cell)
-                    .layout(Layout::top_down(Align::LEFT)),
+                    .layout(Layout::top_down(align)),
             );
-            ui.set_clip_rect(cell.intersect(ui.clip_rect()));
+            // Leave room for hover outlines, which extend slightly past a widget.
+            ui.set_clip_rect(cell.expand(4.).intersect(ui.clip_rect()));
             ui.spacing_mut().item_spacing.y = 2.;
             match column {
                 Column::Star => {
@@ -1285,7 +1290,7 @@ fn theme_option(ui: &mut egui::Ui, candidate: theme::Theme, selected: bool) -> e
 /// Table columns with their widths; narrow tables drop the group, then the protocol column.
 fn table_columns(width: f32) -> Vec<(Column, f32)> {
     // Widths above 1 are fixed pixels; the rest are shares of the flexible space.
-    let mut columns = vec![(Column::Star, 30.), (Column::Name, 0.41)];
+    let mut columns = vec![(Column::Star, 40.), (Column::Name, 0.41)];
     if width >= 560. {
         columns.push((Column::Protocol, 56.));
     }
@@ -1649,6 +1654,41 @@ mod tests {
         assert!(app.error.is_none());
         library_frame(&mut app, &ctx, vec![press(egui::Key::Enter)]);
         assert!(app.error.is_some(), "Enter did not try to connect");
+    }
+
+    #[test]
+    fn connection_rows_never_show_a_text_cursor() {
+        let ctx = egui::Context::default();
+        let mut app = test_app(&ctx);
+        apply_style(&ctx);
+        library_frame(&mut app, &ctx, vec![]);
+        // Sweep the pointer over the header and rows, including names, hosts and groups.
+        for y in (100..300).step_by(8) {
+            for x in (20..1180).step_by(20) {
+                let pos = egui::pos2(x as f32, y as f32);
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            Vec2::new(1200., 800.),
+                        )),
+                        events: vec![egui::Event::PointerMoved(pos)],
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| app.workspace(ui));
+                    },
+                );
+                // The search field is the one place where typing is expected.
+                let search = ctx
+                    .read_response(egui::Id::new("library-search"))
+                    .is_some_and(|r| r.rect.expand(8.).contains(pos));
+                assert!(
+                    output.platform_output.cursor_icon != egui::CursorIcon::Text || search,
+                    "text cursor at {pos:?}"
+                );
+            }
+        }
     }
 
     #[test]

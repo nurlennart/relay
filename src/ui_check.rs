@@ -6,6 +6,8 @@ pub fn seed(app: &mut App) {
     if std::env::var_os("RELAY_UI_CHECK").is_none() {
         return;
     }
+    app.state = state::State::default();
+    app.state_path = None;
     if let Ok(name) = std::env::var("RELAY_UI_THEME")
         && let Some(theme) = theme::Theme::ALL
             .into_iter()
@@ -119,6 +121,18 @@ pub fn seed(app: &mut App) {
         )
         .unwrap()
         .connections;
+    }
+}
+
+/// Moves the pointer to `RELAY_UI_HOVER=x,y` to capture hover states.
+pub fn hover(raw_input: &mut egui::RawInput) {
+    if let Ok(position) = std::env::var("RELAY_UI_HOVER")
+        && let Some((x, y)) = position.split_once(',')
+        && let (Ok(x), Ok(y)) = (x.parse(), y.parse())
+    {
+        raw_input
+            .events
+            .push(egui::Event::PointerMoved(egui::pos2(x, y)));
     }
 }
 
