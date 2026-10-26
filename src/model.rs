@@ -38,6 +38,103 @@ pub struct Connection {
     pub favorite: bool,
     #[serde(default)]
     pub metadata: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "RdpOptions::is_default")]
+    pub rdp: RdpOptions,
+}
+
+/// Where remote audio plays.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Audio {
+    #[default]
+    Local,
+    Remote,
+    Off,
+}
+
+/// Where Windows key combinations such as Alt+Tab apply.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Keys {
+    Local,
+    Remote,
+    #[default]
+    FullScreen,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Display {
+    /// The remote resolution follows the tab size.
+    #[default]
+    Fit,
+    /// A fixed remote resolution, scaled to the tab.
+    Fixed { width: u16, height: u16 },
+}
+
+impl Audio {
+    pub const ALL: [Self; 3] = [Self::Local, Self::Remote, Self::Off];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Local => "Play on this computer",
+            Self::Remote => "Play on the remote computer",
+            Self::Off => "Do not play",
+        }
+    }
+}
+
+impl Keys {
+    pub const ALL: [Self; 3] = [Self::FullScreen, Self::Remote, Self::Local];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Local => "On this computer",
+            Self::Remote => "On the remote computer",
+            Self::FullScreen => "Remote only in full screen",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RdpOptions {
+    /// RD Gateway host; empty connects directly.
+    pub gateway: String,
+    pub clipboard: bool,
+    pub drives: bool,
+    pub printers: bool,
+    pub smart_cards: bool,
+    pub microphone: bool,
+    pub audio: Audio,
+    pub keys: Keys,
+    pub display: Display,
+}
+
+impl Default for RdpOptions {
+    fn default() -> Self {
+        Self {
+            gateway: String::new(),
+            clipboard: true,
+            drives: false,
+            printers: false,
+            smart_cards: false,
+            microphone: false,
+            audio: Audio::Local,
+            keys: Keys::FullScreen,
+            display: Display::Fit,
+        }
+    }
+}
+
+impl RdpOptions {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Accepts hostnames and addresses: no leading dash, no spaces or URL syntax.
+fn valid_host(host: &str) -> bool {
+    !host.is_empty()
+        && !host.starts_with('-')
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-:_".contains(c))
 }
 
 impl Connection {
@@ -56,13 +153,7 @@ impl Connection {
         if self.name.is_empty() {
             return Err("Give this connection a name.".into());
         }
-        if self.host.is_empty()
-            || self.host.starts_with('-')
-            || self
-                .host
-                .chars()
-                .any(|c| !(c.is_ascii_alphanumeric() || ".-:_".contains(c)))
-        {
+        if !valid_host(&self.host) {
             return Err(
                 "Enter a hostname, IPv4 address, or bare IPv6 address (without a port).".into(),
             );
@@ -87,6 +178,16 @@ impl Connection {
         }
         if self.port == 0 {
             return Err("Port must be between 1 and 65535.".into());
+        }
+        self.rdp.gateway = self.rdp.gateway.trim().into();
+        if !self.rdp.gateway.is_empty() && !valid_host(&self.rdp.gateway) {
+            return Err("Enter the RD Gateway as a hostname, such as gateway.example.com.".into());
+        }
+        let pixels = |v: u16| (200..=8192).contains(&v);
+        if let Display::Fixed { width, height } = self.rdp.display
+            && !(pixels(width) && pixels(height))
+        {
+            return Err("A fixed resolution must be between 200 and 8192 pixels.".into());
         }
         if self.group.is_empty() {
             self.group = "Personal".into();
@@ -229,6 +330,39 @@ mod tests {
             serde_json::from_str::<Connection>(&json).unwrap().host,
             "::1"
         );
+    }
+    #[test]
+    fn rdp_options_default_quietly_and_validate() {
+        let mut c = Connection::new();
+        c.name = "Desk".into();
+        c.host = "desk.example".into();
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("rdp"), "default options are omitted: {json}");
+        let old: Connection = serde_json::from_str(
+            r#"{"id":1,"name":"Old","host":"old.example","username":"","group":"G","protocol":"Rdp","port":3389,"favorite":false}"#,
+        )
+        .unwrap();
+        assert_eq!(old.rdp, RdpOptions::default());
+        assert!(old.rdp.clipboard);
+        c.rdp.gateway = " gw.example.com ".into();
+        c.rdp.drives = true;
+        c.rdp.display = Display::Fixed {
+            width: 1920,
+            height: 1080,
+        };
+        assert!(c.validate().is_ok());
+        assert_eq!(c.rdp.gateway, "gw.example.com");
+        let roundtrip: Connection =
+            serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(roundtrip.rdp, c.rdp);
+        c.rdp.gateway = "https://gw".into();
+        assert!(c.validate().is_err());
+        c.rdp.gateway.clear();
+        c.rdp.display = Display::Fixed {
+            width: 100,
+            height: 1080,
+        };
+        assert!(c.validate().is_err());
     }
     #[test]
     fn saves_replaces_and_preserves_corrupt_data() {

@@ -74,9 +74,17 @@ Click **Refresh** to load teammates' changes. Shared saves compare the revision 
 
 ## Session limits
 
-RDP is hosted directly inside each tab using the Windows desktop RDP control. Relay no longer launches `mstsc.exe` or generates temporary RDP files. Windows credential prompting is enabled and credential saving is disabled; Relay does not receive or store remote passwords. Windows authentication and certificate dialogs can appear outside the tab. Certificate verification and NLA remain enabled; normal security prompts can still appear.
+RDP is hosted directly inside each tab using the Windows desktop RDP control. Relay does not launch `mstsc.exe` or generate RDP files. Windows asks for credentials and offers **Remember me**, which stores them in Windows Credential Manager (`TERMSRV/<host>`), exactly like Remote Desktop Connection; Relay never receives or stores passwords. **··· → Forget saved password** removes them. Windows authentication and certificate dialogs can appear outside the tab. Certificate verification and NLA remain enabled.
 
-The initial remote desktop resolution uses the actual tab viewport. After login and window resizing, Relay requests updated remote display dimensions, with smart sizing enabled while the size changes or when the server cannot change resolution. A failed display update shows a warning in the tab. The native control and its host window track the viewport together, keeping the session inside the content area. Live server resolution negotiation and mixed-DPI monitor transitions still need testing against your hosts. Closing RDP disconnects without logging out the remote Windows session.
+By default the remote resolution follows the tab, in physical pixels, and the remote display scale matches the monitor Relay is on (for example 150% on a high-DPI laptop), so text keeps its usual size. After login, resizing, or moving to a monitor with a different scale, Relay updates the remote display; smart sizing covers the moment in between and servers that cannot change resolution. A failed display update shows a warning in the tab. Closing RDP disconnects without logging out the remote Windows session.
+
+Sessions reconnect automatically after network drops or sleep (up to 20 attempts, shown as *Reconnecting…*). If a session ends, **Reconnect** reopens it in the same tab with the connection's current settings. **Full screen** hands the session to the Windows full-screen mode with its connection bar; `Ctrl+Alt+Break` toggles it.
+
+While a remote desktop has the keyboard, it receives normal shortcuts. Relay reserves three: `Ctrl+Alt+PageUp`/`Ctrl+Alt+PageDown` switch tabs and `Ctrl+Alt+Home` returns the keyboard to Relay. These need Relay in the foreground and do not apply in full screen or when Windows key combinations are set to *On the remote computer*.
+
+### Remote desktop options
+
+Each RDP connection has **Remote desktop options** in its editor: an optional **RD Gateway** host (used with the same credentials), which local resources to use on the remote computer (clipboard, local drives, printers, smart cards, microphone), where remote audio plays, where Windows key combinations such as `Alt+Tab` apply (default: remote only in full screen), and the resolution (fit to tab, or a fixed size scaled to the tab). Options are saved with the connection in personal and shared libraries; CSV export does not include them.
 
 SSH supports terminal colors, scrolling (5,000 lines), resizing, bracketed paste, navigation/function/control/Alt keys, and copying the visible screen. Click inside to type; Tab, Escape, and the arrow keys stay in the terminal. `Ctrl+C` sends an interrupt, `Ctrl+Shift+C` copies the screen, and `Ctrl+V` or `Shift+Insert` pastes. Mouse reporting, text selection, hyperlinks, and complete xterm compatibility are not implemented. Closing SSH may terminate remote foreground work.
 

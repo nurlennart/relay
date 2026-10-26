@@ -69,10 +69,21 @@ pub fn seed(app: &mut App) {
         port: protocol.port(),
         favorite: i < 2,
         metadata: Default::default(),
+        rdp: Default::default(),
     })
     .collect();
     if std::env::var_os("RELAY_UI_EDITOR").is_some() {
         app.new_connection();
+    }
+    if std::env::var_os("RELAY_UI_RDP").is_some() {
+        let mut c = app.connections[0].clone();
+        c.rdp.gateway = "gateway.example.com".into();
+        c.rdp.drives = true;
+        c.rdp.display = model::Display::Fixed {
+            width: 1920,
+            height: 1080,
+        };
+        app.edit(c);
     }
     if std::env::var_os("RELAY_UI_DATABASE").is_some() {
         app.modal = Modal::Library;

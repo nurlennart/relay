@@ -685,6 +685,30 @@ impl App {
                                 self.notify(format!("Copied {}", c.address()));
                                 ui.close();
                             }
+                            if c.protocol == Protocol::Rdp
+                                && ui
+                                    .button("Forget saved password")
+                                    .on_hover_text(
+                                        "Removes the credentials Windows saved for this host",
+                                    )
+                                    .clicked()
+                            {
+                                match rdp::forget_credentials(&c.host) {
+                                    Ok(true) => self.notify(format!(
+                                        "Removed saved credentials for {}",
+                                        c.host
+                                    )),
+                                    Ok(false) => self.notify(format!(
+                                        "Windows has no saved credentials for {}",
+                                        c.host
+                                    )),
+                                    Err(e) => {
+                                        self.error =
+                                            Some(format!("Cannot remove saved credentials: {e}"))
+                                    }
+                                }
+                                ui.close();
+                            }
                             ui.separator();
                             if ui.button("Delete connection").clicked() {
                                 self.modal = Modal::Delete(c.id);

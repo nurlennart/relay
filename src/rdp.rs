@@ -1,4 +1,4 @@
-use crate::model::Connection;
+use crate::model::{Audio, Connection, Display, Keys};
 use eframe::egui;
 use std::{
     ffi::c_void,
@@ -13,7 +13,10 @@ use windows::{
     },
     core::{BSTR, GUID, HRESULT, IUnknown, Interface, PCWSTR, implement},
 };
-use windows_sys::Win32::{Foundation::HWND, System::LibraryLoader::*, UI::WindowsAndMessaging::*};
+use windows_sys::Win32::{
+    Foundation::HWND, System::LibraryLoader::*, UI::HiDpi::GetDpiForWindow,
+    UI::WindowsAndMessaging::*,
+};
 
 struct Apartment;
 impl Apartment {
@@ -40,10 +43,27 @@ impl Drop for Window {
     }
 }
 
+#[allow(non_snake_case)]
+mod extended {
+    use windows::{
+        Win32::System::Variant::VARIANT,
+        core::{HRESULT, IUnknown, IUnknown_Vtbl, interface},
+    };
+    /// Settings that apply before connecting, such as the initial display scale.
+    #[interface("302D8188-0052-4807-806A-362B628F9AC5")]
+    pub unsafe trait IMsRdpExtendedSettings: IUnknown {
+        pub fn put_Property(&self, name: *const u16, value: *const VARIANT) -> HRESULT;
+        pub fn get_Property(&self, name: *const u16, value: *mut VARIANT) -> HRESULT;
+    }
+}
+use extended::IMsRdpExtendedSettings;
+
 #[derive(Default)]
 struct State {
     connected: bool,
     ended: bool,
+    reconnecting: bool,
+    full_screen: bool,
     generation: u64,
     error: Option<String>,
 }
@@ -52,6 +72,10 @@ enum Event {
     Connected,
     Disconnected,
     Login,
+    Reconnecting,
+    Reconnected,
+    EnterFullScreen,
+    LeaveFullScreen,
 }
 
 #[implement(IDispatch)]
@@ -90,15 +114,24 @@ impl IDispatch_Impl for Sink_Impl {
     ) -> windows::core::Result<()> {
         let mut state = self.state.lock().unwrap();
         match self.event {
-            Event::Connected | Event::Login => {
+            Event::Connected | Event::Login | Event::Reconnected => {
                 state.connected = true;
                 state.ended = false;
+                state.reconnecting = false;
                 state.generation += 1;
                 state.error = None;
             }
+            Event::Reconnecting => {
+                state.connected = false;
+                state.reconnecting = true;
+            }
+            Event::EnterFullScreen => state.full_screen = true,
+            Event::LeaveFullScreen => state.full_screen = false,
             Event::Disconnected => {
                 state.connected = false;
                 state.ended = true;
+                state.reconnecting = false;
+                state.full_screen = false;
                 let args = unsafe {
                     if params.is_null() || (*params).cArgs == 0 || (*params).rgvarg.is_null() {
                         &[][..]
@@ -129,9 +162,10 @@ pub struct RdpClient {
     callbacks: Vec<(BSTR, IDispatch)>,
     state: Arc<Mutex<State>>,
     parent: HWND,
+    display: Display,
     started: bool,
     size: Option<(i32, i32)>,
-    applied: Option<((i32, i32), u64)>,
+    applied: Option<((i32, i32), u32, u64)>,
     resized: Instant,
     pub display_warning: Option<String>,
     _apartment: Apartment,
@@ -208,13 +242,8 @@ impl RdpClient {
                 .map_err(|e| format!("Windows RDP control interface is unavailable: {e}"))?;
             (window, host, client)
         };
-        let advanced = IDispatch::try_from(&invoke(
-            &client,
-            "AdvancedSettings9",
-            DISPATCH_PROPERTYGET,
-            vec![],
-        )?)
-        .map_err(|e| e.to_string())?;
+        let advanced = property(&client, "AdvancedSettings9")?;
+        let options = &connection.rdp;
         let mut rdp = Self {
             window,
             client,
@@ -223,6 +252,7 @@ impl RdpClient {
             callbacks: vec![],
             state: Arc::new(Mutex::new(State::default())),
             parent,
+            display: options.display,
             started: false,
             size: None,
             applied: None,
@@ -233,6 +263,7 @@ impl RdpClient {
         for (name, value) in [
             ("Server", VARIANT::from(connection.host.as_str())),
             ("UserName", VARIANT::from(connection.username.as_str())),
+            ("FullScreenTitle", VARIANT::from(connection.name.as_str())),
         ] {
             rdp.set(name, &value)?;
         }
@@ -241,33 +272,73 @@ impl RdpClient {
             ("EnableCredSspSupport", VARIANT::from(true)),
             ("AuthenticationLevel", VARIANT::from(2u32)),
             ("SmartSizing", VARIANT::from(true)),
-            ("RedirectClipboard", VARIANT::from(true)),
-            ("RedirectPrinters", VARIANT::from(false)),
+            ("EnableAutoReconnect", VARIANT::from(true)),
+            ("MaxReconnectAttempts", VARIANT::from(20i32)),
+            ("RedirectClipboard", VARIANT::from(options.clipboard)),
+            ("RedirectPrinters", VARIANT::from(options.printers)),
+            ("RedirectDrives", VARIANT::from(options.drives)),
+            ("RedirectSmartCards", VARIANT::from(options.smart_cards)),
+            (
+                "AudioCaptureRedirectionMode",
+                VARIANT::from(options.microphone),
+            ),
         ] {
             invoke(&rdp.advanced, name, DISPATCH_PROPERTYPUT, vec![value])?;
         }
-        nonscriptable(
-            &rdp.client,
-            "AllowPromptingForCredentials",
-            DISPATCH_PROPERTYPUT,
-            vec![VARIANT::from(true)],
-        )?;
-        nonscriptable(
-            &rdp.client,
-            "AllowCredentialSaving",
-            DISPATCH_PROPERTYPUT,
-            vec![VARIANT::from(false)],
-        )?;
-        nonscriptable(
-            &rdp.client,
-            "PromptForCredentials",
-            DISPATCH_PROPERTYPUT,
-            vec![VARIANT::from(true)],
-        )?;
+        let secured = property(&rdp.client, "SecuredSettings3")?;
+        let keys = match options.keys {
+            Keys::Local => 0,
+            Keys::Remote => 1,
+            Keys::FullScreen => 2,
+        };
+        let audio = match options.audio {
+            Audio::Local => 0,
+            Audio::Remote => 1,
+            Audio::Off => 2,
+        };
+        for (name, value) in [("KeyboardHookMode", keys), ("AudioRedirectionMode", audio)] {
+            invoke(
+                &secured,
+                name,
+                DISPATCH_PROPERTYPUT,
+                vec![VARIANT::from(value)],
+            )?;
+        }
+        if !options.gateway.is_empty() {
+            let transport = property(&rdp.client, "TransportSettings2")?;
+            // Always use the gateway, with the explicit settings below and shared credentials.
+            for (name, value) in [
+                ("GatewayHostname", VARIANT::from(options.gateway.as_str())),
+                ("GatewayUsageMethod", VARIANT::from(1u32)),
+                ("GatewayProfileUsageMethod", VARIANT::from(1u32)),
+                ("GatewayCredsSource", VARIANT::from(4u32)),
+                ("GatewayCredSharing", VARIANT::from(1u32)),
+            ] {
+                invoke(&transport, name, DISPATCH_PROPERTYPUT, vec![value])?;
+            }
+        }
+        // Windows shows a "Remember me" option and stores credentials in Credential Manager;
+        // Relay never receives them.
+        for (name, value) in [
+            ("AllowPromptingForCredentials", true),
+            ("AllowCredentialSaving", true),
+            ("PromptForCredentials", true),
+        ] {
+            nonscriptable(
+                &rdp.client,
+                name,
+                DISPATCH_PROPERTYPUT,
+                vec![VARIANT::from(value)],
+            )?;
+        }
         for (name, event) in [
             ("OnConnected", Event::Connected),
             ("OnDisconnected", Event::Disconnected),
             ("OnLoginComplete", Event::Login),
+            ("OnAutoReconnecting", Event::Reconnecting),
+            ("OnAutoReconnected", Event::Reconnected),
+            ("OnEnterFullScreenMode", Event::EnterFullScreen),
+            ("OnLeaveFullScreenMode", Event::LeaveFullScreen),
         ] {
             let callback: IDispatch = Sink {
                 event,
@@ -304,10 +375,39 @@ impl RdpClient {
     pub fn error(&self) -> Option<String> {
         self.state.lock().unwrap().error.clone()
     }
+    pub fn reconnecting(&self) -> bool {
+        self.state.lock().unwrap().reconnecting
+    }
+    pub fn full_screen(&self) -> bool {
+        self.state.lock().unwrap().full_screen
+    }
+    pub fn enter_full_screen(&self) -> Result<(), String> {
+        self.set("FullScreen", &VARIANT::from(true))
+    }
+    /// Sets the scale the session starts with; later changes go through display updates.
+    fn set_scale(&self, scale: u32) -> Result<(), String> {
+        let settings: IMsRdpExtendedSettings = self
+            .client
+            .cast()
+            .map_err(|e| format!("RDP extended settings are unavailable: {e}"))?;
+        for (name, value) in [
+            ("DesktopScaleFactor", scale),
+            ("DeviceScaleFactor", device_scale(scale)),
+        ] {
+            let name = BSTR::from(name);
+            unsafe { settings.put_Property(name.as_ptr(), &VARIANT::from(value)) }
+                .ok()
+                .map_err(|e| format!("Cannot set RDP {name}: {e}"))?;
+        }
+        Ok(())
+    }
     fn layout(&mut self, [x, y, w, h]: [i32; 4]) -> Result<(), String> {
         let (w, h) = (w.max(1), h.max(1));
         crate::native_host::position(self.window.0, self.parent, [x, y, w, h])?;
-        let size = (w.clamp(200, 8192), h.clamp(200, 8192));
+        let size = match self.display {
+            Display::Fit => (w.clamp(200, 8192), h.clamp(200, 8192)),
+            Display::Fixed { width, height } => (width as i32, height as i32),
+        };
         if self.size != Some(size) {
             self.size = Some(size);
             self.resized = Instant::now();
@@ -329,43 +429,43 @@ impl RdpClient {
         unsafe {
             ShowWindow(self.window.0, SW_SHOWNA);
         }
+        let scale = scale_for(self.parent);
         if !self.started {
+            if let Err(e) = self.set_scale(scale) {
+                self.display_warning = Some(e);
+            }
             invoke(&self.client, "Connect", DISPATCH_METHOD, vec![])?;
             self.started = true;
         }
         let state = self.state.lock().unwrap();
         let (connected, generation) = (state.connected, state.generation);
         drop(state);
-        if let Some(size) = self.size
+        if self.display == Display::Fit
+            && let Some(size) = self.size
             && connected
-            && self.applied != Some((size, generation))
+            && self.applied != Some((size, scale, generation))
             && self.resized.elapsed() >= Duration::from_millis(250)
         {
-            match invoke(
+            // Physical size in millimetres at the window's DPI.
+            let millimetres = |pixels: i32| (pixels as u32 * 2540 / (scale * 96)).max(10);
+            let result = invoke(
                 &self.client,
                 "UpdateSessionDisplaySettings",
                 DISPATCH_METHOD,
                 vec![
                     VARIANT::from(size.0 as u32),
                     VARIANT::from(size.1 as u32),
-                    VARIANT::from((size.0 as u32 * 254 / 960).max(10)),
-                    VARIANT::from((size.1 as u32 * 254 / 960).max(10)),
+                    VARIANT::from(millimetres(size.0)),
+                    VARIANT::from(millimetres(size.1)),
                     VARIANT::from(0u32),
-                    VARIANT::from(100u32),
-                    VARIANT::from(100u32),
+                    VARIANT::from(scale),
+                    VARIANT::from(device_scale(scale)),
                 ],
-            ) {
-                Ok(_) => {
-                    self.applied = Some((size, generation));
-                    self.display_warning = None;
-                }
-                Err(e) => {
-                    self.applied = Some((size, generation));
-                    self.display_warning = Some(format!(
-                        "The remote host could not update its display size: {e}"
-                    ));
-                }
-            }
+            );
+            self.applied = Some((size, scale, generation));
+            self.display_warning = result
+                .err()
+                .map(|e| format!("The remote host could not update its display size: {e}"));
         }
         Ok(())
     }
@@ -381,6 +481,42 @@ impl Drop for RdpClient {
             );
         }
         let _ = invoke(&self.client, "Disconnect", DISPATCH_METHOD, vec![]);
+    }
+}
+
+/// The window's display scale in percent, as Windows reports it for that monitor.
+fn scale_for(window: HWND) -> u32 {
+    match unsafe { GetDpiForWindow(window) } {
+        0 => 100,
+        dpi => ((dpi * 100 + 48) / 96).clamp(100, 500),
+    }
+}
+
+/// The remote device scale, which RDP accepts only as 100, 140, or 180 percent.
+fn device_scale(scale: u32) -> u32 {
+    match scale {
+        180.. => 180,
+        140.. => 140,
+        _ => 100,
+    }
+}
+
+/// Removes Windows-saved credentials for an RDP host. Returns whether any existed.
+pub fn forget_credentials(host: &str) -> Result<bool, String> {
+    use windows_sys::Win32::Security::Credentials::{CRED_TYPE_DOMAIN_PASSWORD, CredDeleteW};
+    let target: Vec<u16> = format!("TERMSRV/{host}")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    if unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_DOMAIN_PASSWORD, 0) } != 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    // ERROR_NOT_FOUND
+    if error.raw_os_error() == Some(1168) {
+        Ok(false)
+    } else {
+        Err(error.to_string())
     }
 }
 
@@ -407,6 +543,10 @@ fn atl() -> Result<usize, String> {
         .clone()
 }
 
+fn property(object: &IDispatch, name: &str) -> Result<IDispatch, String> {
+    IDispatch::try_from(&invoke(object, name, DISPATCH_PROPERTYGET, vec![])?)
+        .map_err(|e| format!("RDP {name} is unavailable: {e}"))
+}
 fn parameters(args: &mut [VARIANT], flags: DISPATCH_FLAGS, named: &mut i32) -> DISPPARAMS {
     DISPPARAMS {
         rgvarg: args.as_mut_ptr(),
@@ -500,8 +640,9 @@ fn nonscriptable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn activex_creates_and_tracks_viewport_without_connecting() {
+    use crate::model::RdpOptions;
+
+    fn parent() -> Window {
         unsafe {
             let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
             let parent = Window(CreateWindowExW(
@@ -519,20 +660,24 @@ mod tests {
                 std::ptr::null(),
             ));
             assert!(!parent.0.is_null());
-            let mut connection = Connection::new();
-            connection.host = "localhost".into();
-            connection.username = "test-user".into();
-            let mut client =
-                RdpClient::new(parent.0, &connection, egui::Context::default()).unwrap();
+            parent
+        }
+    }
+    fn get(object: &IDispatch, name: &str) -> VARIANT {
+        invoke(object, name, DISPATCH_PROPERTYGET, vec![]).unwrap()
+    }
+
+    #[test]
+    fn activex_creates_and_tracks_viewport_without_connecting() {
+        let parent = parent();
+        let mut connection = Connection::new();
+        connection.host = "localhost".into();
+        connection.username = "test-user".into();
+        let mut client = RdpClient::new(parent.0, &connection, egui::Context::default()).unwrap();
+        unsafe {
             let inplace: windows::Win32::System::Ole::IOleInPlaceObject =
                 client.client.cast().unwrap();
             let control_window = inplace.GetWindow().unwrap().0;
-            let name: Vec<u16> = "UpdateSessionDisplaySettings\0".encode_utf16().collect();
-            let mut id = 0;
-            client
-                .client
-                .GetIDsOfNames(&GUID::zeroed(), &PCWSTR(name.as_ptr()), 1, 0, &mut id)
-                .unwrap();
             for rect in [[260, 125, 1400, 720], [260, 125, 900, 500]] {
                 client.layout(rect).unwrap();
                 assert_eq!(
@@ -544,72 +689,149 @@ mod tests {
                     [0, 0, rect[2], rect[3]]
                 );
                 assert_eq!(
-                    i32::try_from(
-                        &invoke(&client.client, "DesktopWidth", DISPATCH_PROPERTYGET, vec![])
-                            .unwrap()
-                    )
-                    .unwrap(),
+                    i32::try_from(&get(&client.client, "DesktopWidth")).unwrap(),
                     rect[2]
                 );
                 assert_eq!(
-                    i32::try_from(
-                        &invoke(
-                            &client.client,
-                            "DesktopHeight",
-                            DISPATCH_PROPERTYGET,
-                            vec![]
-                        )
-                        .unwrap()
-                    )
-                    .unwrap(),
+                    i32::try_from(&get(&client.client, "DesktopHeight")).unwrap(),
                     rect[3]
                 );
-                assert!(
-                    bool::try_from(
-                        &nonscriptable(
-                            &client.client,
-                            "AllowPromptingForCredentials",
-                            DISPATCH_PROPERTYGET,
-                            vec![]
-                        )
-                        .unwrap()
-                    )
-                    .unwrap()
-                );
+                for name in ["AllowPromptingForCredentials", "AllowCredentialSaving"] {
+                    let value =
+                        nonscriptable(&client.client, name, DISPATCH_PROPERTYGET, vec![]).unwrap();
+                    assert!(bool::try_from(&value).unwrap(), "{name}");
+                }
                 assert!(!client.started);
             }
         }
+        assert!(bool::try_from(&get(&client.advanced, "EnableAutoReconnect")).unwrap());
+        assert!(bool::try_from(&get(&client.advanced, "RedirectClipboard")).unwrap());
+        assert!(!bool::try_from(&get(&client.advanced, "RedirectDrives")).unwrap());
     }
+
+    #[test]
+    fn connection_options_reach_the_control() {
+        let parent = parent();
+        let mut connection = Connection::new();
+        connection.host = "desk.example".into();
+        connection.rdp = RdpOptions {
+            gateway: "gw.example.com".into(),
+            clipboard: false,
+            drives: true,
+            printers: true,
+            smart_cards: true,
+            microphone: true,
+            audio: Audio::Off,
+            keys: Keys::Remote,
+            display: Display::Fixed {
+                width: 1600,
+                height: 900,
+            },
+        };
+        let mut client = RdpClient::new(parent.0, &connection, egui::Context::default()).unwrap();
+        let flag = |name| bool::try_from(&get(&client.advanced, name)).unwrap();
+        assert!(!flag("RedirectClipboard"));
+        for name in [
+            "RedirectDrives",
+            "RedirectPrinters",
+            "RedirectSmartCards",
+            "AudioCaptureRedirectionMode",
+        ] {
+            assert!(flag(name), "{name}");
+        }
+        let secured = property(&client.client, "SecuredSettings3").unwrap();
+        assert_eq!(
+            i32::try_from(&get(&secured, "KeyboardHookMode")).unwrap(),
+            1
+        );
+        assert_eq!(
+            i32::try_from(&get(&secured, "AudioRedirectionMode")).unwrap(),
+            2
+        );
+        let transport = property(&client.client, "TransportSettings2").unwrap();
+        assert_eq!(
+            BSTR::try_from(&get(&transport, "GatewayHostname"))
+                .unwrap()
+                .to_string(),
+            "gw.example.com"
+        );
+        assert_eq!(
+            u32::try_from(&get(&transport, "GatewayUsageMethod")).unwrap(),
+            1
+        );
+        // A fixed resolution ignores the viewport size.
+        client.layout([0, 0, 900, 500]).unwrap();
+        assert_eq!(
+            i32::try_from(&get(&client.client, "DesktopWidth")).unwrap(),
+            1600
+        );
+        assert_eq!(
+            i32::try_from(&get(&client.client, "DesktopHeight")).unwrap(),
+            900
+        );
+        client.set_scale(150).unwrap();
+        let settings: IMsRdpExtendedSettings = client.client.cast().unwrap();
+        for (name, expected) in [("DesktopScaleFactor", 150), ("DeviceScaleFactor", 140)] {
+            let mut value = VARIANT::default();
+            let name = BSTR::from(name);
+            unsafe { settings.get_Property(name.as_ptr(), &mut value) }
+                .ok()
+                .unwrap();
+            assert_eq!(u32::try_from(&value).unwrap(), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn scales_map_to_supported_device_factors() {
+        assert_eq!(
+            [100, 125, 150, 175, 200, 300].map(device_scale),
+            [100, 100, 140, 140, 180, 180]
+        );
+    }
+
+    #[test]
+    fn forgetting_missing_credentials_is_not_an_error() {
+        assert_eq!(forget_credentials("relay-test.invalid"), Ok(false));
+    }
+
     #[test]
     fn control_events_report_connection_state() {
         let state = Arc::new(Mutex::new(State::default()));
         let ctx = egui::Context::default();
-        for event in [Event::Connected, Event::Login, Event::Disconnected] {
+        let fire = |event| unsafe {
             let callback: IDispatch = Sink {
                 event,
                 state: state.clone(),
                 ctx: ctx.clone(),
             }
             .into();
-            unsafe {
-                callback
-                    .Invoke(
-                        0,
-                        &GUID::zeroed(),
-                        0,
-                        DISPATCH_METHOD,
-                        &DISPPARAMS::default(),
-                        None,
-                        None,
-                        None,
-                    )
-                    .unwrap();
-            }
-        }
+            callback
+                .Invoke(
+                    0,
+                    &GUID::zeroed(),
+                    0,
+                    DISPATCH_METHOD,
+                    &DISPPARAMS::default(),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        };
+        fire(Event::Connected);
+        fire(Event::Login);
+        fire(Event::Reconnecting);
+        assert!(state.lock().unwrap().reconnecting);
+        assert!(!state.lock().unwrap().ended);
+        fire(Event::Reconnected);
+        assert!(!state.lock().unwrap().reconnecting);
+        fire(Event::EnterFullScreen);
+        assert!(state.lock().unwrap().full_screen);
+        fire(Event::Disconnected);
         let state = state.lock().unwrap();
         assert!(state.ended);
-        assert!(!state.connected);
-        assert_eq!(state.generation, 2);
+        assert!(!state.connected && !state.full_screen);
+        assert_eq!(state.generation, 3);
         assert!(state.error.is_some());
     }
 }

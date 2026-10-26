@@ -150,6 +150,7 @@ impl App {
             Ok(raw_window_handle::RawWindowHandle::Win32(h)) => h.hwnd.get() as HWND,
             _ => std::ptr::null_mut(),
         };
+        native_host::install_shortcuts(parent, cc.egui_ctx.clone());
         Self::with(
             cc.egui_ctx.clone(),
             path,
@@ -271,6 +272,20 @@ impl App {
         }
     }
 
+    /// Reconnects a session in its tab with the connection's current saved settings.
+    fn reconnect(&mut self, index: usize) {
+        let session = &self.sessions[index];
+        let connection = self
+            .connections
+            .iter()
+            .find(|c| c.id == session.connection.id)
+            .unwrap_or(&session.connection)
+            .clone();
+        if let Err(e) = self.sessions[index].reconnect(connection) {
+            self.error = Some(e);
+        }
+    }
+
     fn new_connection(&mut self) {
         if self.pending.is_some() {
             self.notify("Wait for the current library operation to finish.");
@@ -356,7 +371,7 @@ impl App {
                             egui::TextEdit::singleline(&mut c.group).hint_text("Personal"),
                         );
                         ui.add_enabled_ui(!groups.is_empty(), |ui| {
-                            ui.menu_button("▾", |ui| {
+                            ui.menu_button(RichText::new("▼").size(10.), |ui| {
                                 for group in &groups {
                                     if ui.button(group).clicked() {
                                         c.group = group.clone();
@@ -369,11 +384,15 @@ impl App {
                         });
                     });
                     ui.checkbox(&mut c.favorite, "Add to favorites");
+                    if c.protocol == Protocol::Rdp {
+                        ui.add_space(4.);
+                        rdp_options(ui, &mut c.rdp);
+                    }
                 });
             ui.add_space(8.);
             let help = if rdp {
-                "Credentials are handled by Windows Remote Desktop.\n\
-                 Passwords are never stored by Relay."
+                "Windows asks for credentials; tick “Remember me” to skip the prompt next time.\n\
+                 Windows keeps them in Credential Manager. Relay never sees passwords."
             } else {
                 "Uses Windows OpenSSH, including your SSH config and agent.\n\
                  Host verification and password prompts appear in the terminal."
@@ -582,14 +601,36 @@ impl eframe::App for App {
             .is_some_and(|t| t.focused);
         let shortcut = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
         let ctrl = egui::Modifiers::CTRL;
+        // Remote desktops take the keyboard, so their shortcuts arrive through a native hook.
+        let native = native_host::take_command();
         if !self.covered() {
-            // Tab switching also works from a focused terminal, which has no use for Ctrl+Tab.
+            use native_host::Command;
+            // Tab switching also works from a focused terminal, which has no use for these keys.
+            let ctrl_alt = ctrl | egui::Modifiers::ALT;
+            let command = native.or_else(|| {
+                if shortcut(ctrl_alt, egui::Key::PageUp)
+                    || shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::Tab)
+                {
+                    Some(Command::PreviousTab)
+                } else if shortcut(ctrl_alt, egui::Key::PageDown) || shortcut(ctrl, egui::Key::Tab)
+                {
+                    Some(Command::NextTab)
+                } else {
+                    None
+                }
+            });
             let tabs = self.sessions.len() + 1;
             let current = self.active.map_or(0, |i| i + 1);
-            if shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::Tab) {
-                self.select_tab((current + tabs - 1) % tabs);
-            } else if shortcut(ctrl, egui::Key::Tab) {
-                self.select_tab((current + 1) % tabs);
+            match command {
+                Some(Command::PreviousTab) => self.select_tab((current + tabs - 1) % tabs),
+                Some(Command::NextTab) => self.select_tab((current + 1) % tabs),
+                Some(Command::Release) | None => {}
+            }
+            if native.is_some() {
+                // Take the keyboard back from the remote desktop.
+                unsafe {
+                    windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(self.parent);
+                }
             }
         }
         if !terminal_focused && !self.covered() {
@@ -671,6 +712,7 @@ impl eframe::App for App {
                     ui.add_space(10.);
                 }
                 if let Some(index) = self.active {
+                    let mut full_screen = false;
                     let s = &self.sessions[index];
                     ui.horizontal(|ui| {
                         protocol_badge(ui, s.connection.protocol);
@@ -681,23 +723,42 @@ impl eframe::App for App {
                                 .size(12.)
                                 .color(colors.muted),
                         );
+                        let desktop = s.terminal.is_none() && !s.window.is_null();
+                        if desktop && s.is_running() && s.error.is_none() && !s.full_screen() {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                full_screen = ui
+                                    .button("Full screen")
+                                    .on_hover_text("Ctrl+Alt+Break leaves and re-enters full screen")
+                                    .clicked();
+                                ui.label(
+                                    RichText::new(
+                                        "Ctrl+Alt+PgUp/PgDn switch tabs ·                                          Ctrl+Alt+Home returns to Relay",
+                                    )
+                                    .size(11.)
+                                    .color(colors.muted),
+                                );
+                            });
+                        }
                     });
+                    if full_screen
+                        && let Err(e) = self.sessions[index].enter_full_screen()
+                    {
+                        self.error = Some(e);
+                    }
+                    let s = &self.sessions[index];
                     ui.add_space(10.);
                     if s.terminal.is_some() {
-                        let reconnect = !s.is_running();
-                        let connection = s.connection.clone();
-                        if reconnect && ui.button("Reconnect in new tab").clicked() {
-                            self.connect(connection);
+                        if !s.is_running() && ui.button("Reconnect").clicked() {
+                            self.reconnect(index);
                         }
                         self.sessions[index].terminal.as_mut().unwrap().show(ui);
                     } else if let Some(error) = &s.error {
                         let error = error.clone();
-                        let connection = s.connection.clone();
                         ui.add_space(40.);
                         ui.label(RichText::new(error).size(18.));
                         ui.add_space(12.);
-                        if ui.button("Reconnect in new tab").clicked() {
-                            self.connect(connection);
+                        if ui.button("Reconnect").clicked() {
+                            self.reconnect(index);
                         }
                     } else if s.window.is_null() {
                         ui.add_space(50.);
@@ -713,6 +774,9 @@ impl eframe::App for App {
                             ui.label("Waiting for the Windows RDP control to initialize.");
                         }
                     } else {
+                        if let Some(status) = s.status() {
+                            ui.colored_label(ui.visuals().warn_fg_color, status);
+                        }
                         if let Some(warning) = s.display_warning() {
                             ui.colored_label(ui.visuals().warn_fg_color, warning);
                         }
@@ -790,6 +854,70 @@ fn protocol_badge(ui: &mut egui::Ui, protocol: Protocol) {
                     .size(11.)
                     .color(color),
             );
+        });
+}
+fn rdp_options(ui: &mut egui::Ui, options: &mut model::RdpOptions) {
+    use model::{Audio, Display, Keys};
+    egui::CollapsingHeader::new("Remote desktop options")
+        .id_salt("rdp-options")
+        .default_open(*options != model::RdpOptions::default())
+        .show(ui, |ui| {
+            field(
+                ui,
+                "RD Gateway (optional)",
+                &mut options.gateway,
+                "gateway.example.com",
+            );
+            ui.label("Use on the remote computer");
+            ui.horizontal_wrapped(|ui| {
+                ui.checkbox(&mut options.clipboard, "Clipboard");
+                ui.checkbox(&mut options.drives, "Local drives");
+                ui.checkbox(&mut options.printers, "Printers");
+                ui.checkbox(&mut options.smart_cards, "Smart cards");
+                ui.checkbox(&mut options.microphone, "Microphone");
+            });
+            egui::Grid::new("rdp-choices")
+                .num_columns(2)
+                .spacing([12., 8.])
+                .show(ui, |ui| {
+                    ui.label("Remote audio");
+                    egui::ComboBox::from_id_salt("rdp-audio")
+                        .width(220.)
+                        .selected_text(options.audio.label())
+                        .show_ui(ui, |ui| {
+                            for audio in Audio::ALL {
+                                ui.selectable_value(&mut options.audio, audio, audio.label());
+                            }
+                        });
+                    ui.end_row();
+                    ui.label("Windows key combinations");
+                    egui::ComboBox::from_id_salt("rdp-keys")
+                        .width(220.)
+                        .selected_text(options.keys.label())
+                        .show_ui(ui, |ui| {
+                            for keys in Keys::ALL {
+                                ui.selectable_value(&mut options.keys, keys, keys.label());
+                            }
+                        });
+                    ui.end_row();
+                    ui.label("Resolution");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut options.display, Display::Fit, "Fit to tab");
+                        let fixed = matches!(options.display, Display::Fixed { .. });
+                        if ui.radio(fixed, "Fixed").clicked() && !fixed {
+                            options.display = Display::Fixed {
+                                width: 1920,
+                                height: 1080,
+                            };
+                        }
+                        if let Display::Fixed { width, height } = &mut options.display {
+                            ui.add(egui::DragValue::new(width).range(200..=8192));
+                            ui.label("×");
+                            ui.add(egui::DragValue::new(height).range(200..=8192));
+                        }
+                    });
+                    ui.end_row();
+                });
         });
 }
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {

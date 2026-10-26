@@ -71,8 +71,40 @@ impl Session {
             self.error = Some(error);
         }
     }
+    /// Restarts the session in place, using `connection` as it is saved now.
+    pub fn reconnect(&mut self, mut connection: Connection) -> Result<(), String> {
+        connection.validate()?;
+        self.terminal = if connection.protocol == Protocol::Ssh {
+            Some(Terminal::ssh(&connection, self.ctx.clone())?)
+        } else {
+            None
+        };
+        self.rdp = None;
+        self.window = std::ptr::null_mut();
+        self.connection = connection;
+        self.error = None;
+        self.ended = false;
+        self.started = Instant::now();
+        Ok(())
+    }
     pub fn display_warning(&self) -> Option<&str> {
         self.rdp.as_ref().and_then(|r| r.display_warning.as_deref())
+    }
+    /// A transient connection state worth showing above the remote desktop.
+    pub fn status(&self) -> Option<&'static str> {
+        self.rdp
+            .as_ref()
+            .filter(|r| r.reconnecting())
+            .map(|_| "Connection interrupted. Reconnecting…")
+    }
+    pub fn full_screen(&self) -> bool {
+        self.rdp.as_ref().is_some_and(|r| r.full_screen())
+    }
+    pub fn enter_full_screen(&mut self) -> Result<(), String> {
+        match &self.rdp {
+            Some(rdp) => rdp.enter_full_screen(),
+            None => Err("The remote desktop is not ready yet.".into()),
+        }
     }
     pub fn is_running(&self) -> bool {
         !self.ended
