@@ -28,6 +28,30 @@ pub struct State {
     pub library: Library,
     /// Recently opened connection IDs per library, most recent first.
     pub recent: BTreeMap<String, Vec<u64>>,
+    /// Saved commands for SSH sessions.
+    pub snippets: Vec<Snippet>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Snippet {
+    pub name: String,
+    pub command: String,
+    /// Press Enter after typing the command.
+    pub run: bool,
+}
+
+/// Indices of snippets whose name or command contains `query`, ignoring case.
+pub fn matching(snippets: &[Snippet], query: &str) -> Vec<usize> {
+    let query = query.trim().to_lowercase();
+    snippets
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            s.name.to_lowercase().contains(&query) || s.command.to_lowercase().contains(&query)
+        })
+        .map(|(i, _)| i)
+        .collect()
 }
 
 pub fn path() -> PathBuf {
@@ -104,6 +128,25 @@ mod tests {
         state.note_recent(&Location::Mssql("Password=secret".into()), 7);
         let json = serde_json::to_string(&state).unwrap();
         assert!(!json.contains("secret"), "{json}");
+    }
+
+    #[test]
+    fn snippets_match_name_or_command() {
+        let snippet = |name: &str, command: &str| Snippet {
+            name: name.into(),
+            command: command.into(),
+            run: true,
+        };
+        let snippets = [
+            snippet("Tail syslog", "tail -f /var/log/syslog"),
+            snippet("Disk usage", "df -h"),
+            snippet("Restart nginx", "sudo systemctl restart nginx"),
+        ];
+        assert_eq!(matching(&snippets, ""), [0, 1, 2]);
+        assert_eq!(matching(&snippets, "NGINX"), [2]);
+        assert_eq!(matching(&snippets, "log"), [0]);
+        assert_eq!(matching(&snippets, " df "), [1]);
+        assert!(matching(&snippets, "reboot").is_empty());
     }
 
     #[test]

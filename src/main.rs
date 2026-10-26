@@ -133,10 +133,22 @@ struct App {
     state_path: Option<PathBuf>,
     /// The tab shown last frame, to focus a terminal when its tab opens.
     shown: Option<usize>,
+    /// The open snippet palette, over the active SSH tab.
+    palette: Option<Palette>,
+    /// A snippet being added (no index) or edited in Settings.
+    snippet_draft: Option<(Option<usize>, state::Snippet)>,
     pending_save: bool,
 }
 
 const NOTICE_SECONDS: u64 = 4;
+
+#[derive(Default)]
+struct Palette {
+    query: String,
+    /// The highlighted row among the matching snippets.
+    selected: usize,
+    focused: bool,
+}
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -240,6 +252,8 @@ impl App {
             state,
             state_path: None,
             shown: None,
+            palette: None,
+            snippet_draft: None,
             pending_save: false,
         }
     }
@@ -731,6 +745,13 @@ impl eframe::App for App {
         let native = native_host::take_command();
         if !self.covered() {
             use native_host::Command;
+            let ssh = self
+                .active
+                .and_then(|i| self.sessions.get(i))
+                .is_some_and(|s| s.terminal.is_some());
+            if ssh && shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::P) {
+                self.palette = Some(Palette::default());
+            }
             // Tab switching also works from a focused terminal, which has no use for these keys.
             let ctrl_alt = ctrl | egui::Modifiers::ALT;
             let command = native.or_else(|| {
@@ -858,6 +879,7 @@ impl eframe::App for App {
                 if let Some(index) = self.active {
                     let mut full_screen = false;
                     let mut save = false;
+                    let mut snippets = false;
                     let s = &self.sessions[index];
                     ui.horizontal(|ui| {
                         protocol_badge(ui, s.connection.protocol);
@@ -877,6 +899,12 @@ impl eframe::App for App {
                                 save = ui
                                     .button("Save to library")
                                     .on_hover_text("Keep this connection in the library")
+                                    .clicked();
+                            }
+                            if s.terminal.is_some() && s.is_running() {
+                                snippets = ui
+                                    .button("Snippets")
+                                    .on_hover_text("Saved commands · Ctrl+Shift+P")
                                     .clicked();
                             }
                             if desktop && s.is_running() && s.error.is_none() && !s.full_screen() {
@@ -901,6 +929,9 @@ impl eframe::App for App {
                     }
                     if save {
                         self.edit(self.sessions[index].connection.clone());
+                    }
+                    if snippets {
+                        self.palette = Some(Palette::default());
                     }
                     let s = &self.sessions[index];
                     ui.add_space(10.);
@@ -947,6 +978,7 @@ impl eframe::App for App {
         self.confirmations(ctx);
         self.settings(ctx);
         self.library_dialogs(ctx);
+        self.snippet_palette(ctx);
         self.toast(ctx);
         let covered = self.covered();
         let ppp = ctx.pixels_per_point();

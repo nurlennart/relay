@@ -187,6 +187,20 @@ impl Terminal {
         self.selection = Some((start, end));
     }
 
+    /// Types `text` into the session, and presses Enter after it when `run` is set.
+    pub fn send_text(&mut self, text: &str, run: bool) {
+        if self.ended {
+            return;
+        }
+        let bracketed = self.parser.lock().unwrap().screen().bracketed_paste();
+        let bytes = snippet_bytes(text, run, bracketed);
+        self.parser.lock().unwrap().screen_mut().set_scrollback(0);
+        let mut writer = self.writer.lock().unwrap();
+        if let Err(e) = writer.write_all(&bytes).and_then(|_| writer.flush()) {
+            self.error = Some(format!("Cannot send terminal input: {e}"));
+        }
+    }
+
     /// Focuses the terminal the next time it is shown.
     pub fn focus(&mut self) {
         self.focus_requested = true;
@@ -596,6 +610,25 @@ fn translate(events: &[egui::Event], modifiers: egui::Modifiers, mode: Mode) -> 
     (input, copy)
 }
 
+/// The bytes a snippet sends: line breaks become Enter, multi-line text is pasted as one block
+/// when the shell supports bracketed paste, and `run` presses Enter at the end.
+fn snippet_bytes(text: &str, run: bool, bracketed: bool) -> Vec<u8> {
+    let text = text.trim_end_matches(['\r', '\n']).replace("\r\n", "\n");
+    let body = text.replace('\n', "\r");
+    let mut bytes = vec![];
+    if bracketed && text.contains('\n') {
+        bytes.extend(b"\x1b[200~");
+        bytes.extend(body.as_bytes());
+        bytes.extend(b"\x1b[201~");
+    } else {
+        bytes.extend(body.as_bytes());
+    }
+    if run {
+        bytes.push(b'\r');
+    }
+    bytes
+}
+
 fn key_bytes(key: egui::Key, modifiers: egui::Modifiers, application_cursor: bool) -> Vec<u8> {
     use egui::Key::*;
     if modifiers.ctrl && !modifiers.alt {
@@ -747,6 +780,16 @@ mod tests {
             parser.screen().cell(0, 0).unwrap().fgcolor(),
             vt100::Color::Idx(1)
         );
+    }
+    #[test]
+    fn snippets_type_lines_and_optionally_run() {
+        assert_eq!(snippet_bytes("df -h", true, false), b"df -h\r");
+        assert_eq!(snippet_bytes("df -h\n", false, true), b"df -h");
+        assert_eq!(
+            snippet_bytes("cd /srv\r\nls", true, true),
+            b"\x1b[200~cd /srv\rls\x1b[201~\r"
+        );
+        assert_eq!(snippet_bytes("a\nb", false, false), b"a\rb");
     }
     #[test]
     fn focused_terminal_keeps_navigation_keys() {

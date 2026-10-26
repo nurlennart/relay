@@ -81,6 +81,24 @@ pub fn seed(app: &mut App) {
     if std::env::var_os("RELAY_UI_EDITOR").is_some() {
         app.new_connection();
     }
+    if std::env::var_os("RELAY_UI_SNIPPETS").is_some() {
+        let snippet = |name: &str, command: &str, run| state::Snippet {
+            name: name.into(),
+            command: command.into(),
+            run,
+        };
+        app.state.snippets = vec![
+            snippet("Tail syslog", "tail -f /var/log/syslog", true),
+            snippet("Disk usage", "df -h", true),
+            snippet("Restart nginx", "sudo systemctl restart nginx", false),
+            snippet(
+                "Deploy",
+                "cd /srv/relay
+git pull && ./deploy.sh",
+                false,
+            ),
+        ];
+    }
     if std::env::var_os("RELAY_UI_TERMINAL").is_some() {
         let mut connection = app.connections[1].clone();
         connection.host = "build.example.com".into();
@@ -94,6 +112,9 @@ pub fn seed(app: &mut App) {
             app.ctx.clone(),
         ));
         app.active = Some(0);
+        if std::env::var_os("RELAY_UI_PALETTE").is_some() {
+            app.palette = Some(Palette::default());
+        }
     }
     if std::env::var_os("RELAY_UI_SSH").is_some() {
         let mut c = app.connections[1].clone();
