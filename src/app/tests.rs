@@ -765,6 +765,17 @@ fn shared_library_syncs_silently() {
 }
 
 #[test]
+fn changes_that_repeat_an_id_are_not_saved() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let mut next = app.connections.clone();
+    next[2].id = 1;
+    assert!(!app.persist(next));
+    assert!(app.pending.is_none() && app.recovery.is_none());
+    assert!(app.error.is_some());
+}
+
+#[test]
 fn search_clear_button_empties_the_search() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);

@@ -459,6 +459,12 @@ impl App {
         if self.pending.is_some() {
             return false;
         }
+        // A library with repeated IDs cannot be loaded again, by anyone who shares it.
+        let mut ids = std::collections::HashSet::new();
+        if next.iter().any(|c| c.id == 0 || !ids.insert(c.id)) {
+            self.error = Some("These changes would give two connections the same ID.".into());
+            return false;
+        }
         self.recovery = Some(next.clone());
         self.pending_editor = match &self.modal {
             Modal::Editor(c) => Some(c.clone()),

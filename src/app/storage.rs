@@ -492,10 +492,13 @@ impl App {
                 });
             });
             if confirm {
-                let mut next = self.connections.clone();
-                next.extend(import.connections.iter().cloned());
-                if self.persist(next) {
-                    self.modal = Modal::None;
+                match import.merged(&self.connections) {
+                    Ok(next) => {
+                        if self.persist(next) {
+                            self.modal = Modal::None;
+                        }
+                    }
+                    Err(e) => self.error = Some(e),
                 }
             } else if cancel || escape {
                 self.modal = Modal::None;

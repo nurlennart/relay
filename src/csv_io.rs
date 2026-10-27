@@ -32,6 +32,21 @@ pub struct Import {
     pub filename: String,
 }
 
+impl Import {
+    /// `existing` with the imported connections added, numbered and checked for duplicates
+    /// against `existing` as it is now; a shared library may have changed since the import
+    /// was read.
+    pub fn merged(&self, existing: &[Connection]) -> Result<Vec<Connection>, String> {
+        let mut collector = Collector::new(existing, self.filename.clone());
+        for c in &self.connections {
+            collector.add(&c.name, c.clone())?;
+        }
+        let mut next = existing.to_vec();
+        next.extend(collector.finish().connections);
+        Ok(next)
+    }
+}
+
 pub fn read(path: &Path, existing: &[Connection]) -> Result<Import, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     if bytes.len() > 10 * 1024 * 1024 {
@@ -329,6 +344,18 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         let imported: Vec<_> = import.connections.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(imported, names);
+    }
+    #[test]
+    fn merging_numbers_against_the_library_as_it_is_now() {
+        let text = "Name,Host,Protocol\nA,a.example,SSH\nB,b.example,SSH\n";
+        let import = parse(text, &[], "test.csv".into()).unwrap();
+        assert_eq!(import.connections[0].id, 1);
+        // While the import was reviewed, a teammate added B as ID 1.
+        let mut theirs = import.connections[1].clone();
+        theirs.id = 1;
+        let merged = import.merged(&[theirs]).unwrap();
+        let ids: Vec<_> = merged.iter().map(|c| (c.id, c.name.as_str())).collect();
+        assert_eq!(ids, [(1, "B"), (2, "A")]);
     }
     #[test]
     fn quoted_fields_defaults_and_rejected_rows() {
