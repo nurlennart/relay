@@ -133,10 +133,7 @@ fn mssql(
         .map_err(|e| e.to_string())?;
     let work = async {
         let config = mssql_config(server)?;
-        let tcp = tokio::net::TcpStream::connect(config.get_addr())
-            .await
-            .map_err(|e| format!("MSSQL network connection failed: {e}"))?;
-        tcp.set_nodelay(true).map_err(|e| e.to_string())?;
+        let tcp = mssql_connect(&config).await?;
         let mut client = tiberius::Client::connect(config, tcp.compat_write())
             .await
             .map_err(|_| {
@@ -202,6 +199,39 @@ fn mssql(
                     .to_string()
             })?
     })
+}
+
+/// SQL Server Browser's port, which tiberius gives for a named instance without a port.
+const SQL_BROWSER_PORT: u16 = 1434;
+
+/// Whether `config` names an instance without a port, so the SQL Server Browser has to say
+/// which port it listens on. With a port, Relay connects to it directly.
+fn needs_browser(config: &tiberius::Config) -> bool {
+    config
+        .get_addr()
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| port == SQL_BROWSER_PORT.to_string())
+}
+
+/// Opens the network connection to the server: directly to its port, or, for a named instance
+/// without one, to the port the SQL Server Browser gives for it.
+async fn mssql_connect(config: &tiberius::Config) -> Result<tokio::net::TcpStream, String> {
+    use tiberius::SqlBrowser;
+    if needs_browser(config) {
+        return tokio::net::TcpStream::connect_named(config)
+            .await
+            .map_err(|_| {
+                "The SQL Server Browser did not answer for this named instance. Check that the \
+                 SQL Server Browser service is running and UDP port 1434 is reachable, or give \
+                 the instance's port instead, as in Server=tcp:host,port."
+                    .to_string()
+            });
+    }
+    let tcp = tokio::net::TcpStream::connect(config.get_addr())
+        .await
+        .map_err(|e| format!("MSSQL network connection failed: {e}"))?;
+    tcp.set_nodelay(true).map_err(|e| e.to_string())?;
+    Ok(tcp)
 }
 
 /// The MSSQL configuration: TLS is required, or not used at all when turned off.
@@ -317,6 +347,80 @@ mod tests {
             assert!(tiberius::Config::from_ado_string(connection).is_ok());
         }
     }
+    #[test]
+    fn named_instances_ask_the_browser_unless_a_port_is_given() {
+        let config = |server: &str| {
+            mssql_config(&server_of(&format!(
+                "Server={server};Database=Relay;User ID=relay;Password=test"
+            )))
+            .unwrap()
+        };
+        for named in ["tcp:sql01\\SQLEXPRESS", "sql01\\SQLEXPRESS"] {
+            let c = config(named);
+            assert!(needs_browser(&c), "{named}");
+            assert_eq!(c.get_addr(), "sql01:1434");
+        }
+        for direct in [
+            "tcp:sql01\\SQLEXPRESS,49733",
+            "tcp:sql01,49733",
+            "tcp:sql01",
+        ] {
+            assert!(!needs_browser(&config(direct)), "{direct}");
+        }
+        assert_eq!(
+            config("tcp:sql01\\SQLEXPRESS,49733").get_addr(),
+            "sql01:49733"
+        );
+        assert_eq!(config("tcp:sql01").get_addr(), "sql01:1433");
+    }
+    /// A stand-in SQL Server Browser on this computer answers for the instance with the port
+    /// a listener waits on, and the connection goes there. Skipped when UDP 1434 is taken,
+    /// as on a machine running the real Browser.
+    #[test]
+    fn named_instances_connect_to_the_port_the_browser_gives() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let Ok(browser) = tokio::net::UdpSocket::bind(("127.0.0.1", SQL_BROWSER_PORT)).await
+            else {
+                eprintln!("skipping: UDP 1434 is in use");
+                return;
+            };
+            let instance = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = instance.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                let mut request = [0u8; 256];
+                let (len, from) = browser.recv_from(&mut request).await.unwrap();
+                // A unicast request for one instance: 0x04, then its name.
+                assert_eq!(&request[..len], b"\x04SQLEXPRESS");
+                let data =
+                    format!("ServerName;SQL01;InstanceName;SQLEXPRESS;IsClustered;No;tcp;{port};;");
+                let mut reply = vec![0x05];
+                reply.extend((data.len() as u16).to_le_bytes());
+                reply.extend(data.as_bytes());
+                browser.send_to(&reply, from).await.unwrap();
+            });
+            let config = mssql_config(&server_of(
+                "Server=tcp:127.0.0.1\\SQLEXPRESS;Database=Relay;User ID=relay;Password=test",
+            ))
+            .unwrap();
+            let tcp = mssql_connect(&config).await.unwrap();
+            assert_eq!(tcp.peer_addr().unwrap().port(), port);
+            instance.accept().await.unwrap();
+            // Without an answer, the error says what to check.
+            let config = mssql_config(&server_of(
+                "Server=tcp:127.0.0.1\\NOBODY;Database=Relay;User ID=relay;Password=test",
+            ))
+            .unwrap();
+            let error = mssql_connect(&config).await.unwrap_err();
+            assert!(error.contains("SQL Server Browser"), "{error}");
+        });
+    }
+    fn server_of(connection: &str) -> Server {
+        server(connection, true)
+    }
     fn server(connection: &str, tls: bool) -> Server {
         Server {
             connection: connection.into(),
@@ -385,9 +489,7 @@ mod tests {
             .unwrap();
         runtime.block_on(async {
             let config = mssql_config(&server).unwrap();
-            let tcp = tokio::net::TcpStream::connect(config.get_addr())
-                .await
-                .unwrap();
+            let tcp = mssql_connect(&config).await.unwrap();
             let mut client = tiberius::Client::connect(config, tcp.compat_write())
                 .await
                 .unwrap();
