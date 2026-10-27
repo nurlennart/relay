@@ -1855,11 +1855,14 @@ mod tests {
         // as a search does, output that has arrived must not be counted until it is on the
         // screen, or the search would take it as searched.
         let script = if cfg!(windows) {
-            "ping -n 2 127.0.0.1 >nul& echo late"
+            "ping -n 3 127.0.0.1 >nul& echo late"
         } else {
-            "sleep 0.5; echo late"
+            "sleep 1.5; echo late"
         };
         let terminal = Terminal::spawn(shell(script), None).unwrap();
+        // Windows sends output of its own as the process starts; let it be counted first, so
+        // the reader is not left waiting for the lock with it.
+        std::thread::sleep(Duration::from_millis(700));
         let parser = terminal.parser.lock().unwrap();
         let before = terminal.output_bytes.load(Ordering::Relaxed);
         let deadline = Instant::now() + Duration::from_secs(10);
