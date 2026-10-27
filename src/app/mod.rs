@@ -139,6 +139,8 @@ struct App {
     /// The quit confirmation overlays `modal`, which returns when the user keeps working.
     quitting: bool,
     editor_error: String,
+    /// The edited connection as saved when the editor opened, to keep others' edits since.
+    editor_base: Option<Connection>,
     error: Option<String>,
     storage_ok: bool,
     path: PathBuf,
@@ -281,6 +283,7 @@ impl App {
             modal: Modal::None,
             quitting: false,
             editor_error: String::new(),
+            editor_base: None,
             storage_ok: error.is_none(),
             error,
             path,
@@ -799,6 +802,7 @@ impl App {
     }
 
     fn edit(&mut self, connection: Connection) {
+        self.editor_base = Some(connection.clone()).filter(|c| c.id != 0);
         self.modal = Modal::Editor(connection);
         self.editor_error.clear();
     }

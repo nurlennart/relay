@@ -119,7 +119,7 @@ SQLite uses rollback journaling, full synchronization, a five-second busy timeou
 
 ### Concurrent edits
 
-A shared library reloads quietly every minute and when Relay's window regains focus, so teammates' changes appear on their own; **Refresh** loads them right away. Shared saves compare the revision read by your client and reject stale updates. Failed changes remain in memory with **Export unsaved changes** available. Export, refresh, and reapply deliberately. Quitting warns if unsaved changes remain. Database operations run off the UI thread; MSSQL and MySQL operations have a 15-second timeout. If a save times out, refresh before retrying because the server may have committed it.
+A shared library reloads quietly every minute and when Relay's window regains focus, so teammates' changes appear on their own; **Refresh** loads them right away. Shared saves compare the revision read by your client and reject stale updates. Saving a connection applies only the fields you changed, so a teammate's edits to its other fields while the editor was open are kept. If you both changed the same field, or they deleted the connection, the editor says so, and saving again keeps your version. Failed changes remain in memory with **Export unsaved changes** available. Export, refresh, and reapply deliberately. Quitting warns if unsaved changes remain. Database operations run off the UI thread; MSSQL and MySQL operations have a 15-second timeout. If a save times out, refresh before retrying because the server may have committed it.
 
 ## Sessions
 

@@ -1073,3 +1073,74 @@ fn connected_tabs_offer_reconnect_from_their_menu() {
     assert!(offered(&mut app, "Alpha"));
     assert!(!offered(&mut app, "Bravo"));
 }
+
+#[test]
+fn saving_an_edit_keeps_changes_made_meanwhile() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let save = |app: &mut App| {
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![press(egui::Key::Enter)],
+                ..Default::default()
+            },
+            |ctx| app.editor(ctx),
+        );
+        while app.pending.is_some() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            app.poll_storage();
+        }
+    };
+    fn draft(app: &mut App) -> &mut Connection {
+        match &mut app.modal {
+            Modal::Editor(c) => c,
+            _ => panic!("the editor closed"),
+        }
+    }
+    // A teammate changes the host while the notes are edited: both changes are kept.
+    app.edit(app.connections[0].clone());
+    draft(&mut app).notes = "Rack 4".into();
+    app.connections[0].host = "moved.example".into();
+    save(&mut app);
+    assert!(matches!(app.modal, Modal::None));
+    assert_eq!(
+        (
+            app.connections[0].host.as_str(),
+            app.connections[0].notes.as_str()
+        ),
+        ("moved.example", "Rack 4")
+    );
+    // Both change the host: the editor says so, and saving again keeps this edit.
+    app.edit(app.connections[0].clone());
+    draft(&mut app).host = "mine.example".into();
+    app.connections[0].host = "theirs.example".into();
+    app.connections[0].port = 3390;
+    save(&mut app);
+    assert!(app.editor_error.contains("changed the host"));
+    assert_eq!(app.connections[0].host, "theirs.example");
+    assert_eq!(
+        draft(&mut app).port,
+        3390,
+        "the editor shows their other changes"
+    );
+    save(&mut app);
+    assert!(matches!(app.modal, Modal::None));
+    assert_eq!(
+        (app.connections[0].host.as_str(), app.connections[0].port),
+        ("mine.example", 3390)
+    );
+    // A teammate deletes it: saving again adds it back as a new connection.
+    app.edit(app.connections[1].clone());
+    draft(&mut app).notes = "Keep".into();
+    app.connections.remove(1);
+    save(&mut app);
+    assert!(app.editor_error.contains("deleted"));
+    assert_eq!(app.connections.len(), 2);
+    save(&mut app);
+    assert!(matches!(app.modal, Modal::None));
+    assert!(
+        app.connections
+            .iter()
+            .any(|c| c.name == "Bravo" && c.notes == "Keep")
+    );
+}

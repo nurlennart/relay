@@ -193,7 +193,30 @@ impl App {
                     .saturating_add(1);
                 next.push(c);
             } else if let Some(existing) = next.iter_mut().find(|v| v.id == c.id) {
-                *existing = c;
+                let base = self.editor_base.as_ref().unwrap_or(existing);
+                let (merged, conflicts) = model::merge(base, &c, existing);
+                if !conflicts.is_empty() {
+                    // The editor takes the others' other changes; saving again keeps the rest.
+                    self.editor_error = format!(
+                        "Someone else changed the {} while you edited. Save again to replace \
+                         their values with yours, or Cancel to keep theirs.",
+                        list(&conflicts)
+                    );
+                    self.editor_base = Some(existing.clone());
+                    self.modal = Modal::Editor(merged);
+                    return;
+                }
+                *existing = merged;
+            } else {
+                // Saving again adds it as a new connection.
+                c.id = 0;
+                self.editor_error =
+                    "Someone else deleted this connection while you edited. Save again to add it \
+                     back."
+                        .into();
+                self.editor_base = None;
+                self.modal = Modal::Editor(c);
+                return;
             }
             if self.persist(next) {
                 self.modal = Modal::None;
@@ -339,5 +362,14 @@ pub(super) fn rdp_options(ui: &mut egui::Ui, options: &mut model::RdpOptions) {
                 missing.join("; ")
             ),
         );
+    }
+}
+
+/// `items` as an English list: "a", "a and b", "a, b and c".
+fn list(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => (*one).into(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }

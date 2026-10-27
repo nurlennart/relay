@@ -217,6 +217,85 @@ fn valid_host(host: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || ".-:_".contains(c))
 }
 
+/// `current` with the fields `draft` changed from `base`, so edits made in the meantime by
+/// someone else are kept. Fields both sides changed to different values are named as
+/// conflicts, with `draft`'s value in the result.
+pub fn merge(
+    base: &Connection,
+    draft: &Connection,
+    current: &Connection,
+) -> (Connection, Vec<&'static str>) {
+    // Naming every field here makes a new one fail to compile until it is merged below.
+    let Connection {
+        id: _,
+        name: _,
+        host: _,
+        port: _,
+        username: _,
+        group: _,
+        protocol: _,
+        favorite: _,
+        notes: _,
+        metadata: _,
+        ssh:
+            SshOptions {
+                jump: _,
+                identity: _,
+                forwards: _,
+            },
+        rdp:
+            RdpOptions {
+                gateway: _,
+                clipboard: _,
+                drives: _,
+                printers: _,
+                smart_cards: _,
+                microphone: _,
+                audio: _,
+                keys: _,
+                display: _,
+            },
+    } = base;
+    let mut merged = current.clone();
+    let mut conflicts = vec![];
+    macro_rules! take {
+        ($($($field:ident).+ => $label:literal),* $(,)?) => {$(
+            if draft.$($field).+ != base.$($field).+ {
+                if current.$($field).+ != base.$($field).+
+                    && current.$($field).+ != draft.$($field).+
+                {
+                    conflicts.push($label);
+                }
+                merged.$($field).+ = draft.$($field).+.clone();
+            }
+        )*};
+    }
+    take! {
+        name => "name",
+        host => "host",
+        port => "port",
+        username => "username",
+        group => "group",
+        protocol => "protocol",
+        favorite => "favorite",
+        notes => "notes",
+        metadata => "imported details",
+        ssh.jump => "jump host",
+        ssh.identity => "identity file",
+        ssh.forwards => "port forwards",
+        rdp.gateway => "RD Gateway",
+        rdp.clipboard => "local resources",
+        rdp.drives => "local resources",
+        rdp.printers => "local resources",
+        rdp.smart_cards => "local resources",
+        rdp.microphone => "local resources",
+        rdp.audio => "remote audio",
+        rdp.keys => "key combinations",
+        rdp.display => "resolution",
+    }
+    (merged, conflicts)
+}
+
 impl Connection {
     pub fn new() -> Self {
         Self {
@@ -478,6 +557,38 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn merging_keeps_both_sides_and_names_conflicts() {
+        let base = Connection::new();
+        let mut draft = base.clone();
+        draft.notes = "mine".into();
+        draft.rdp.drives = true;
+        let mut current = base.clone();
+        current.host = "theirs.example".into();
+        current.rdp.printers = true;
+        let (merged, conflicts) = merge(&base, &draft, &current);
+        assert!(conflicts.is_empty());
+        assert_eq!(
+            (merged.notes.as_str(), merged.host.as_str()),
+            ("mine", "theirs.example")
+        );
+        assert!(merged.rdp.drives && merged.rdp.printers);
+        // The same change on both sides is no conflict; different ones are.
+        current.notes = "mine".into();
+        current.rdp.drives = true;
+        current.rdp.clipboard = false;
+        draft.rdp.microphone = true;
+        draft.port = 3390;
+        current.port = 3391;
+        let (merged, conflicts) = merge(&base, &draft, &current);
+        assert_eq!(conflicts, ["port"]);
+        assert_eq!(merged.port, 3390);
+        assert!(!merged.rdp.clipboard && merged.rdp.microphone);
+        draft.rdp.gateway = "gw1.example".into();
+        current.rdp.gateway = "gw2.example".into();
+        let (_, conflicts) = merge(&base, &draft, &current);
+        assert_eq!(conflicts, ["port", "RD Gateway"]);
+    }
     #[test]
     fn validates_hosts_and_ports() {
         let mut c = Connection::new();
