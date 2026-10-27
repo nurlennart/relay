@@ -8,7 +8,11 @@
 use crate::{askpass, model::Connection};
 use eframe::egui;
 use russh_sftp::{
-    client::{SftpSession, error::Error as SftpError, fs::Metadata},
+    client::{
+        SftpSession,
+        error::Error as SftpError,
+        fs::{File, Metadata},
+    },
     protocol::{OpenFlags, StatusCode},
 };
 use std::{
@@ -1555,6 +1559,35 @@ async fn upload_file(
 ) -> Result<(), Failure> {
     let fail = |e: &dyn std::fmt::Display| Failure::Error(format!("{}: {e}", file_name(remote)));
     let mut source = tokio::fs::File::open(local).await.map_err(|e| fail(&e))?;
+    // A file being replaced keeps its contents until its replacement is complete.
+    if let Ok(meta) = session.metadata(remote).await
+        && file_type(&meta) == TYPE_FILE
+    {
+        // Through a link, the file it points to is replaced and the link stays.
+        let real = session
+            .canonicalize(remote)
+            .await
+            .unwrap_or_else(|_| remote.into());
+        if let Some((temp, mut target)) = stage(session, &real).await {
+            let mut copied = match copy(&mut source, &mut target, cancel, progress).await {
+                Ok(()) => target.shutdown().await.map_err(|e| fail(&e)),
+                Err(e) => Err(e),
+            };
+            drop(target);
+            if copied.is_ok() {
+                let permissions = Metadata {
+                    permissions: meta.permissions.map(|p| p & 0o7777),
+                    ..Metadata::empty()
+                };
+                let _ = session.set_metadata(temp.clone(), permissions).await;
+                copied = replace(session, &temp, &real).await.map_err(|e| fail(&e));
+            } else {
+                let _ = session.remove_file(temp).await;
+            }
+            return copied;
+        }
+        // A folder that takes no new files still lets its files be overwritten in place.
+    }
     let mut target = session
         .open_with_flags(
             remote,
@@ -1574,6 +1607,44 @@ async fn upload_file(
     copied
 }
 
+/// Creates a new file beside `path` to write its replacement into, or `None` where the
+/// folder takes no new files.
+async fn stage(session: &SftpSession, path: &str) -> Option<(String, File)> {
+    let temp = join(&parent(path)?, &crate::model::temp_name(file_name(path)));
+    let file = session
+        .open_with_flags(
+            temp.clone(),
+            OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+        )
+        .await
+        .ok()?;
+    Some((temp, file))
+}
+
+/// Moves the complete file `temp` over `path`. SFTP servers commonly refuse to rename onto an
+/// existing file, and then `path` is removed first. Once it is, `temp` holds the only copy,
+/// so it stays if the move still fails.
+async fn replace(session: &SftpSession, temp: &str, path: &str) -> Result<(), String> {
+    let removed = match session.rename(temp, path).await {
+        Ok(()) => return Ok(()),
+        Err(SftpError::Status(s)) if s.status_code == StatusCode::Failure => {
+            session.remove_file(path).await
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(e) = removed {
+        let _ = session.remove_file(temp).await;
+        return Err(format!("Cannot replace it: {}", describe(e)));
+    }
+    session.rename(temp, path).await.map_err(|e| {
+        format!(
+            "Uploaded as {}, which cannot take its place: {}",
+            file_name(temp),
+            describe(e)
+        )
+    })
+}
+
 async fn download_file(
     session: &SftpSession,
     remote: &str,
@@ -1586,7 +1657,7 @@ async fn download_file(
     let modified = source.metadata().await.ok().and_then(|m| m.modified().ok());
     // The file appears under its own name only once it is complete.
     let partial = partial_path(local);
-    let mut target = tokio::fs::File::create(&partial)
+    let mut target = tokio::fs::File::create_new(&partial)
         .await
         .map_err(|e| fail(&e))?;
     let mut copied = copy(&mut source, &mut target, cancel, progress).await;
@@ -1614,7 +1685,7 @@ async fn download_file(
 /// Where a download is written until it is complete: beside its destination.
 fn partial_path(local: &Path) -> PathBuf {
     let name = local.file_name().unwrap_or_default().to_string_lossy();
-    local.with_file_name(format!("{name}.relay-part"))
+    local.with_file_name(crate::model::temp_name(&name))
 }
 
 /// Copies `reader` to `writer` through one buffer, stopping promptly when cancelled.
@@ -1999,6 +2070,16 @@ mod tests {
         Some(browser)
     }
 
+    /// The names in local folder `dir`, sorted.
+    fn listing(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
     fn names(browser: &Browser) -> Vec<String> {
         browser.visible().iter().map(|e| e.name.clone()).collect()
     }
@@ -2092,7 +2173,7 @@ mod tests {
             std::fs::read_to_string(local.join("tree/inner/leaf.txt")).unwrap(),
             "leaf"
         );
-        assert!(!local.join("big.bin.relay-part").exists());
+        assert_eq!(listing(&local), ["big.bin", "tree"]);
 
         // Downloading again stops at the existing file until asked to replace it.
         browser.clear_finished();
@@ -2157,8 +2238,93 @@ mod tests {
                 browser.transfers[0].state,
                 TransferState::Stopped(Failure::Cancelled)
             );
-            assert!(!local.join("huge.bin").exists());
-            assert!(!local.join("huge.bin.relay-part").exists());
+            assert!(listing(&local).is_empty());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn replacing_keeps_the_original_until_the_upload_is_complete() {
+        let root = scratch("replace");
+        let remote = root.join("remote");
+        let local = root.join("local");
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(remote.join("huge.bin"), "original").unwrap();
+        // Not Relay's, whatever its name.
+        std::fs::write(remote.join("huge.bin.relay-part"), "unrelated").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::Permissions::from_mode(0o640);
+            std::fs::set_permissions(remote.join("huge.bin"), mode).unwrap();
+        }
+        std::fs::write(local.join("huge.bin"), vec![1u8; 64 * 1024 * 1024]).unwrap();
+        let Some(mut browser) = local_browser(&remote) else {
+            return;
+        };
+        let folder = browser.path.clone();
+
+        browser.upload(vec![local.join("huge.bin")], &folder, true);
+        let id = browser.transfers[0].id;
+        wait(&mut browser, "the transfer to start", |b| {
+            b.transfers[0].done > 0 || b.transfers[0].finished()
+        });
+        browser.cancel(id);
+        wait(&mut browser, "the cancellation", |b| {
+            b.active_transfers() == 0
+        });
+        // A fast disk may finish first; otherwise the original is untouched.
+        if browser.transfers[0].state != TransferState::Done {
+            assert_eq!(
+                browser.transfers[0].state,
+                TransferState::Stopped(Failure::Cancelled)
+            );
+            assert_eq!(
+                std::fs::read_to_string(remote.join("huge.bin")).unwrap(),
+                "original"
+            );
+        }
+        assert_eq!(listing(&remote), ["huge.bin", "huge.bin.relay-part"]);
+
+        // A complete upload takes the original's place and permissions.
+        std::fs::write(local.join("huge.bin"), "new").unwrap();
+        browser.clear_finished();
+        browser.upload(vec![local.join("huge.bin")], &folder, true);
+        wait(&mut browser, "the replacement", |b| {
+            b.active_transfers() == 0
+        });
+        assert_eq!(browser.transfers[0].state, TransferState::Done);
+        assert_eq!(
+            std::fs::read_to_string(remote.join("huge.bin")).unwrap(),
+            "new"
+        );
+        assert_eq!(listing(&remote), ["huge.bin", "huge.bin.relay-part"]);
+        assert_eq!(
+            std::fs::read_to_string(remote.join("huge.bin.relay-part")).unwrap(),
+            "unrelated"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+            let meta = std::fs::metadata(remote.join("huge.bin")).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o7777, 0o640);
+
+            // Through a link, the file it points to is replaced and the link stays.
+            symlink("huge.bin", remote.join("link.bin")).unwrap();
+            std::fs::write(local.join("link.bin"), "via link").unwrap();
+            browser.clear_finished();
+            browser.upload(vec![local.join("link.bin")], &folder, true);
+            wait(&mut browser, "the replacement through a link", |b| {
+                b.active_transfers() == 0
+            });
+            assert_eq!(browser.transfers[0].state, TransferState::Done);
+            let link = std::fs::symlink_metadata(remote.join("link.bin")).unwrap();
+            assert!(link.file_type().is_symlink());
+            assert_eq!(
+                std::fs::read_to_string(remote.join("huge.bin")).unwrap(),
+                "via link"
+            );
         }
         let _ = std::fs::remove_dir_all(&root);
     }

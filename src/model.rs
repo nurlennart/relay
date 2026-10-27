@@ -423,27 +423,37 @@ pub fn save(path: &Path, connections: &[Connection]) -> Result<(), String> {
     atomic_write(path, &bytes)
 }
 
+/// A hidden name beside `name` for a file written before it takes `name`'s place. It is
+/// random, and callers create it exclusively, so it never replaces anything already there.
+pub fn temp_name(name: &str) -> String {
+    let mut bytes = [0u8; 6];
+    // Without randomness the name repeats, and creating it exclusively fails instead.
+    let _ = getrandom::fill(&mut bytes);
+    let suffix: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(".{name}.{suffix}.relay-part")
+}
+
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     fs::create_dir_all(path.parent().ok_or("Invalid storage path")?).map_err(|e| e.to_string())?;
-    let temp = path.with_file_name(format!(
-        "{}.tmp",
-        path.file_name()
+    let temp = path.with_file_name(temp_name(
+        &path
+            .file_name()
             .ok_or("Invalid storage filename")?
-            .to_string_lossy()
+            .to_string_lossy(),
     ));
     let mut file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .write(true)
         .open(&temp)
         .map_err(|e| e.to_string())?;
     use std::io::Write;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|e| e.to_string())?;
+    let written = file.write_all(bytes).and_then(|_| file.sync_all());
     drop(file);
     // Renaming replaces the destination atomically, on Windows through MoveFileEx.
-    fs::rename(&temp, path).map_err(|e| e.to_string())?;
+    if let Err(e) = written.and_then(|_| fs::rename(&temp, path)) {
+        let _ = fs::remove_file(&temp);
+        return Err(e.to_string());
+    }
     // On Unix the new directory entry is durable only once the directory is synced.
     #[cfg(unix)]
     if let Some(parent) = path.parent()
@@ -649,6 +659,9 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("connections.json");
         assert!(load(&path).unwrap().is_empty());
+        // Files beside it are someone else's.
+        let other = dir.join("connections.json.tmp");
+        fs::write(&other, "unrelated").unwrap();
         let mut c = Connection::new();
         c.name = "Test".into();
         c.id = 1;
@@ -657,6 +670,8 @@ mod tests {
         c.name = "Updated".into();
         save(&path, &[c]).unwrap();
         assert_eq!(load(&path).unwrap()[0].name, "Updated");
+        assert_eq!(fs::read_to_string(&other).unwrap(), "unrelated");
+        fs::remove_file(other).unwrap();
         fs::write(&path, "broken").unwrap();
         assert!(load(&path).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "broken");
