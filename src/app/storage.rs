@@ -274,6 +274,21 @@ impl App {
                             &mut form.tls,
                             "Encrypt the connection with TLS (recommended)",
                         );
+                        if !mysql
+                            && let Some(encrypt) = database::ado_encrypt(&form.connection)
+                            && encrypt != form.tls
+                        {
+                            ui.colored_label(
+                                ui.visuals().warn_fg_color,
+                                if form.tls {
+                                    "The connection string says Encrypt=false, but this \
+                                     setting decides: the connection will use TLS."
+                                } else {
+                                    "The connection string asks for encryption, but this \
+                                     setting decides: the connection will not use TLS."
+                                },
+                            );
+                        }
                         let storage = if form.remember {
                             "Saved to your credential store after the library opens."
                         } else {

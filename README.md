@@ -105,7 +105,7 @@ Percent-encode special characters in the user name or password (for example `@` 
 
 ### Connecting without TLS
 
-MSSQL and MySQL libraries use TLS by default. For a server on a trusted network that cannot offer TLS, clear **Encrypt the connection with TLS** before opening the library. The password and the library then cross the network unencrypted, so use this only where that is acceptable. Relay remembers the choice for that kind of server and uses it when the library reopens at startup.
+MSSQL and MySQL libraries use TLS by default. For a server on a trusted network that cannot offer TLS, clear **Encrypt the connection with TLS** before opening the library. This setting decides for MSSQL as well: an `Encrypt=` option in the connection string is ignored, and the dialog points out when the two disagree. The password and the library then cross the network unencrypted, so use this only where that is acceptable. Relay remembers the choice for that kind of server and uses it when the library reopens at startup.
 
 ### SQLite file
 

@@ -175,16 +175,7 @@ fn mssql(
         let tcp = mssql_connect(&config).await?;
         let mut client = tiberius::Client::connect(config, tcp.compat_write())
             .await
-            .map_err(|_| {
-                if server.tls {
-                    "MSSQL authentication/TLS failed. Check the server name, credentials, and \
-                     trusted certificate. The connection string is not logged."
-                } else {
-                    "MSSQL authentication failed, or the server requires TLS. Check the server \
-                     name and credentials. The connection string is not logged."
-                }
-                .to_string()
-            })?;
+            .map_err(|e| mssql_failure(&e, server.tls))?;
         if let Some(connections) = next {
             let json = serde_json::to_string(&connections).map_err(|e| e.to_string())?;
             let result = client
@@ -271,6 +262,47 @@ async fn mssql_connect(config: &tiberius::Config) -> Result<tokio::net::TcpStrea
         .map_err(|e| format!("MSSQL network connection failed: {e}"))?;
     tcp.set_nodelay(true).map_err(|e| e.to_string())?;
     Ok(tcp)
+}
+
+/// What an ADO.NET connection string's Encrypt option asks for, if it has one. Relay's TLS
+/// setting decides; this only lets the dialog point out a disagreement.
+pub fn ado_encrypt(connection: &str) -> Option<bool> {
+    connection.split(';').find_map(|part| {
+        let (key, value) = part.split_once('=')?;
+        if !key.trim().eq_ignore_ascii_case("encrypt") {
+            return None;
+        }
+        match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "yes" | "mandatory" | "strict" => Some(true),
+            "false" | "no" | "optional" => Some(false),
+            _ => None,
+        }
+    })
+}
+
+/// Explains why signing in to MSSQL failed. tiberius's errors carry the server's message or
+/// what went wrong, never the connection string.
+fn mssql_failure(error: &tiberius::error::Error, tls: bool) -> String {
+    use tiberius::error::Error;
+    match error {
+        Error::Server(token) => format!("MSSQL refused the sign-in: {}", token.message()),
+        Error::Protocol(message) if message.contains("rejected the requested instance") => {
+            "The server at that port is not the named instance. Give either the instance \
+             (Server=tcp:host\\instance) or its port (Server=tcp:host,port), not both, unless \
+             that port belongs to the instance."
+                .into()
+        }
+        Error::Tls(message) if tls => format!(
+            "MSSQL TLS failed: {message}. For a self-signed server certificate, add \
+             TrustServerCertificate=true; for a server without TLS, clear \
+             “Encrypt the connection with TLS”."
+        ),
+        Error::Tls(message) => format!("MSSQL TLS failed: {message}."),
+        other if !tls => {
+            format!("MSSQL sign-in failed, possibly because the server requires TLS: {other}")
+        }
+        other => format!("MSSQL sign-in failed: {other}"),
+    }
 }
 
 /// The MSSQL configuration: TLS is required, or not used at all when turned off.
@@ -385,6 +417,31 @@ mod tests {
         ] {
             assert!(tiberius::Config::from_ado_string(connection).is_ok());
         }
+    }
+    #[test]
+    fn encrypt_options_are_read_from_connection_strings() {
+        assert_eq!(ado_encrypt("Server=a;Encrypt=false;"), Some(false));
+        assert_eq!(ado_encrypt("Server=a; encrypt = Yes"), Some(true));
+        assert_eq!(ado_encrypt("Server=a;TrustServerCertificate=true"), None);
+    }
+    #[test]
+    fn mssql_failures_say_what_went_wrong() {
+        let instance = tiberius::error::Error::Protocol(
+            "server rejected the requested instance \"mgmt\" (INSTOPT validity byte was \
+             non-zero, got \"MSSQLSERVER\")"
+                .into(),
+        );
+        assert!(mssql_failure(&instance, true).contains("not the named instance"));
+        let tls = tiberius::error::Error::Tls("certificate verify failed".into());
+        let text = mssql_failure(&tls, true);
+        assert!(
+            text.contains("certificate verify failed") && text.contains("TrustServerCertificate")
+        );
+        let io = tiberius::error::Error::Io {
+            kind: std::io::ErrorKind::ConnectionReset,
+            message: "connection reset".into(),
+        };
+        assert!(mssql_failure(&io, false).contains("requires TLS"));
     }
     #[test]
     fn library_details_name_the_place_but_never_the_password() {
