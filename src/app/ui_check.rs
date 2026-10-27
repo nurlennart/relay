@@ -22,6 +22,13 @@ pub fn seed(app: &mut App) {
         app.ctx
             .send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(w, h)));
     }
+    // Enlarges everything, to inspect icons and small details.
+    if let Some(zoom) = std::env::var("RELAY_UI_ZOOM")
+        .ok()
+        .and_then(|z| z.parse::<f32>().ok())
+    {
+        app.ctx.set_zoom_factor(zoom);
+    }
     if std::env::var_os("RELAY_UI_SETTINGS").is_some() {
         app.modal = Modal::Settings;
     }

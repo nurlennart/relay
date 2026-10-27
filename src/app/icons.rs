@@ -171,16 +171,30 @@ pub(super) fn paint_sized(
             line(&[(-1.5, -4.5), (-6., 0.), (-1.5, 4.5)]);
         }
         Icon::Refresh => {
-            // Most of a circle, with an arrowhead where it opens.
-            let points = (0..=20)
+            // A clockwise arc open at the top right, with a filled arrowhead at its end
+            // pointing on along the circle.
+            let (radius, start, sweep) = (5.5_f32, -0.75_f32, 4.9_f32);
+            let points = (0..=24)
                 .map(|i| {
-                    let angle = -0.9 + 5.2 * i as f32 / 20.;
-                    at(5.5 * angle.cos(), 5.5 * angle.sin())
+                    let angle = start + sweep * i as f32 / 24.;
+                    at(radius * angle.cos(), radius * angle.sin())
                 })
                 .collect();
             painter.add(egui::Shape::line(points, stroke));
-            let (x, y) = (5.5 * (-0.9f32).cos(), 5.5 * (-0.9f32).sin());
-            line(&[(x - 3.2, y - 0.6), (x, y), (x + 0.4, y - 3.2)]);
+            let end = start + sweep;
+            let point = Vec2::new(radius * end.cos(), radius * end.sin());
+            let along = Vec2::new(-end.sin(), end.cos());
+            let across = Vec2::new(-along.y, along.x);
+            let corner = |v: Vec2| at(v.x, v.y);
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    corner(point + along * 2.6),
+                    corner(point - along * 0.6 + across * 2.5),
+                    corner(point - along * 0.6 - across * 2.5),
+                ],
+                color,
+                Stroke::NONE,
+            ));
         }
         Icon::Upload | Icon::Download => {
             line(&[(-6.5, 3.), (-6.5, 6.5), (6.5, 6.5), (6.5, 3.)]);

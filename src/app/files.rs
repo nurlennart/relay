@@ -398,20 +398,30 @@ fn toolbar(ui: &mut egui::Ui, files: &mut Browser, key: u64, actions: &mut Vec<A
             if new_folder.clicked() {
                 start_new_folder(files);
             }
-            let width = (ui.available_width() * 0.25).clamp(110., 200.);
             let filter_id = egui::Id::new(("files-filter", key));
-            let filter = search_field(ui, &mut files.view.filter, "Filter", "", filter_id, width)
-                .on_hover_text("Ctrl+F · Esc clears");
             // The other fields that open with the keyboard take it themselves.
             let others = files.view.path_edit.is_some()
                 || files.view.rename.is_some()
                 || files.view.new_folder.is_some();
-            if !others && std::mem::take(&mut files.view.focus_field) {
-                filter.request_focus();
-            }
-            if filter.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                files.view.filter.clear();
-                filter.surrender_focus();
+            let focus = !others && files.view.focus_field;
+            // A narrow pane leaves the path bar room; the filter appears with Ctrl+F.
+            let shown = ui.available_width() >= 460.
+                || focus
+                || !files.view.filter.is_empty()
+                || ui.memory(|m| m.has_focus(filter_id));
+            if shown {
+                let width = (ui.available_width() * 0.25).clamp(110., 200.);
+                let filter =
+                    search_field(ui, &mut files.view.filter, "Filter", "", filter_id, width)
+                        .on_hover_text("Ctrl+F · Esc clears");
+                if focus {
+                    files.view.focus_field = false;
+                    filter.request_focus();
+                }
+                if filter.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    files.view.filter.clear();
+                    filter.surrender_focus();
+                }
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 let back = !files.view.back.is_empty();
