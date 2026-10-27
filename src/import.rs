@@ -103,6 +103,16 @@ fn ssh_config(text: &str, home: &str, existing: &[Connection]) -> Result<Import,
         c.name = alias.clone();
         c.group = "SSH config".into();
         c.host = expand(first("hostname").unwrap_or(&alias));
+        // Given the HostName, ssh skips blocks for the alias alone. Unless the profile keeps
+        // every option they set, it connects through the alias and ssh applies them.
+        let lost = blocks
+            .iter()
+            .filter(|b| host_matches(&b.patterns, &alias) && !host_matches(&b.patterns, &c.host))
+            .flat_map(|b| &b.options)
+            .any(|(key, _)| !KEPT.contains(&key.as_str()));
+        if lost {
+            c.host = alias.clone();
+        }
         c.username = first("user").unwrap_or_default().to_string();
         c.port = match first("port") {
             Some(port) => match port.parse() {
@@ -142,6 +152,18 @@ fn ssh_config(text: &str, home: &str, existing: &[Connection]) -> Result<Import,
     }
     Ok(collector.finish())
 }
+
+/// The options a profile keeps; others take effect only through ssh's own configuration.
+const KEPT: [&str; 8] = [
+    "hostname",
+    "user",
+    "port",
+    "proxyjump",
+    "identityfile",
+    "localforward",
+    "remoteforward",
+    "dynamicforward",
+];
 
 /// OpenSSH host matching: `*` and `?` wildcards, and `!pattern` excludes.
 fn host_matches(patterns: &[String], host: &str) -> bool {
@@ -304,6 +326,10 @@ Host db-primary db-legacy
 Match host *.corp
     User someone
 
+Host private
+    HostName private.internal
+    ProxyCommand ssh -W %h:%p gateway
+
 Host *
     User fallback
     IdentityFile ~/.ssh/id_rsa
@@ -332,7 +358,9 @@ Host bad
         assert_eq!(primary.username, "fallback");
         let legacy = find("db-legacy");
         assert!(legacy.ssh.jump.is_empty(), "!db-legacy excludes it");
-        assert_eq!(import.connections.len(), 3);
+        // Only ssh applies ProxyCommand, and only when given the alias.
+        assert_eq!(find("private").host, "private");
+        assert_eq!(import.connections.len(), 4);
         assert!(
             import
                 .connections
@@ -344,7 +372,7 @@ Host bad
         assert!(reasons.contains("Include"), "{reasons}");
         assert!(reasons.contains("bad: invalid port"), "{reasons}");
         let again = ssh_config(CONFIG, r"C:\Users\alex", &import.connections).unwrap();
-        assert_eq!((again.connections.len(), again.duplicates), (0, 3));
+        assert_eq!((again.connections.len(), again.duplicates), (0, 4));
     }
 
     #[test]
