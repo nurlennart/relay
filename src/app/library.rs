@@ -3,13 +3,13 @@ use super::*;
 use egui::{Align, FontId, Layout, Margin, Rect, Sense, UiBuilder};
 
 impl App {
-    pub(super) fn filtered(&self) -> Vec<Connection> {
+    /// The positions in `connections` of those shown, in the order shown.
+    pub(super) fn filtered(&self) -> Vec<usize> {
         let query = self.query.to_lowercase();
         let recent = self.state.recent(&self.location);
-        let mut items: Vec<_> = self
-            .connections
-            .iter()
-            .filter(|c| {
+        let mut items: Vec<_> = (0..self.connections.len())
+            .filter(|&i| {
+                let c = &self.connections[i];
                 c.matches(&query)
                     && self.group.as_ref().is_none_or(|g| g == &c.group)
                     && match self.filter {
@@ -20,38 +20,38 @@ impl App {
                         Filter::Ssh => c.protocol == Protocol::Ssh,
                     }
             })
-            .cloned()
             .collect();
+        let connections = &self.connections;
         if self.filter == Filter::Recent && self.group.is_none() {
-            items.sort_by_key(|c| recent.iter().position(|id| *id == c.id));
+            items.sort_by_cached_key(|&i| recent.iter().position(|id| *id == connections[i].id));
         } else {
-            items.sort_by_key(|c| c.name.to_lowercase());
+            items.sort_by_cached_key(|&i| connections[i].name.to_lowercase());
         }
         items
     }
 
     pub(super) fn workspace(&mut self, ui: &mut egui::Ui) {
         let colors = theme::palette(ui.ctx());
-        let connections = self.filtered();
+        let order = self.filtered();
         let total = self.connections.len();
         let search_id = egui::Id::new("library-search");
         let focused = ui.memory(|m| m.focused());
         let mut index = self
             .selected
-            .and_then(|id| connections.iter().position(|c| c.id == id));
-        if !self.query.is_empty() && index.is_none() && !connections.is_empty() {
+            .and_then(|id| order.iter().position(|&i| self.connections[i].id == id));
+        if !self.query.is_empty() && index.is_none() && !order.is_empty() {
             index = Some(0);
-            self.selected = Some(connections[0].id);
+            self.selected = Some(self.connections[order[0]].id);
         }
         // Arrow keys move the selection while typing in search or when nothing has focus.
-        if (focused.is_none() || focused == Some(search_id)) && !connections.is_empty() {
+        if (focused.is_none() || focused == Some(search_id)) && !order.is_empty() {
             let (down, up) = ui.input_mut(|i| {
                 (
                     i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
                     i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
                 )
             });
-            let last = connections.len() - 1;
+            let last = order.len() - 1;
             let next = match index {
                 _ if !down && !up => None,
                 None => Some(if down { 0 } else { last }),
@@ -60,7 +60,7 @@ impl App {
             };
             if let Some(next) = next {
                 index = Some(next);
-                self.selected = Some(connections[next].id);
+                self.selected = Some(self.connections[order[next]].id);
                 self.scroll_to = true;
             }
         }
@@ -113,10 +113,10 @@ impl App {
                         Filter::Ssh => "SSH terminals",
                     });
                     let open = self.sessions.iter().filter(|s| s.is_running()).count();
-                    let mut summary = if connections.len() == total {
+                    let mut summary = if order.len() == total {
                         total.to_string()
                     } else {
-                        format!("{} of {total}", connections.len())
+                        format!("{} of {total}", order.len())
                     };
                     if open > 0 {
                         summary.push_str(&format!(" · {open} open"));
@@ -159,7 +159,7 @@ impl App {
         let submitted = search.lost_focus() && enter;
         let alt = ui.input(|i| i.modifiers.alt);
         if submitted
-            && (alt || connections.is_empty())
+            && (alt || order.is_empty())
             && let Some(target) = &quick
         {
             if quick_browses {
@@ -170,13 +170,14 @@ impl App {
             return;
         }
         if (submitted || enter_idle)
-            && let Some(c) = connections.get(index.unwrap_or(0))
+            && let Some(&i) = order.get(index.unwrap_or(0))
         {
+            let c = self.connections[i].clone();
             self.selected = Some(c.id);
             if browse && c.protocol == Protocol::Ssh {
-                self.request_browse(c.clone());
+                self.request_browse(c);
             } else {
-                self.request_connect(c.clone());
+                self.request_connect(c);
             }
             return;
         }
@@ -188,7 +189,7 @@ impl App {
                 target.protocol.label()
             };
             let label = format!("{kind} {}", target_label(target));
-            if connections.is_empty() {
+            if order.is_empty() {
                 ui.horizontal(|ui| {
                     if accent_button(ui, &format!("Connect to {label}"), 0.)
                         .on_hover_text("Enter")
@@ -216,7 +217,7 @@ impl App {
                     .color(colors.muted),
             );
         }
-        if connections.is_empty() {
+        if order.is_empty() {
             if total == 0 {
                 self.empty_library(ui);
                 return;
@@ -235,7 +236,7 @@ impl App {
             });
             return;
         }
-        self.connection_table(ui, &connections);
+        self.connection_table(ui, &order);
     }
 
     pub(super) fn empty_library(&mut self, ui: &mut egui::Ui) {
@@ -277,7 +278,8 @@ impl App {
         });
     }
 
-    pub(super) fn connection_table(&mut self, ui: &mut egui::Ui, connections: &[Connection]) {
+    /// Lists the connections at positions `order`.
+    pub(super) fn connection_table(&mut self, ui: &mut egui::Ui, order: &[usize]) {
         let colors = theme::palette(ui.ctx());
         egui::Frame::new()
             .fill(colors.panel)
@@ -316,7 +318,7 @@ impl App {
                     .auto_shrink([false, true]);
                 let selected = self
                     .selected
-                    .and_then(|id| connections.iter().position(|c| c.id == id));
+                    .and_then(|id| order.iter().position(|&i| self.connections[i].id == id));
                 if std::mem::take(&mut self.scroll_to)
                     && let Some(index) = selected
                 {
@@ -328,10 +330,12 @@ impl App {
                         area = area.vertical_scroll_offset(top + ROW - visible);
                     }
                 }
-                let output = area.show_rows(ui, ROW, connections.len(), |ui, range| {
+                let output = area.show_rows(ui, ROW, order.len(), |ui, range| {
+                    // Only the rows on screen are drawn, and copied to draw them.
                     for index in range {
-                        let divider = index + 1 < connections.len();
-                        self.connection_row(ui, &connections[index], &columns, divider);
+                        let divider = index + 1 < order.len();
+                        let c = self.connections[order[index]].clone();
+                        self.connection_row(ui, &c, &columns, divider);
                     }
                 });
                 self.list_view = (output.state.offset.y, output.inner_rect.height());

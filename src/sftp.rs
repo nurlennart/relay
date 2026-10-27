@@ -963,17 +963,25 @@ impl Browser {
         self.apply(Event::Ended(reason.into()));
     }
 
-    /// The current folder's entries as shown: filtered, without hidden ones unless asked,
-    /// and sorted with folders first.
+    /// The current folder's entries as shown, from [`order`](Self::order).
+    #[cfg(test)]
     pub fn visible(&self) -> Vec<&Entry> {
+        self.order().into_iter().map(|i| &self.entries[i]).collect()
+    }
+
+    /// The positions in `entries` of the current folder's entries as shown: filtered, without
+    /// hidden ones unless asked, and sorted with folders first.
+    pub fn order(&self) -> Vec<usize> {
         let filter = self.view.filter.trim().to_lowercase();
-        let mut items: Vec<_> = self
-            .entries
-            .iter()
-            .filter(|e| self.view.show_hidden || !e.hidden())
-            .filter(|e| filter.is_empty() || e.name.to_lowercase().contains(&filter))
+        let mut items: Vec<_> = (0..self.entries.len())
+            .filter(|&i| {
+                let e = &self.entries[i];
+                (self.view.show_hidden || !e.hidden())
+                    && (filter.is_empty() || e.name.to_lowercase().contains(&filter))
+            })
             .collect();
-        items.sort_by(|a, b| {
+        items.sort_by(|&a, &b| {
+            let (a, b) = (&self.entries[a], &self.entries[b]);
             let order = match self.view.sort {
                 Sort::Name => natural(&a.name, &b.name),
                 Sort::Size => a.size.cmp(&b.size).then_with(|| natural(&a.name, &b.name)),

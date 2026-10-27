@@ -198,7 +198,18 @@ fn browser(
         prompt_card(ui, files, index);
         ui.add_space(8.);
     }
-    let names: Vec<String> = files.visible().iter().map(|e| e.name.clone()).collect();
+    // The listing is filtered and sorted once a frame. A change to how it is shown takes
+    // effect on the next, which it asks for.
+    let shown = |f: &Browser| {
+        let v = &f.view;
+        (v.sort, v.descending, v.filter.clone(), v.show_hidden)
+    };
+    let before = shown(files);
+    let order = files.order();
+    let names: Vec<String> = order
+        .iter()
+        .map(|&i| files.entries[i].name.clone())
+        .collect();
     if !covered && files.view.focused && ui.memory(|m| m.focused().is_none()) {
         keys(ui, files, &names, actions);
     }
@@ -217,7 +228,15 @@ fn browser(
             .max_rect(listing)
             .layout(Layout::top_down(Align::LEFT)),
     );
-    let target = table(&mut top, files, key, &names, listing.height(), actions);
+    let target = table(
+        &mut top,
+        files,
+        key,
+        &order,
+        &names,
+        listing.height(),
+        actions,
+    );
     // Not bounded below, so it takes the height it wants and the next frame makes room.
     let mut below = ui.new_child(
         UiBuilder::new()
@@ -242,6 +261,9 @@ fn browser(
     }
     ui.allocate_rect(full, Sense::hover());
     os_drops(ui, files, area, fallback, target);
+    if shown(files) != before {
+        ui.ctx().request_repaint();
+    }
 }
 
 /// Spinner, prompts, and a way out while ssh connects.
@@ -722,12 +744,12 @@ fn table(
     ui: &mut egui::Ui,
     files: &mut Browser,
     key: u64,
+    order: &[usize],
     names: &[String],
     height: f32,
     actions: &mut Vec<Action>,
 ) -> Option<String> {
     let colors = theme::palette(ui.ctx());
-    let items: Vec<Entry> = files.visible().into_iter().cloned().collect();
     let mut target = None;
     egui::Frame::new()
         .fill(colors.panel)
@@ -741,7 +763,7 @@ fn table(
             header(ui, files, &columns, width);
             // The header, and the frame's margin and outline, come off the height.
             let rows = height - 32. - 6.;
-            if items.is_empty() {
+            if order.is_empty() {
                 let (rect, _) =
                     ui.allocate_exact_size(Vec2::new(width, rows.max(FILE_ROW)), Sense::hover());
                 let text = if files.loading {
@@ -784,11 +806,11 @@ fn table(
                     area = area.vertical_scroll_offset(top + FILE_ROW - visible);
                 }
             }
-            let output = area.show_rows(ui, FILE_ROW, items.len(), |ui, range| {
+            let output = area.show_rows(ui, FILE_ROW, order.len(), |ui, range| {
+                // Only the rows on screen are drawn, and copied to draw them.
                 for index in range {
-                    if let Some(folder) =
-                        row(ui, files, key, &items[index], names, &columns, actions)
-                    {
+                    let entry = files.entries[order[index]].clone();
+                    if let Some(folder) = row(ui, files, key, &entry, names, &columns, actions) {
                         target = Some(folder);
                     }
                 }

@@ -313,7 +313,11 @@ fn recent_filter_lists_opened_profiles_newest_first() {
         app.state.note_recent(&location, id);
     }
     app.filter = Filter::Recent;
-    let ids: Vec<_> = app.filtered().iter().map(|c| c.id).collect();
+    let ids: Vec<_> = app
+        .filtered()
+        .iter()
+        .map(|&i| app.connections[i].id)
+        .collect();
     assert_eq!(ids, [3, 1], "newest first, deleted profiles skipped");
 }
 

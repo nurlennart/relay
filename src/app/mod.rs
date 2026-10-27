@@ -593,7 +593,8 @@ impl App {
     /// Deletes saved connection `id`. When it was the last one the search found, the search
     /// clears, rather than offering to quick-connect to what was typed.
     fn delete_connection(&mut self, id: u64) -> bool {
-        let last_match = !self.query.is_empty() && self.filtered().iter().all(|c| c.id == id);
+        let last_match = !self.query.is_empty()
+            && (self.filtered().iter()).all(|&i| self.connections[i].id == id);
         let next = self
             .connections
             .iter()
