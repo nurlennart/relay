@@ -453,6 +453,108 @@ impl App {
     }
 
     /// Selects tab `index`, where 0 is the connection library and 1.. are sessions.
+    /// Workspace and tab shortcuts, including those a remote desktop forwards through its hook.
+    /// Returns whether a visible terminal or remote desktop has the keyboard.
+    fn workspace_shortcuts(&mut self, ctx: &egui::Context) -> bool {
+        // Either side of a split view can hold the focused terminal or remote desktop.
+        let terminal_focused = [self.active, self.split]
+            .into_iter()
+            .flatten()
+            .filter_map(|i| self.sessions.get(i))
+            .any(|s| s.keyboard_focused());
+        let shortcut = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
+        // Cmd on macOS, Ctrl elsewhere.
+        let ctrl = egui::Modifiers::COMMAND;
+        // Remote desktops take the keyboard, so their shortcuts arrive through a native hook.
+        let native = platform::take_command();
+        if !self.covered() {
+            use platform::Command;
+            if shortcut(ctrl, egui::Key::Backslash) {
+                self.toggle_split();
+            }
+            let ssh = self
+                .active
+                .and_then(|i| self.sessions.get(i))
+                .is_some_and(|s| s.connection.protocol == Protocol::Ssh && s.terminal.is_some());
+            if ssh && shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::P) {
+                self.palette = Some(Palette::default());
+            }
+            // Tab switching, including Ctrl+1–9, also works from a focused terminal, which has no use
+            // for these keys.
+            let ctrl_alt = ctrl | egui::Modifiers::ALT;
+            let command = native.or_else(|| {
+                if shortcut(ctrl_alt, egui::Key::PageUp)
+                    || shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::Tab)
+                {
+                    Some(Command::PreviousTab)
+                } else if shortcut(ctrl_alt, egui::Key::PageDown) || shortcut(ctrl, egui::Key::Tab)
+                {
+                    Some(Command::NextTab)
+                } else {
+                    None
+                }
+            });
+            let tabs = self.sessions.len() + 1;
+            let current = self.active.map_or(0, |i| i + 1);
+            match command {
+                Some(Command::PreviousTab) => self.select_tab((current + tabs - 1) % tabs),
+                Some(Command::NextTab) => self.select_tab((current + 1) % tabs),
+                Some(Command::Release) | None => {}
+            }
+            let numbers = [
+                egui::Key::Num1,
+                egui::Key::Num2,
+                egui::Key::Num3,
+                egui::Key::Num4,
+                egui::Key::Num5,
+                egui::Key::Num6,
+                egui::Key::Num7,
+                egui::Key::Num8,
+            ];
+            for (index, key) in numbers.into_iter().enumerate() {
+                if shortcut(ctrl, key) {
+                    self.select_tab(index);
+                }
+            }
+            if shortcut(ctrl, egui::Key::Num9) {
+                self.select_tab(self.sessions.len());
+            }
+            if native.is_some()
+                && let Some(parent) = self.parent
+            {
+                // Take the keyboard back from the remote desktop.
+                platform::focus(parent);
+            }
+        }
+        if !terminal_focused && !self.covered() {
+            // Ctrl+Shift+N creates a folder in the file browser.
+            if !ctx.input(|i| i.modifiers.shift) && shortcut(ctrl, egui::Key::N) {
+                self.new_connection();
+            }
+            if shortcut(ctrl, egui::Key::K) {
+                self.search_focus = true;
+                self.active = None;
+            }
+            if shortcut(ctrl, egui::Key::B) {
+                self.set_sidebar_collapsed(!self.sidebar_collapsed(ctx));
+            }
+            if shortcut(ctrl, egui::Key::W)
+                && let Some(active) = self.active
+            {
+                self.request_close(active);
+            }
+            let shift = ctrl | egui::Modifiers::SHIFT;
+            if let Some(active) = self.active {
+                if shortcut(shift, egui::Key::PageUp) && active > 0 {
+                    self.move_session(active, active - 1);
+                } else if shortcut(shift, egui::Key::PageDown) {
+                    self.move_session(active, active + 1);
+                }
+            }
+        }
+        terminal_focused
+    }
+
     fn select_tab(&mut self, index: usize) {
         self.active = index.checked_sub(1).filter(|i| *i < self.sessions.len());
     }
@@ -896,102 +998,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.quitting = true;
         }
-        // Either side of a split view can hold the focused terminal or remote desktop.
-        let terminal_focused = [self.active, self.split]
-            .into_iter()
-            .flatten()
-            .filter_map(|i| self.sessions.get(i))
-            .any(|s| s.keyboard_focused());
-        let shortcut = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
-        // Cmd on macOS, Ctrl elsewhere.
-        let ctrl = egui::Modifiers::COMMAND;
-        // Remote desktops take the keyboard, so their shortcuts arrive through a native hook.
-        let native = platform::take_command();
-        if !self.covered() {
-            use platform::Command;
-            if shortcut(ctrl, egui::Key::Backslash) {
-                self.toggle_split();
-            }
-            let ssh = self
-                .active
-                .and_then(|i| self.sessions.get(i))
-                .is_some_and(|s| s.connection.protocol == Protocol::Ssh && s.terminal.is_some());
-            if ssh && shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::P) {
-                self.palette = Some(Palette::default());
-            }
-            // Tab switching, including Ctrl+1–9, also works from a focused terminal, which has no use
-            // for these keys.
-            let ctrl_alt = ctrl | egui::Modifiers::ALT;
-            let command = native.or_else(|| {
-                if shortcut(ctrl_alt, egui::Key::PageUp)
-                    || shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::Tab)
-                {
-                    Some(Command::PreviousTab)
-                } else if shortcut(ctrl_alt, egui::Key::PageDown) || shortcut(ctrl, egui::Key::Tab)
-                {
-                    Some(Command::NextTab)
-                } else {
-                    None
-                }
-            });
-            let tabs = self.sessions.len() + 1;
-            let current = self.active.map_or(0, |i| i + 1);
-            match command {
-                Some(Command::PreviousTab) => self.select_tab((current + tabs - 1) % tabs),
-                Some(Command::NextTab) => self.select_tab((current + 1) % tabs),
-                Some(Command::Release) | None => {}
-            }
-            let numbers = [
-                egui::Key::Num1,
-                egui::Key::Num2,
-                egui::Key::Num3,
-                egui::Key::Num4,
-                egui::Key::Num5,
-                egui::Key::Num6,
-                egui::Key::Num7,
-                egui::Key::Num8,
-            ];
-            for (index, key) in numbers.into_iter().enumerate() {
-                if shortcut(ctrl, key) {
-                    self.select_tab(index);
-                }
-            }
-            if shortcut(ctrl, egui::Key::Num9) {
-                self.select_tab(self.sessions.len());
-            }
-            if native.is_some()
-                && let Some(parent) = self.parent
-            {
-                // Take the keyboard back from the remote desktop.
-                platform::focus(parent);
-            }
-        }
-        if !terminal_focused && !self.covered() {
-            // Ctrl+Shift+N creates a folder in the file browser.
-            if !ctx.input(|i| i.modifiers.shift) && shortcut(ctrl, egui::Key::N) {
-                self.new_connection();
-            }
-            if shortcut(ctrl, egui::Key::K) {
-                self.search_focus = true;
-                self.active = None;
-            }
-            if shortcut(ctrl, egui::Key::B) {
-                self.set_sidebar_collapsed(!self.sidebar_collapsed(ctx));
-            }
-            if shortcut(ctrl, egui::Key::W)
-                && let Some(active) = self.active
-            {
-                self.request_close(active);
-            }
-            let shift = ctrl | egui::Modifiers::SHIFT;
-            if let Some(active) = self.active {
-                if shortcut(shift, egui::Key::PageUp) && active > 0 {
-                    self.move_session(active, active - 1);
-                } else if shortcut(shift, egui::Key::PageDown) {
-                    self.move_session(active, active + 1);
-                }
-            }
-        }
+        let terminal_focused = self.workspace_shortcuts(ctx);
         // A click on Relay's own interface takes the keyboard back from a remote desktop, whose
         // native window gets its clicks directly.
         if ctx.input(|i| i.pointer.any_pressed())

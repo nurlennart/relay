@@ -941,3 +941,39 @@ fn search_clear_button_empties_the_search() {
     assert_eq!(app.filtered().len(), 3);
     assert!(ctx.memory(|m| m.has_focus(egui::Id::new("library-search"))));
 }
+
+#[test]
+fn number_shortcuts_switch_tabs_from_the_library() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    for c in app.connections.clone() {
+        app.sessions
+            .push(session::Session::restored(c, false, ctx.clone()));
+    }
+    let mut frame = |app: &mut App, key| {
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: Some(key),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }],
+                modifiers: egui::Modifiers::COMMAND,
+                ..Default::default()
+            },
+            |ctx| {
+                app.workspace_shortcuts(ctx);
+            },
+        );
+    };
+    frame(&mut app, egui::Key::Num2);
+    assert_eq!(app.active, Some(0));
+    frame(&mut app, egui::Key::Num1);
+    assert_eq!(app.active, None, "Ctrl+1 is the library");
+    frame(&mut app, egui::Key::Num3);
+    assert_eq!(app.active, Some(1));
+    frame(&mut app, egui::Key::Num9);
+    assert_eq!(app.active, Some(2), "Ctrl+9 is the last tab");
+}
