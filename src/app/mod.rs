@@ -703,6 +703,8 @@ impl App {
                     if ui.add_enabled(self.pending.is_none(), quit).clicked() {
                         self.sessions.clear();
                         self.active = None;
+                        // The warning above was the last chance to export unsaved changes.
+                        self.recovery = None;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     if ui.button("Keep working").clicked() {
