@@ -570,3 +570,38 @@ fn breadcrumbs_read_like_the_path() {
     assert_eq!(trail("/home/deploy/app/src", "/home/deploy"), "~/app/src");
     assert_eq!(trail("/home/deploy", "/home/deploy"), "~");
 }
+
+#[test]
+fn ended_and_unconnected_tabs_close_without_asking() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    for c in app.connections.clone() {
+        app.sessions
+            .push(session::Session::restored(c, false, ctx.clone()));
+    }
+    app.active = Some(2);
+    // Restored tabs that never connected close at once, keeping the selection.
+    app.request_close(0);
+    assert!(matches!(app.modal, Modal::None));
+    assert_eq!((app.sessions.len(), app.active), (2, Some(1)));
+    // A connected session asks first.
+    let mut c = app.connections[0].clone();
+    c.protocol = Protocol::Ssh;
+    let browser = crate::sftp::Browser::demo("/srv", vec![]);
+    app.sessions
+        .push(session::Session::demo_files(c, browser, ctx.clone()));
+    app.request_close(2);
+    assert!(matches!(app.modal, Modal::Close(2)));
+    assert_eq!(app.sessions.len(), 3);
+    // Once its connection ends, it closes without asking.
+    app.modal = Modal::None;
+    app.sessions[2]
+        .files
+        .as_mut()
+        .unwrap()
+        .disconnect("The connection ended.");
+    app.sessions[2].poll(None);
+    app.request_close(2);
+    assert!(matches!(app.modal, Modal::None));
+    assert_eq!(app.sessions.len(), 2);
+}

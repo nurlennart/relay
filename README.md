@@ -39,7 +39,7 @@ Open **Settings** at the bottom of the sidebar and use **Appearance** to switch 
 - **Recent** lists the connections you opened in the current library, newest first.
 - Relay remembers the window size, the sidebar choice, the last library, recent connections, snippets, open tabs (including file browsers) and the last download folder in `state.json`. A shared SQLite library reopens at startup, and an MSSQL or MySQL library reopens when its connection string is remembered. No connection strings are written to this file; only whether a server library uses TLS. Open tabs come back at startup; each connects when it is first selected, starting with the tab that was selected, so a restart does not open every login prompt at once.
 - The **Library** tab returns to the list while sessions stay open.
-- Closing a tab or quitting with active sessions asks for confirmation.
+- Closing a tab with a connected session, or quitting with active sessions, asks for confirmation. Tabs whose session has ended, or that have not connected yet, close right away.
 - The **···** menu edits, duplicates, copies the address of, or deletes a profile. Changes apply to future connections. The editor suggests existing groups.
 - **Split view:** right-click a tab and choose **Open beside current tab**, or press `Ctrl+\` to pair the current tab with its neighbour. Drag the divider to resize; selecting the right-hand tab swaps the sides. **Move to new window** in the same menu detaches a session into its own window; its tab brings the window forward, and **Back to tabs** or closing the window returns it.
 

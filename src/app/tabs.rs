@@ -30,6 +30,7 @@ impl App {
                             let mut window_action = None;
                             let mut dragging = None;
                             let mut dropped = None;
+                            let mut close = None;
                             for (index, s) in self.sessions.iter().enumerate() {
                                 ui.push_id(index, |ui| {
                                     let session = session_tab(
@@ -61,7 +62,7 @@ impl App {
                                         self.active = Some(index);
                                     }
                                     if session.inner.1.clicked() {
-                                        self.modal = Modal::Close(index);
+                                        close = Some(index);
                                     }
                                     session.inner.0.context_menu(|ui| {
                                         let beside = self.split == Some(index);
@@ -89,7 +90,7 @@ impl App {
                                             ui.close();
                                         }
                                         if ui.button("Close tab").clicked() {
-                                            self.modal = Modal::Close(index);
+                                            close = Some(index);
                                             ui.close();
                                         }
                                     });
@@ -97,6 +98,9 @@ impl App {
                             }
                             if let Some(index) = split_with {
                                 self.split_with(index);
+                            }
+                            if let Some(index) = close {
+                                self.request_close(index);
                             }
                             match window_action {
                                 Some((index, false)) => self.detach(index),

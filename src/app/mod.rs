@@ -522,6 +522,34 @@ impl App {
         self.remember_tabs();
     }
 
+    /// Closes tab `index`, first asking while its session is still connected or connecting.
+    /// A tab whose session ended, or that never connected, closes at once.
+    fn request_close(&mut self, index: usize) {
+        let Some(session) = self.sessions.get(index) else {
+            return;
+        };
+        if session.tab_state() == session::TabState::Open {
+            self.modal = Modal::Close(index);
+        } else {
+            self.close_tab(index);
+        }
+    }
+
+    fn close_tab(&mut self, index: usize) {
+        if index >= self.sessions.len() {
+            return;
+        }
+        self.sessions.remove(index);
+        let shift = |tab: Option<usize>| match tab {
+            Some(a) if a == index => None,
+            Some(a) if a > index => Some(a - 1),
+            other => other,
+        };
+        self.active = shift(self.active);
+        self.split = shift(self.split);
+        self.remember_tabs();
+    }
+
     /// Reconnects a session in its tab with the connection's current saved settings.
     fn reconnect(&mut self, index: usize) {
         let session = &self.sessions[index];
@@ -691,16 +719,8 @@ impl App {
                     }
                     ui.horizontal(|ui| {
                         if ui.button("Close session").clicked() {
-                            self.sessions.remove(index);
-                            let shift = |tab: Option<usize>| match tab {
-                                Some(a) if a == index => None,
-                                Some(a) if a > index => Some(a - 1),
-                                other => other,
-                            };
-                            self.active = shift(self.active);
-                            self.split = shift(self.split);
                             self.modal = Modal::None;
-                            self.remember_tabs();
+                            self.close_tab(index);
                         }
                         if ui.button("Keep open").clicked() {
                             self.modal = Modal::None;
@@ -822,7 +842,7 @@ impl eframe::App for App {
             if shortcut(ctrl, egui::Key::W)
                 && let Some(active) = self.active
             {
-                self.modal = Modal::Close(active);
+                self.request_close(active);
             }
             let shift = ctrl | egui::Modifiers::SHIFT;
             if let Some(active) = self.active {
