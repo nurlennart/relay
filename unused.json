@@ -1,0 +1,24 @@
+[
+  {
+    "id": 2,
+    "name": "Bravo",
+    "host": "bravo.example",
+    "username": "",
+    "group": "Personal",
+    "protocol": "Rdp",
+    "port": 3389,
+    "favorite": false,
+    "metadata": {}
+  },
+  {
+    "id": 3,
+    "name": "Charlie",
+    "host": "charlie.example",
+    "username": "",
+    "group": "Personal",
+    "protocol": "Rdp",
+    "port": 3389,
+    "favorite": false,
+    "metadata": {}
+  }
+]

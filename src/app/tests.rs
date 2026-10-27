@@ -635,3 +635,19 @@ fn turning_off_reopening_forgets_and_skips_tabs() {
     next.restore_tabs();
     assert!(next.sessions.is_empty());
 }
+
+#[test]
+fn deleting_the_last_search_match_clears_the_search() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    app.query = "charlie".into();
+    app.selected = Some(3);
+    assert!(app.delete_connection(3));
+    assert!(app.query.is_empty(), "the search would offer quick connect");
+    assert_eq!(app.selected, None);
+    // Other matches keep the search.
+    let mut app = test_app(&ctx);
+    app.query = "a".into();
+    assert!(app.delete_connection(1));
+    assert_eq!(app.query, "a");
+}

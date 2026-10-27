@@ -566,6 +566,28 @@ impl App {
         self.remember_tabs();
     }
 
+    /// Deletes saved connection `id`. When it was the last one the search found, the search
+    /// clears, rather than offering to quick-connect to what was typed.
+    fn delete_connection(&mut self, id: u64) -> bool {
+        let last_match = !self.query.is_empty() && self.filtered().iter().all(|c| c.id == id);
+        let next = self
+            .connections
+            .iter()
+            .filter(|c| c.id != id)
+            .cloned()
+            .collect();
+        if !self.persist(next) {
+            return false;
+        }
+        if last_match {
+            self.query.clear();
+        }
+        if self.selected == Some(id) {
+            self.selected = None;
+        }
+        true
+    }
+
     /// Reconnects a session in its tab with the connection's current saved settings.
     fn reconnect(&mut self, index: usize) {
         let session = &self.sessions[index];
@@ -690,16 +712,8 @@ impl App {
                     ui.heading(format!("Delete {name}?"));
                     ui.label("This removes the saved entry. Any open session stays open.");
                     ui.horizontal(|ui| {
-                        if ui.button("Delete connection").clicked() {
-                            let next = self
-                                .connections
-                                .iter()
-                                .filter(|c| c.id != id)
-                                .cloned()
-                                .collect();
-                            if self.persist(next) {
-                                self.modal = Modal::None;
-                            }
+                        if ui.button("Delete connection").clicked() && self.delete_connection(id) {
+                            self.modal = Modal::None;
                         }
                         if ui.button("Cancel").clicked() {
                             self.modal = Modal::None;
