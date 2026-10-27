@@ -175,6 +175,11 @@ impl Session {
         if let Some(terminal) = &mut self.terminal {
             terminal.poll();
             if terminal.ended && !self.ended && self.retry.is_none() {
+                // ssh's last words can still be on their way when it exits.
+                if !terminal.output_complete() {
+                    self.ctx.request_repaint_after(Duration::from_millis(50));
+                    return;
+                }
                 let failed = sign_in_failed(&terminal.last_lines(2));
                 if let Some(delay) =
                     retry_delay(terminal.exit_code, terminal.uptime(), self.attempts, failed)
@@ -368,6 +373,29 @@ mod tests {
         // A slow failed sign-in is not retried, on the first try or a later one.
         assert_eq!(retry_delay(Some(255), up, 0, true), None);
         assert_eq!(retry_delay(Some(255), up, 2, true), None);
+    }
+
+    #[test]
+    fn a_failed_sign_in_is_recognized_however_fast_ssh_exits() {
+        // ssh can exit before its last words are read; they must still count.
+        let script = if cfg!(windows) {
+            "echo deploy@build: Permission denied.&& exit 255"
+        } else {
+            "echo 'deploy@build: Permission denied.'; exit 255"
+        };
+        for _ in 0..20 {
+            let terminal = Terminal::script(script);
+            let mut session = Session::new(Connection::new(), Some(terminal), Default::default());
+            // A later attempt, which the time a session was up does not protect.
+            session.attempts = 1;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !session.ended {
+                assert!(Instant::now() < deadline, "the script did not end");
+                session.poll(None);
+            }
+            assert_eq!(session.retry, None, "a failed sign-in was retried");
+            assert_eq!(session.tab_state(), TabState::Ended);
+        }
     }
 
     #[test]

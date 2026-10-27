@@ -3,8 +3,18 @@ use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use std::{
     io::{Read, Write},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
+
+/// How much of the latest output is kept as it arrived, for ssh's parting words.
+const TAIL: usize = 4096;
+/// How long after the process exits its output is awaited, where the pseudo-terminal does
+/// not report its end (as on Windows).
+const DRAIN_WAIT: Duration = Duration::from_secs(2);
 
 pub struct Terminal {
     pub parser: Arc<Mutex<vt100::Parser<Replies>>>,
@@ -17,7 +27,13 @@ pub struct Terminal {
     pub error: Option<String>,
     /// The ssh exit code once the session has ended.
     pub exit_code: Option<u32>,
-    started: std::time::Instant,
+    started: Instant,
+    /// When the process was seen to exit.
+    exited: Option<Instant>,
+    /// The latest output as received, before the screen interprets it.
+    tail: Arc<Mutex<Vec<u8>>>,
+    /// Whether all output has been read.
+    drained: Arc<AtomicBool>,
     /// A mouse selection between two visible cells, in drag order.
     selection: Option<((u16, u16), (u16, u16))>,
     focus_requested: bool,
@@ -114,6 +130,9 @@ impl Terminal {
         )));
         let output = parser.clone();
         let replies = writer.clone();
+        let tail = Arc::new(Mutex::new(Vec::new()));
+        let drained = Arc::new(AtomicBool::new(false));
+        let (received, done) = (tail.clone(), drained.clone());
         std::thread::spawn(move || {
             let mut bytes = [0u8; 8192];
             loop {
@@ -130,6 +149,11 @@ impl Terminal {
                         break;
                     }
                     Ok(n) => {
+                        if let Ok(mut tail) = received.lock() {
+                            tail.extend_from_slice(&bytes[..n]);
+                            let excess = tail.len().saturating_sub(TAIL);
+                            tail.drain(..excess);
+                        }
                         if let Ok(mut parser) = output.lock() {
                             parser.process(&bytes[..n]);
                             let response = std::mem::take(&mut parser.callbacks_mut().0);
@@ -153,6 +177,10 @@ impl Terminal {
                     }
                 }
             }
+            done.store(true, Ordering::Release);
+            if let Some(ctx) = &ctx {
+                ctx.request_repaint();
+            }
         });
         Ok(Self {
             parser,
@@ -164,7 +192,10 @@ impl Terminal {
             focused: false,
             error: None,
             exit_code: None,
-            started: std::time::Instant::now(),
+            started: Instant::now(),
+            exited: None,
+            tail,
+            drained,
             selection: None,
             focus_requested: true,
         })
@@ -175,6 +206,7 @@ impl Terminal {
             match self.child.try_wait() {
                 Ok(Some(status)) => {
                     self.ended = true;
+                    self.exited = Some(Instant::now());
                     self.exit_code = Some(status.exit_code());
                     self.error = Some(format!("Session ended ({status})."));
                 }
@@ -206,20 +238,20 @@ impl Terminal {
     }
 
     /// How long the session has been running, or ran before it ended.
-    pub fn uptime(&self) -> std::time::Duration {
+    pub fn uptime(&self) -> Duration {
         self.started.elapsed()
     }
 
-    /// The last `n` lines with text on the screen, oldest first, such as ssh's parting words.
+    /// Whether the ended process's output has all arrived, or has had time to.
+    pub fn output_complete(&self) -> bool {
+        self.drained.load(Ordering::Acquire)
+            || self.exited.is_some_and(|at| at.elapsed() >= DRAIN_WAIT)
+    }
+
+    /// The last `n` lines of output with text, oldest first, such as ssh's parting words. They
+    /// come from the output as received, so a cleared or redrawn screen does not hide them.
     pub fn last_lines(&self, n: usize) -> Vec<String> {
-        let contents = self.parser.lock().unwrap().screen().contents();
-        let mut lines: Vec<_> = (contents.lines().rev())
-            .filter(|line| !line.trim().is_empty())
-            .take(n)
-            .map(String::from)
-            .collect();
-        lines.reverse();
-        lines
+        plain_lines(&self.tail.lock().unwrap(), n)
     }
 
     /// Focuses the terminal the next time it is shown.
@@ -511,6 +543,65 @@ impl Terminal {
                 self.error = Some(format!("Cannot send terminal input: {e}"));
             }
         }
+    }
+}
+
+/// The last `n` lines of `output` with text, without escape sequences or text a carriage
+/// return wrote over.
+fn plain_lines(output: &[u8], n: usize) -> Vec<String> {
+    let mut text = String::new();
+    let output = String::from_utf8_lossy(output);
+    let mut chars = output.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.next() {
+                // Control sequences end with a byte from @ to ~.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // Operating system commands, such as window titles, end with BEL or ESC and a
+                // backslash.
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x1b' {
+                            chars.next();
+                        }
+                        if c == '\x07' || c == '\x1b' {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\n' | '\r' => text.push(c),
+            c if c.is_control() => {}
+            c => text.push(c),
+        }
+    }
+    let mut lines: Vec<_> = (text.split('\n').rev())
+        .map(|line| {
+            line.trim_end_matches('\r')
+                .rsplit('\r')
+                .next()
+                .unwrap_or("")
+        })
+        .filter(|line| !line.trim().is_empty())
+        .take(n)
+        .map(String::from)
+        .collect();
+    lines.reverse();
+    lines
+}
+
+#[cfg(test)]
+impl Terminal {
+    /// A terminal running `script` with the system shell.
+    pub fn script(script: &str) -> Self {
+        Self::spawn(shell(script), None).unwrap()
     }
 }
 
@@ -1007,6 +1098,18 @@ mod tests {
         assert!(screen.starts_with("hello world"), "{screen:?}");
         assert_eq!(copied, ["world\nsecond"]);
     }
+    #[test]
+    fn plain_lines_drop_escapes_and_overwritten_text() {
+        let output = b"\x1b]0;deploy@build\x07\x1b[1;31mfailed\x1b[0m\r\n\
+            Password: \r\n\r\n10%\r50%\r100%\r\n\x1b[2Jdeploy@build: Permission denied.\r\n";
+        assert_eq!(
+            plain_lines(output, 3),
+            ["Password: ", "100%", "deploy@build: Permission denied."]
+        );
+        assert_eq!(plain_lines(output, 9)[0], "failed");
+        assert!(plain_lines(b"", 2).is_empty());
+    }
+
     #[test]
     fn last_lines_read_what_the_process_printed_last() {
         let script = if cfg!(windows) {
