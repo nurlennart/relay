@@ -196,6 +196,8 @@ struct App {
     pending_save: bool,
     /// A connection to open at the start of the next frame, outside any dialog or list.
     connect_request: Option<Connection>,
+    /// Opens `connect_request` as an administrative remote desktop session.
+    connect_admin: bool,
     /// A connection whose files to open at the start of the next frame.
     browse_request: Option<Connection>,
 }
@@ -316,6 +318,7 @@ impl App {
             snippet_draft: None,
             pending_save: false,
             connect_request: None,
+            connect_admin: false,
             browse_request: None,
         }
     }
@@ -350,6 +353,7 @@ impl App {
         for (index, connection) in self.state.open.clone().into_iter().enumerate() {
             let browsing = self.state.file_tabs.contains(&index);
             let mut session = Session::restored(connection, browsing, self.ctx.clone());
+            session.admin = self.state.admin_tabs.contains(&index);
             session.library = (self.state.tab_libraries.get(index))
                 .unwrap_or(&self.state.library)
                 .clone();
@@ -363,6 +367,7 @@ impl App {
         if self.state.forget_tabs {
             self.state.open.clear();
             self.state.file_tabs.clear();
+            self.state.admin_tabs.clear();
             self.state.tab_libraries.clear();
             self.state.active_tab = None;
             self.save_state();
@@ -371,6 +376,9 @@ impl App {
         self.state.open = self.sessions.iter().map(|s| s.connection.clone()).collect();
         self.state.file_tabs = (0..self.sessions.len())
             .filter(|i| self.sessions[*i].browsing)
+            .collect();
+        self.state.admin_tabs = (0..self.sessions.len())
+            .filter(|i| self.sessions[*i].admin)
             .collect();
         self.state.tab_libraries = self.sessions.iter().map(|s| s.library.clone()).collect();
         self.state.active_tab = self.active;
@@ -491,7 +499,15 @@ impl App {
     /// Opens `connection` in a new tab on the next frame.
     fn request_connect(&mut self, connection: Connection) {
         self.connect_request = Some(connection);
+        self.connect_admin = false;
         self.ctx.request_repaint();
+    }
+
+    /// Opens `connection`'s administrative session in a new tab on the next frame, as
+    /// mstsc /admin does, without changing the saved connection.
+    fn request_connect_admin(&mut self, connection: Connection) {
+        self.request_connect(connection);
+        self.connect_admin = true;
     }
 
     /// Opens a file browser for `connection` in a new tab on the next frame.
@@ -500,13 +516,19 @@ impl App {
         self.ctx.request_repaint();
     }
 
-    fn connect(&mut self, connection: Connection) {
-        self.open_session(connection, false, state::Library::of(&self.location));
+    fn connect(&mut self, connection: Connection, admin: bool) {
+        self.open_session(connection, false, admin, state::Library::of(&self.location));
     }
 
     /// Opens a new tab for `connection` from `library`: its files if `browsing`, otherwise its
-    /// terminal or desktop.
-    fn open_session(&mut self, connection: Connection, browsing: bool, library: state::Library) {
+    /// terminal or desktop, the administrative session if `admin`.
+    fn open_session(
+        &mut self,
+        connection: Connection,
+        browsing: bool,
+        admin: bool,
+        library: state::Library,
+    ) {
         let id = connection.id;
         let current = library == state::Library::of(&self.location);
         let started = if browsing {
@@ -517,6 +539,7 @@ impl App {
         match started {
             Ok(mut session) => {
                 session.library = library;
+                session.admin = admin;
                 for s in &mut self.sessions {
                     s.place(None);
                 }
@@ -549,7 +572,7 @@ impl App {
             Some(other) => other,
             None => {
                 let count = self.sessions.len();
-                self.open_session(connection, browsing, library);
+                self.open_session(connection, browsing, false, library);
                 if self.sessions.len() == count {
                     return;
                 }
@@ -790,7 +813,7 @@ impl App {
                 let name = self
                     .sessions
                     .get(index)
-                    .map_or("session".into(), |s| format!("“{}”", s.connection.name));
+                    .map_or("session".into(), |s| format!("“{}”", s.title()));
                 let transfers = self
                     .sessions
                     .get(index)
@@ -847,10 +870,11 @@ impl eframe::App for App {
         self.poll_storage();
         self.sync_library(ctx);
         if let Some(connection) = self.connect_request.take() {
-            self.connect(connection);
+            let admin = std::mem::take(&mut self.connect_admin);
+            self.connect(connection, admin);
         }
         if let Some(connection) = self.browse_request.take() {
-            self.open_session(connection, true, state::Library::of(&self.location));
+            self.open_session(connection, true, false, state::Library::of(&self.location));
         }
         // Remember the restored window size; a maximized window keeps the size it returns to.
         let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized));

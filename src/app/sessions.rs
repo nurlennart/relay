@@ -44,7 +44,7 @@ impl App {
             ui.label(
                 RichText::new(format!(
                     "{} is open in its own window.",
-                    self.sessions[index].connection.name
+                    self.sessions[index].title()
                 ))
                 .size(15.)
                 .strong(),
@@ -82,7 +82,7 @@ impl App {
                 self.windows.retain(|(k, _)| *k != key);
                 continue;
             };
-            let title = format!("{} · Relay", self.sessions[index].connection.name);
+            let title = format!("{} · Relay", self.sessions[index].title());
             let builder = egui::ViewportBuilder::default()
                 .with_title(&title)
                 .with_inner_size([1100., 760.])
@@ -249,8 +249,7 @@ impl App {
                         },
                     );
                     ui.add(
-                        egui::Label::new(RichText::new(&s.connection.name).size(14.).strong())
-                            .truncate(),
+                        egui::Label::new(RichText::new(s.title()).size(14.).strong()).truncate(),
                     );
                     ui.add(
                         egui::Label::new(

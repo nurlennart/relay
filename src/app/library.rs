@@ -537,6 +537,22 @@ impl App {
             self.request_connect(c.clone());
             ui.close();
         }
+        if c.protocol == Protocol::Rdp
+            && ui
+                .add_enabled(
+                    rdp::ADMIN_SESSIONS,
+                    egui::Button::new("Connect to admin session"),
+                )
+                .on_hover_text(
+                    "Like mstsc /admin: signs in to the server's administrative session, \
+                     which needs no Remote Desktop license and bypasses the connection broker",
+                )
+                .on_disabled_hover_text("Not supported on this platform")
+                .clicked()
+        {
+            self.request_connect_admin(c.clone());
+            ui.close();
+        }
         if c.protocol == Protocol::Ssh
             && ui
                 .button("Browse files")

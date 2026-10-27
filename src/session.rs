@@ -27,6 +27,9 @@ pub struct Session {
     pub browsing: bool,
     pub files: Option<Browser>,
     rdp: Option<RdpClient>,
+    /// Connects the remote desktop to the server's administrative session, like mstsc /admin.
+    /// It belongs to the tab, not the saved connection.
+    pub admin: bool,
     pub error: Option<String>,
     pub started: Instant,
     ctx: eframe::egui::Context,
@@ -68,6 +71,7 @@ impl Session {
             browsing: false,
             files: None,
             rdp: None,
+            admin: false,
             error: None,
             started: Instant::now(),
             ctx,
@@ -121,6 +125,14 @@ impl Session {
     pub fn demo(connection: Connection, terminal: Terminal, ctx: eframe::egui::Context) -> Self {
         Self::new(connection, Some(terminal), ctx)
     }
+    /// The tab's name: the connection's, marked when it is an administrative session.
+    pub fn title(&self) -> std::borrow::Cow<'_, str> {
+        if self.admin {
+            format!("{} (admin)", self.connection.name).into()
+        } else {
+            self.connection.name.as_str().into()
+        }
+    }
     /// Connects a restored tab; other sessions are unaffected.
     pub fn resume(&mut self) -> Result<(), String> {
         if std::mem::take(&mut self.waiting) {
@@ -164,7 +176,12 @@ impl Session {
             return;
         }
         if self.rdp.is_none() {
-            match RdpClient::new(self.host.or(parent), &self.connection, self.ctx.clone()) {
+            match RdpClient::new(
+                self.host.or(parent),
+                &self.connection,
+                self.admin,
+                self.ctx.clone(),
+            ) {
                 Ok(rdp) => self.rdp = Some(rdp),
                 Err(error) => {
                     self.error = Some(error);

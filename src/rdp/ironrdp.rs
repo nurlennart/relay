@@ -18,6 +18,9 @@ use std::time::{Duration, Instant};
 /// Relay never saves RDP passwords here, so there is nothing to forget.
 pub const SAVES_PASSWORDS: bool = false;
 
+/// IronRDP cannot ask for a server's administrative session yet.
+pub const ADMIN_SESSIONS: bool = false;
+
 /// How signing in works, for the connection editor.
 pub const SIGN_IN_HELP: &str = "The tab asks for the password each time it connects and keeps it \
     only while the session is open.\nCertificates your system does not trust are shown for you \
@@ -103,6 +106,7 @@ impl RdpClient {
     pub fn new(
         _parent: Option<Window>,
         connection: &Connection,
+        _admin: bool,
         ctx: egui::Context,
     ) -> Result<Self, String> {
         Ok(Self {
@@ -626,7 +630,7 @@ mod tests {
         let mut c = Connection::new();
         c.host = "desk.example".into();
         c.username = "alex".into();
-        let client = RdpClient::new(None, &c, egui::Context::default()).expect("client");
+        let client = RdpClient::new(None, &c, false, egui::Context::default()).expect("client");
         assert!(!client.ended() && !client.reconnecting() && !client.focused());
         assert!(matches!(
             &client.stage,

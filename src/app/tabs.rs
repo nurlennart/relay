@@ -37,6 +37,7 @@ impl App {
                                         ui,
                                         &s.connection,
                                         s.browsing,
+                                        s.admin,
                                         s.tab_state(),
                                         self.active == Some(index) || self.split == Some(index),
                                     );
@@ -140,7 +141,7 @@ impl App {
                                     } else {
                                         session::TabState::Ended
                                     };
-                                    session_tab(ui, c, false, state, false);
+                                    session_tab(ui, c, false, false, state, false);
                                 }
                             }
                             if icon_button(ui, Icon::Plus, 26., "New connection (Ctrl+N)").clicked()
@@ -212,12 +213,18 @@ pub(super) fn session_tab(
     ui: &mut egui::Ui,
     connection: &Connection,
     browsing: bool,
+    admin: bool,
     state: session::TabState,
     selected: bool,
 ) -> egui::InnerResponse<(egui::Response, egui::Response)> {
     let colors = theme::palette(ui.ctx());
     let text = if selected { colors.text } else { colors.muted };
-    let label = connection.name.as_str();
+    let label = if admin {
+        format!("{} (admin)", connection.name)
+    } else {
+        connection.name.clone()
+    };
+    let label = label.as_str();
     let galley = egui::WidgetText::from(RichText::new(label).size(13.)).into_galley(
         ui,
         Some(egui::TextWrapMode::Truncate),
@@ -258,6 +265,8 @@ pub(super) fn session_tab(
             "{} · {} · {}",
             if browsing {
                 "SFTP"
+            } else if admin {
+                "RDP admin session"
             } else {
                 connection.protocol.label()
             },

@@ -404,12 +404,24 @@ fn tab_close_is_inside_tab_and_does_not_select_it() {
                             first.name = "Design workstation".into();
                             let mut second = Connection::new();
                             second.name = "Build server".into();
-                            let session =
-                                session_tab(ui, &first, false, session::TabState::Open, true);
+                            let session = session_tab(
+                                ui,
+                                &first,
+                                false,
+                                false,
+                                session::TabState::Open,
+                                true,
+                            );
                             assert!(session.response.rect.contains_rect(session.inner.1.rect));
                             assert!(!session.inner.0.rect.intersects(session.inner.1.rect));
-                            let next =
-                                session_tab(ui, &second, true, session::TabState::Waiting, false);
+                            let next = session_tab(
+                                ui,
+                                &second,
+                                true,
+                                false,
+                                session::TabState::Waiting,
+                                false,
+                            );
                             assert_eq!(
                                 session.response.rect.center().y,
                                 next.response.rect.center().y
@@ -615,6 +627,42 @@ fn f2_renames_in_place_and_keeps_the_extension() {
     assert_eq!(browser.busy, 1, "the rename was sent");
     let selected: Vec<_> = browser.view.selected.iter().cloned().collect();
     assert_eq!(selected, ["notes.txt"]);
+}
+
+#[test]
+fn admin_sessions_stay_with_their_tab() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let mut c = app.connections[0].clone();
+    c.protocol = Protocol::Rdp;
+    app.request_connect_admin(c.clone());
+    assert!(app.connect_admin);
+    // A plain Connect afterwards is not an admin session.
+    app.request_connect(c.clone());
+    assert!(!app.connect_admin);
+
+    let mut admin = session::Session::restored(c.clone(), false, ctx.clone());
+    admin.admin = true;
+    assert_eq!(admin.title(), format!("{} (admin)", c.name));
+    app.sessions
+        .push(session::Session::restored(c.clone(), false, ctx.clone()));
+    app.sessions.push(admin);
+    app.remember_tabs();
+    assert_eq!(app.state.admin_tabs, [1]);
+    // The saved connection is unchanged, so editing it from the tab cannot store admin.
+    assert_eq!(app.state.open[1], c);
+    let mut restored = App::with(
+        ctx.clone(),
+        PathBuf::from("unused.json"),
+        Ok(vec![]),
+        None,
+        None,
+        None,
+        app.state.clone(),
+    );
+    restored.restore_tabs();
+    let kinds: Vec<_> = restored.sessions.iter().map(|s| s.admin).collect();
+    assert_eq!(kinds, [false, true]);
 }
 
 #[test]

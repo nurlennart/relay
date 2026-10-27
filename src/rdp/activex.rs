@@ -187,6 +187,7 @@ impl RdpClient {
     pub fn new(
         parent: Option<NativeWindow>,
         connection: &Connection,
+        admin: bool,
         ctx: egui::Context,
     ) -> Result<Self, String> {
         let parent = parent
@@ -299,6 +300,8 @@ impl RdpClient {
             ("SmartSizing", VARIANT::from(true)),
             ("EnableAutoReconnect", VARIANT::from(true)),
             ("MaxReconnectAttempts", VARIANT::from(20i32)),
+            // What mstsc /admin sets; ConnectToServerConsole is documented as unsupported.
+            ("ConnectToAdministerServer", VARIANT::from(admin)),
             ("RedirectClipboard", VARIANT::from(options.clipboard)),
             ("RedirectPrinters", VARIANT::from(options.printers)),
             ("RedirectDrives", VARIANT::from(options.drives)),
@@ -600,6 +603,9 @@ fn device_scale(scale: u32) -> u32 {
 /// Windows offers to remember credentials in Credential Manager.
 pub const SAVES_PASSWORDS: bool = true;
 
+/// The control can connect to a server's administrative session, as mstsc /admin does.
+pub const ADMIN_SESSIONS: bool = true;
+
 /// How signing in works, for the connection editor.
 pub const SIGN_IN_HELP: &str = "Windows asks for credentials; tick “Remember me” to skip the \
     prompt next time.\nWindows keeps them in Credential Manager. Relay never sees passwords.";
@@ -791,6 +797,7 @@ mod tests {
         let mut client = RdpClient::new(
             NativeWindow::from_hwnd(parent.0),
             &connection,
+            false,
             egui::Context::default(),
         )
         .unwrap();
@@ -838,6 +845,7 @@ mod tests {
         let mut client = RdpClient::new(
             NativeWindow::from_hwnd(first.0),
             &connection,
+            false,
             egui::Context::default(),
         )
         .unwrap();
@@ -876,6 +884,7 @@ mod tests {
         let mut client = RdpClient::new(
             NativeWindow::from_hwnd(parent.0),
             &connection,
+            false,
             egui::Context::default(),
         )
         .unwrap();
@@ -940,6 +949,7 @@ mod tests {
         let mut client = RdpClient::new(
             NativeWindow::from_hwnd(parent.0),
             &connection,
+            false,
             egui::Context::default(),
         )
         .unwrap();
