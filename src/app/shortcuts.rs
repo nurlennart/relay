@@ -86,6 +86,15 @@ impl App {
                     ("Ctrl+Alt+Break", "Toggle remote desktop full screen"),
                 ]),
             ];
+            // One key column width for every section, so descriptions line up down the whole list.
+            let mono = egui::TextStyle::Monospace.resolve(ui.style());
+            let longest = groups
+                .iter()
+                .flat_map(|(_, rows)| rows.iter())
+                .map(|(keys, _)| keys.replace("Mod", modifier).chars().count())
+                .max()
+                .unwrap_or(0);
+            let key_width = ui.fonts_mut(|f| f.glyph_width(&mono, 'M')) * longest as f32;
             egui::ScrollArea::vertical()
                 .id_salt("keyboard-shortcuts-list")
                 .min_scrolled_height((ctx.content_rect().height() - 240.).max(160.))
@@ -96,7 +105,10 @@ impl App {
                         section_label(ui, section);
                         egui::Grid::new(section).num_columns(2).min_row_height(0.).spacing([20., 8.]).show(ui, |ui| {
                             for (keys, action) in *rows {
-                                ui.label(RichText::new(keys.replace("Mod", modifier)).monospace());
+                                ui.horizontal_top(|ui| {
+                                    ui.set_width(key_width);
+                                    ui.label(RichText::new(keys.replace("Mod", modifier)).monospace());
+                                });
                                 ui.add(egui::Label::new(*action).wrap());
                                 ui.end_row();
                             }
