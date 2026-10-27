@@ -492,7 +492,8 @@ fn sign_in(
         ui.label("User name");
         let user = ui.add(
             egui::TextEdit::singleline(&mut credentials.username)
-                .hint_text(r"DOMAIN\user")
+                // Weak text takes the placeholder color, which the theme's text color would override.
+                .hint_text(RichText::new(r"DOMAIN\user").weak())
                 .desired_width(f32::INFINITY),
         );
         ui.add_space(6.);
