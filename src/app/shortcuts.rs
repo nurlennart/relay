@@ -86,8 +86,9 @@ impl App {
                     ("Ctrl+Alt+Break", "Toggle remote desktop full screen"),
                 ]),
             ];
-            // One key column width for every section, so descriptions line up down the whole list.
-            let mono = egui::TextStyle::Monospace.resolve(ui.style());
+            // Keys use the description size and one column width for every section, so each key
+            // sits on its description's line and descriptions line up down the whole list.
+            let mono = egui::FontId::monospace(egui::TextStyle::Body.resolve(ui.style()).size);
             let longest = groups
                 .iter()
                 .flat_map(|(_, rows)| rows.iter())
@@ -100,19 +101,25 @@ impl App {
                 .min_scrolled_height((ctx.content_rect().height() - 240.).max(160.))
                 .max_height((ctx.content_rect().height() - 240.).max(160.))
                 .show(ui, |ui| {
+                    // Rows are as tall as their text, not a control.
+                    ui.spacing_mut().interact_size.y = 0.;
                     for (section, rows) in groups {
                         ui.add_space(12.);
                         section_label(ui, section);
-                        egui::Grid::new(section).num_columns(2).min_row_height(0.).spacing([20., 8.]).show(ui, |ui| {
-                            for (keys, action) in *rows {
-                                ui.horizontal_top(|ui| {
-                                    ui.set_width(key_width);
-                                    ui.label(RichText::new(keys.replace("Mod", modifier)).monospace());
-                                });
+                        for (keys, action) in *rows {
+                            ui.horizontal_top(|ui| {
+                                ui.spacing_mut().item_spacing.x = 20.;
+                                ui.allocate_ui_with_layout(
+                                    Vec2::new(key_width, 0.),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        ui.set_width(key_width);
+                                        ui.label(RichText::new(keys.replace("Mod", modifier)).font(mono.clone()));
+                                    },
+                                );
                                 ui.add(egui::Label::new(*action).wrap());
-                                ui.end_row();
-                            }
-                        });
+                            });
+                        }
                     }
                     ui.add_space(12.);
                     ui.label(RichText::new("Focused terminals and remote desktops receive most keys. Tab cycling stays available. Windows RDP tab shortcuts require Relay in the foreground and do not apply in full screen or when Windows keys go to the remote computer.").size(12.).color(colors.muted));
