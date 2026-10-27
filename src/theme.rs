@@ -105,10 +105,12 @@ impl Theme {
             selected: surface.lerp_to_gamma(accent, if self.is_light() { 0.10 } else { 0.16 }),
             divider: panel.lerp_to_gamma(contrast, if self.is_light() { 0.08 } else { 0.06 }),
             edge: surface.lerp_to_gamma(contrast, if self.is_light() { 0.30 } else { 0.18 }),
-            rdp: if self.is_light() {
-                rgb([24, 77, 145])
-            } else {
-                rgb([145, 188, 242])
+            // SSH takes the accent, so themes with a blue accent give RDP violet instead.
+            rdp: match self {
+                Self::Midnight => rgb([204, 160, 255]),
+                Self::Daylight => rgb([111, 52, 168]),
+                _ if self.is_light() => rgb([24, 77, 145]),
+                _ => rgb([145, 188, 242]),
             },
             error_bg: if self.is_light() {
                 rgb([255, 232, 232])
@@ -229,6 +231,18 @@ mod tests {
             let c = palette(&ctx);
             assert_eq!(ctx.style().visuals.panel_fill, c.bg);
             assert_eq!(ctx.style().visuals.dark_mode, !theme.is_light());
+            // SSH and RDP badges are told apart by color.
+            let distance = |a: Color32, b: Color32| {
+                [(a.r(), b.r()), (a.g(), b.g()), (a.b(), b.b())]
+                    .iter()
+                    .map(|(x, y)| x.abs_diff(*y) as u32)
+                    .sum::<u32>()
+            };
+            assert!(
+                distance(c.accent, c.rdp) >= 90,
+                "{}: SSH and RDP badges look alike",
+                theme.name()
+            );
             for background in [c.bg, c.panel, c.surface, c.selected, c.hover] {
                 for foreground in [
                     c.text,
