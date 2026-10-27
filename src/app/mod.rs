@@ -235,6 +235,7 @@ impl App {
         let loaded = model::load(&path);
         let parent = platform::Window::of(cc);
         if let Some(parent) = parent {
+            parent.set_theme(theme::current(&cc.egui_ctx));
             platform::install_shortcuts(parent, cc.egui_ctx.clone());
         }
         let state_path = state::path();

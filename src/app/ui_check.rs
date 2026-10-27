@@ -14,6 +14,9 @@ pub fn seed(app: &mut App) {
             .find(|t| t.name().eq_ignore_ascii_case(&name))
     {
         theme.apply(&app.ctx);
+        if let Some(window) = app.parent {
+            window.set_theme(theme);
+        }
     }
     if let Ok(size) = std::env::var("RELAY_UI_SIZE")
         && let Some((w, h)) = size.split_once('x')

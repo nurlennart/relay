@@ -27,6 +27,8 @@ The version is shown at the top of **Settings**, with the commit it was built fr
 
 Open **Settings** at the bottom of the sidebar and use **Appearance** to switch between **Graphite** (mint), **Midnight** (blue), **Amethyst** (violet), and **Ember** (amber), **Daylight** (cool light), and **Linen** (warm light). Changes apply immediately across the workspace and dialogs. Your preference is saved locally in `theme.json` in Relay's [data folder](#where-relay-keeps-data), independently of personal or shared connection libraries. Remote desktops and application-specified SSH terminal colors keep their own appearance.
 
+On Windows 11, the native title bar follows the selected theme, including detached session windows. Theme changes update it immediately; older Windows versions keep the appearance supported by the system.
+
 ## Connection library
 
 - **New connection** saves a name, host, port, optional username, group, and favorite.

@@ -3,6 +3,10 @@
 use super::{Command, Window};
 use std::path::PathBuf;
 
+impl Window {
+    pub fn set_theme(self, _theme: crate::theme::Theme) {}
+}
+
 #[cfg(target_os = "macos")]
 pub const PROPORTIONAL_FONTS: &[&str] = &[
     "/System/Library/Fonts/SFNS.ttf",

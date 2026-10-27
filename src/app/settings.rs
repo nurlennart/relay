@@ -179,6 +179,13 @@ impl App {
         });
         if choice != before {
             choice.apply(ctx);
+            for window in self
+                .parent
+                .iter()
+                .chain(self.windows.iter().map(|(_, w)| w))
+            {
+                window.set_theme(choice);
+            }
             #[cfg(feature = "ui-check")]
             let preview = std::env::var_os("RELAY_UI_CHECK").is_some();
             #[cfg(not(feature = "ui-check"))]

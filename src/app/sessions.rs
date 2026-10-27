@@ -114,6 +114,7 @@ impl App {
                     known.extend(self.parent);
                     let found = platform::find_window(&title, &known);
                     if let Some(window) = found {
+                        window.set_theme(theme::current(ctx));
                         self.windows.push((key, window));
                         self.sessions[index].set_host(Some(window), self.parent);
                     }

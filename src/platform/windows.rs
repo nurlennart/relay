@@ -6,7 +6,9 @@ use raw_window_handle::{
 };
 use std::path::PathBuf;
 use windows_sys::Win32::{
-    Foundation::*, Graphics::Gdi::MapWindowPoints, UI::WindowsAndMessaging::*,
+    Foundation::*,
+    Graphics::{Dwm::*, Gdi::MapWindowPoints},
+    UI::WindowsAndMessaging::*,
 };
 
 pub const PROPORTIONAL_FONTS: &[&str] = &[r"C:\Windows\Fonts\segoeui.ttf"];
@@ -34,6 +36,27 @@ pub fn ssh_program() -> PathBuf {
 }
 
 impl Window {
+    /// Keeps the native caption and its controls in the workspace theme.
+    pub fn set_theme(self, theme: crate::theme::Theme) {
+        let colors = theme.colors();
+        let colorref = |c: eframe::egui::Color32| u32::from_le_bytes([c.r(), c.g(), c.b(), 0]);
+        for (attribute, value) in [
+            (DWMWA_USE_IMMERSIVE_DARK_MODE, u32::from(!theme.is_light())),
+            (DWMWA_CAPTION_COLOR, colorref(colors.bg)),
+            (DWMWA_TEXT_COLOR, colorref(colors.text)),
+        ] {
+            // Older Windows versions ignore attributes they do not support.
+            unsafe {
+                DwmSetWindowAttribute(
+                    self.hwnd(),
+                    attribute as u32,
+                    (&value as *const u32).cast(),
+                    std::mem::size_of_val(&value) as u32,
+                );
+            }
+        }
+    }
+
     pub fn from_hwnd(window: HWND) -> Option<Self> {
         let handle = Win32WindowHandle::new(std::num::NonZeroIsize::new(window as isize)?);
         Some(Self {
@@ -267,6 +290,52 @@ unsafe extern "system" fn keyboard(code: i32, wparam: WPARAM, lparam: LPARAM) ->
 mod tests {
     use super::*;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_HOME, VK_NEXT, VK_PRIOR, VK_TAB};
+    #[test]
+    fn native_titlebar_switches_between_light_and_dark_themes() {
+        unsafe {
+            let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+            let hwnd = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                std::ptr::null(),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                400,
+                300,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
+            let window = Window::from_hwnd(hwnd).expect("cannot create test window");
+            let attribute = |kind| {
+                let mut value = 0u32;
+                let result = DwmGetWindowAttribute(
+                    hwnd,
+                    kind as u32,
+                    (&mut value as *mut u32).cast(),
+                    std::mem::size_of_val(&value) as u32,
+                );
+                (result >= 0).then_some(value)
+            };
+            // Older Windows versions keep their native appearance instead.
+            if attribute(DWMWA_USE_IMMERSIVE_DARK_MODE).is_some() {
+                for theme in crate::theme::Theme::ALL {
+                    window.set_theme(theme);
+                    assert_eq!(
+                        attribute(DWMWA_USE_IMMERSIVE_DARK_MODE),
+                        Some(u32::from(!theme.is_light())),
+                        "{theme:?}"
+                    );
+                }
+            } else {
+                eprintln!("skipping dark title bar assertions: Windows does not support them");
+            }
+            DestroyWindow(hwnd);
+        }
+    }
+
     #[test]
     fn clipping_cuts_holes_and_restores() {
         use windows_sys::Win32::Graphics::Gdi::{

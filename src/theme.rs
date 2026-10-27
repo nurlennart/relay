@@ -42,7 +42,7 @@ impl Theme {
         Self::Linen,
     ];
 
-    fn is_light(self) -> bool {
+    pub fn is_light(self) -> bool {
         matches!(self, Self::Daylight | Self::Linen)
     }
 
