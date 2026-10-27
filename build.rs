@@ -8,7 +8,7 @@ fn main() {
         resource
             .set_icon("assets/icon.ico")
             .set("ProductName", "Relay")
-            .set("FileDescription", "Relay remote workspace");
+            .set("FileDescription", "Relay");
         if let Err(error) = resource.compile() {
             panic!("Cannot embed the Relay icon: {error}");
         }
