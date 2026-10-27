@@ -1,6 +1,12 @@
 //! Loading and saving libraries, switching between them, and import and export.
 use super::*;
 
+/// How often a shared library is reloaded in the background.
+const SYNC_INTERVAL: Duration = Duration::from_secs(60);
+/// Regaining focus reloads only if the last reload is at least this old, so switching windows
+/// back and forth does not query the server each time.
+const SYNC_FOCUS_MIN: Duration = Duration::from_secs(5);
+
 impl App {
     pub(super) fn refresh(&mut self) {
         if self.pending.is_none() {
@@ -76,6 +82,55 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
+    }
+
+    /// Reloads a shared library every minute and when the window regains focus, so teammates'
+    /// changes appear on their own. It is silent: nothing is announced, no control waits on it,
+    /// failures are dropped, and the list is replaced only when the library's revision changed.
+    pub(super) fn sync_library(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|i| i.focused);
+        let regained = focused && !self.was_focused;
+        self.was_focused = focused;
+        // Loads, saves and switches take precedence; their result is the newer one.
+        if self.pending.is_some() {
+            self.sync = None;
+        }
+        if let Some(rx) = &self.sync {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.sync = None;
+                    if let Ok(snapshot) = result
+                        && snapshot.revision != self.revision
+                        && self.recovery.is_none()
+                    {
+                        self.connections = snapshot.connections;
+                        self.revision = snapshot.revision;
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.sync = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        // The personal library has no other writers. Unsaved changes after a rejected save
+        // stay on screen until the user deals with them.
+        if matches!(self.location, database::Location::Local(_))
+            || !self.storage_ok
+            || self.recovery.is_some()
+        {
+            return;
+        }
+        let elapsed = self.synced.elapsed();
+        let due = elapsed >= SYNC_INTERVAL || (regained && elapsed >= SYNC_FOCUS_MIN);
+        if due && self.sync.is_none() && self.pending.is_none() {
+            self.synced = Instant::now();
+            self.sync = Some(database::start(
+                self.location.clone(),
+                self.revision,
+                None,
+                self.ctx.clone(),
+            ));
+        }
+        ctx.request_repaint_after(SYNC_INTERVAL.saturating_sub(self.synced.elapsed()));
     }
 
     pub(super) fn import_csv(&mut self) {

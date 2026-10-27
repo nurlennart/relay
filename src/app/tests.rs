@@ -715,3 +715,51 @@ fn the_version_names_the_release() {
     let version = super::settings::version();
     assert!(version.starts_with(&format!("Relay {}", env!("CARGO_PKG_VERSION"))));
 }
+
+#[test]
+fn shared_library_syncs_silently() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let path = std::env::temp_dir().join(format!("relay-sync-{}.sqlite", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let location = database::Location::Sqlite(path.clone());
+    let save = |revision, connections| {
+        database::start(location.clone(), revision, Some(connections), ctx.clone())
+            .recv()
+            .unwrap()
+            .unwrap()
+    };
+    let mine = save(0, app.connections.clone());
+    app.location = location.clone();
+    app.revision = mine.revision;
+    // A teammate adds a connection.
+    let mut theirs = app.connections.clone();
+    let mut added = Connection::new();
+    added.id = 9;
+    added.name = "Delta".into();
+    added.host = "delta.example".into();
+    theirs.push(added);
+    save(mine.revision, theirs);
+
+    let sync = |app: &mut App| {
+        app.synced = Instant::now() - Duration::from_secs(61);
+        app.sync_library(&ctx);
+        assert!(app.sync.is_some(), "no background reload started");
+        while app.sync.is_some() {
+            std::thread::sleep(Duration::from_millis(10));
+            app.sync_library(&ctx);
+        }
+    };
+    // Unsaved changes after a rejected save are not replaced.
+    app.recovery = Some(app.connections.clone());
+    app.synced = Instant::now() - Duration::from_secs(61);
+    app.sync_library(&ctx);
+    assert!(app.sync.is_none());
+    app.recovery = None;
+
+    sync(&mut app);
+    assert_eq!(app.connections.len(), 4);
+    assert!(app.pending.is_none());
+    assert!(app.notice.is_none() && app.error.is_none());
+    let _ = std::fs::remove_file(&path);
+}

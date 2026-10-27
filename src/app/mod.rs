@@ -150,6 +150,13 @@ struct App {
     pending_location: Option<database::Location>,
     recovery: Option<Vec<Connection>>,
     pending_editor: Option<Connection>,
+    /// A silent background reload of a shared library, separate from `pending` so it never
+    /// blocks or announces anything.
+    sync: Option<std::sync::mpsc::Receiver<Result<database::Snapshot, String>>>,
+    /// When the shared library was last reloaded in the background.
+    synced: Instant,
+    /// Whether the window had focus last frame, to reload when it returns.
+    was_focused: bool,
     db_kind: LibraryKind,
     db_path: String,
     db_mssql: ServerForm,
@@ -281,6 +288,9 @@ impl App {
             pending_location: None,
             recovery: None,
             pending_editor: None,
+            sync: None,
+            synced: Instant::now(),
+            was_focused: true,
             db_kind: LibraryKind::Personal,
             db_path: String::new(),
             db_mssql: ServerForm::new(saved_mssql, MSSQL_EXAMPLE, state.mssql_without_tls),
@@ -785,6 +795,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let colors = theme::palette(ctx);
         self.poll_storage();
+        self.sync_library(ctx);
         if let Some(connection) = self.connect_request.take() {
             self.connect(connection);
         }
