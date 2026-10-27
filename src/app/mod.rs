@@ -607,7 +607,12 @@ impl App {
             self.notify("Wait for the current library operation to finish.");
             return;
         }
-        self.edit(Connection::new());
+        let mut connection = Connection::new();
+        // A connection added while a group is open belongs to that group.
+        if let Some(group) = &self.group {
+            connection.group = group.clone();
+        }
+        self.edit(connection);
     }
 
     fn edit(&mut self, connection: Connection) {

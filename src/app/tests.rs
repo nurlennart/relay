@@ -82,6 +82,17 @@ fn search_enter_connects_the_top_match() {
 }
 
 #[test]
+fn new_connection_starts_in_the_open_group() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    app.new_connection();
+    assert!(matches!(&app.modal, Modal::Editor(c) if c.group == "Personal"));
+    app.group = Some("Servers".into());
+    app.new_connection();
+    assert!(matches!(&app.modal, Modal::Editor(c) if c.group == "Servers"));
+}
+
+#[test]
 fn enter_quick_connects_when_nothing_matches() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);
