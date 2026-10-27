@@ -210,6 +210,18 @@ impl Terminal {
         self.started.elapsed()
     }
 
+    /// The last `n` lines with text on the screen, oldest first, such as ssh's parting words.
+    pub fn last_lines(&self, n: usize) -> Vec<String> {
+        let contents = self.parser.lock().unwrap().screen().contents();
+        let mut lines: Vec<_> = (contents.lines().rev())
+            .filter(|line| !line.trim().is_empty())
+            .take(n)
+            .map(String::from)
+            .collect();
+        lines.reverse();
+        lines
+    }
+
     /// Focuses the terminal the next time it is shown.
     pub fn focus(&mut self) {
         self.focus_requested = true;
@@ -995,6 +1007,28 @@ mod tests {
         assert!(screen.starts_with("hello world"), "{screen:?}");
         assert_eq!(copied, ["world\nsecond"]);
     }
+    #[test]
+    fn last_lines_read_what_the_process_printed_last() {
+        let script = if cfg!(windows) {
+            "echo Welcome&& echo.&& echo deploy@build: Permission denied."
+        } else {
+            "echo Welcome && echo && echo 'deploy@build: Permission denied.'"
+        };
+        let mut terminal = Terminal::spawn(shell(script), None).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while terminal.last_lines(1) != ["deploy@build: Permission denied."] {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the output did not arrive: {:?}",
+                terminal.last_lines(3)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            terminal.poll();
+        }
+        // Blank lines between are skipped.
+        assert_eq!(terminal.last_lines(2)[0], "Welcome");
+    }
+
     #[test]
     fn pty_runs_and_receives_input() {
         let command = if cfg!(windows) {

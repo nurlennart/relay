@@ -49,11 +49,32 @@ pub struct Session {
 /// Automatic SSH reconnection gives up after this many attempts in a row.
 const ATTEMPTS: u32 = 10;
 
+/// What ssh prints when it gives up on signing in, rather than losing a connection. These are
+/// not translated, so they can be recognized in its last lines.
+const SIGN_IN_FAILURES: [&str; 5] = [
+    "Permission denied",
+    "Host key verification failed",
+    "Too many authentication failures",
+    "Authentication failed",
+    "REMOTE HOST IDENTIFICATION HAS CHANGED",
+];
+
+/// Whether ssh's `last_lines` say it could not sign in.
+pub fn sign_in_failed(last_lines: &[String]) -> bool {
+    (last_lines.iter()).any(|line| SIGN_IN_FAILURES.iter().any(|f| line.contains(f)))
+}
+
 /// How long to wait before reconnecting an SSH session that exited, if at all. Only a dropped
-/// connection (ssh exits with 255) of a session that had been up long enough to log in
-/// qualifies, so wrong passwords, unknown hosts, and `exit` never loop.
-pub fn retry_delay(code: Option<u32>, uptime: Duration, attempt: u32) -> Option<Duration> {
-    if code != Some(255) || attempt >= ATTEMPTS {
+/// connection (ssh exits with 255) qualifies, never a failed sign-in or `exit`. A first drop
+/// must also come after the session had been up long enough to sign in, in case ssh failed
+/// with a message `sign_in_failed` does not know.
+pub fn retry_delay(
+    code: Option<u32>,
+    uptime: Duration,
+    attempt: u32,
+    sign_in_failed: bool,
+) -> Option<Duration> {
+    if code != Some(255) || attempt >= ATTEMPTS || sign_in_failed {
         return None;
     }
     if attempt == 0 && uptime < Duration::from_secs(10) {
@@ -154,8 +175,9 @@ impl Session {
         if let Some(terminal) = &mut self.terminal {
             terminal.poll();
             if terminal.ended && !self.ended && self.retry.is_none() {
+                let failed = sign_in_failed(&terminal.last_lines(2));
                 if let Some(delay) =
-                    retry_delay(terminal.exit_code, terminal.uptime(), self.attempts)
+                    retry_delay(terminal.exit_code, terminal.uptime(), self.attempts, failed)
                 {
                     self.retry = Some(Instant::now() + delay);
                     self.attempts += 1;
@@ -328,20 +350,45 @@ mod tests {
     #[test]
     fn only_dropped_connections_retry_with_growing_delays() {
         let up = Duration::from_secs(120);
-        assert_eq!(retry_delay(Some(255), up, 0), Some(Duration::from_secs(1)));
+        let retry = |code, uptime, attempt| retry_delay(code, uptime, attempt, false);
+        assert_eq!(retry(Some(255), up, 0), Some(Duration::from_secs(1)));
         assert_eq!(
-            retry_delay(Some(255), Duration::ZERO, 3),
+            retry(Some(255), Duration::ZERO, 3),
             Some(Duration::from_secs(8))
         );
-        assert_eq!(retry_delay(Some(255), up, 9), Some(Duration::from_secs(30)));
-        assert_eq!(retry_delay(Some(255), up, ATTEMPTS), None, "gives up");
-        assert_eq!(retry_delay(Some(0), up, 0), None, "exit ends the session");
-        assert_eq!(retry_delay(Some(1), up, 0), None);
+        assert_eq!(retry(Some(255), up, 9), Some(Duration::from_secs(30)));
+        assert_eq!(retry(Some(255), up, ATTEMPTS), None, "gives up");
+        assert_eq!(retry(Some(0), up, 0), None, "exit ends the session");
+        assert_eq!(retry(Some(1), up, 0), None);
         assert_eq!(
-            retry_delay(Some(255), Duration::from_secs(2), 0),
+            retry(Some(255), Duration::from_secs(2), 0),
             None,
             "a connection that never came up is not retried"
         );
+        // A slow failed sign-in is not retried, on the first try or a later one.
+        assert_eq!(retry_delay(Some(255), up, 0, true), None);
+        assert_eq!(retry_delay(Some(255), up, 2, true), None);
+    }
+
+    #[test]
+    fn sign_in_failures_are_told_from_dropped_connections() {
+        let lines = |text: &str| text.lines().map(String::from).collect::<Vec<_>>();
+        for failed in [
+            "deploy@build.example: Permission denied (publickey,password).",
+            "Host key verification failed.",
+            "Received disconnect from 10.0.0.9 port 22:2: Too many authentication failures\n\
+             Disconnected from 10.0.0.9 port 22",
+        ] {
+            assert!(sign_in_failed(&lines(failed)), "{failed}");
+        }
+        for dropped in [
+            "client_loop: send disconnect: Broken pipe",
+            "Timeout, server build.example not responding.",
+            "Connection to build.example closed by remote host.\nConnection to build.example closed.",
+            "ssh: connect to host build.example port 22: Network is unreachable",
+        ] {
+            assert!(!sign_in_failed(&lines(dropped)), "{dropped}");
+        }
     }
 
     #[test]
