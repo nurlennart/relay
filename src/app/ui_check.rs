@@ -299,6 +299,14 @@ fn files(app: &mut App) {
              Are you sure you want to continue connecting (yes/no/[fingerprint])?",
             crate::askpass::Kind::YesNo,
         ),
+        Ok("newfolder") => {
+            browser.view.new_folder = Some("reports".into());
+        }
+        Ok("delete") => {
+            browser.view.confirm = Some(crate::sftp::Confirm::Delete(vec![
+                "relay-0.4.0.tar.gz".into(),
+            ]));
+        }
         Ok("password") => browser.demo_prompt(
             "deploy@build.example.com's password:",
             crate::askpass::Kind::Secret,

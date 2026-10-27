@@ -10,6 +10,9 @@ use egui::{Align, Layout, Margin, Rect, Sense, UiBuilder};
 /// The height of a row in the listing and in the transfer queue.
 const FILE_ROW: f32 = 30.;
 
+/// The height of fields and buttons in the bars above the listing.
+const BAR_CONTROL: f32 = 28.;
+
 /// Rows of the transfer queue shown before it scrolls.
 const TRANSFER_ROWS: usize = 4;
 
@@ -568,7 +571,11 @@ fn banners(ui: &mut egui::Ui, files: &mut Browser) {
             .corner_radius(RADIUS)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.horizontal_wrapped(|ui| add(ui));
+                ui.horizontal(|ui| {
+                    // A row as tall as its field centers labels, field and buttons on one line.
+                    ui.set_min_height(BAR_CONTROL);
+                    add(ui)
+                });
             });
         ui.add_space(8.);
     };
@@ -577,7 +584,7 @@ fn banners(ui: &mut egui::Ui, files: &mut Browser) {
         let mut done = None;
         bar(ui, &mut |ui| {
             ui.label("New folder");
-            let field = ui.add_sized([220., 26.], input(name, "Name"));
+            let field = ui.add_sized([220., BAR_CONTROL], input(name, "Name"));
             if std::mem::take(&mut files.view.focus_field) {
                 field.request_focus();
             }
@@ -616,10 +623,16 @@ fn banners(ui: &mut egui::Ui, files: &mut Browser) {
                     names => format!("Delete {} items?", names.len()),
                 };
                 ui.label(RichText::new(what).strong());
-                ui.label(
+                let explain = egui::Label::new(
                     RichText::new("Folders go with everything in them. This cannot be undone.")
                         .color(colors.muted),
-                );
+                )
+                .truncate();
+                // Leave room for the buttons after the explanation.
+                ui.scope(|ui| {
+                    ui.set_max_width((ui.available_width() - 160.).max(0.));
+                    ui.add(explain);
+                });
                 delete = ui
                     .add(
                         egui::Button::new(
