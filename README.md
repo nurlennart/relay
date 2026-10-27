@@ -2,7 +2,7 @@
 
 A remote connection manager for Windows, macOS, and Linux, written in Rust. A dark, GPU-rendered workspace with a searchable library, group filters, favorites, and tabs for RDP and SSH sessions and SFTP file browsing.
 
-![Relay's connection library in the Graphite theme, with an SSH session open in a tab](assets/screenshot.png)
+![Relay's connection library in the Graphite theme, with an SSH terminal and its file browser open in tabs](assets/screenshot.png)
 
 ## Install
 
@@ -148,6 +148,8 @@ SSH runs in a dark terminal panel that keeps its own colors in every app theme, 
 SSH profiles have **SSH options**: a jump host (`ssh -J`), an identity file (`ssh -i`), and port forwards written as `L8080:localhost:80`, `R9000:localhost:9000` or `D1080`, separated by commas. Relay passes `ServerAliveInterval=15`, so a dropped connection is noticed within about 45 seconds. When ssh exits with 255 after the session had been up, Relay reconnects in the same tab after 1, 2, 4, 8, 16, then 30 seconds, up to ten times; **Reconnect now** and **Stop** are shown meanwhile. Wrong passwords, unknown hosts and `exit` are not retried.
 
 ### SFTP file browser
+
+![The SFTP file browser showing a folder on a build server, with a download in progress](assets/screenshot-files.png)
 
 An SSH connection's files open in a tab of their own: **Browse files** in a row's menu, the folder button on the row, `Shift+Enter` in the library, or **Files** in an SSH tab's header, which opens the browser beside the terminal in split view (**Terminal** in the browser does the reverse). Relay runs the system's ssh with the `sftp` subsystem (`ssh -T -s host sftp`), so your SSH config, keys, agent, jump hosts and `known_hosts` apply exactly as in the terminal; with a `ControlMaster` in your config, the browser shares the terminal's connection. Port forwards, X11 forwarding and `RemoteCommand` are left out for the browser.
 
