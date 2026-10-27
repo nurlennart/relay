@@ -378,10 +378,8 @@ impl App {
             self.request_connect(c.clone());
         }
         menu_popup(egui::Popup::context_menu(&response)).show(|ui| self.connection_menu(ui, c));
-        let description = c
-            .metadata
-            .get("ConnectionDescription")
-            .filter(|d| !d.trim().is_empty());
+        // The first line of the notes sits under the name; hovering it shows them all.
+        let description = c.notes.lines().map(str::trim).find(|l| !l.is_empty());
         let line = |ui: &egui::Ui, font: FontId| ui.fonts_mut(|f| f.row_height(&font));
         let mut x = rect.min.x;
         for (column, w) in columns {
@@ -461,7 +459,8 @@ impl App {
                                     .color(colors.muted),
                             )
                             .truncate(),
-                        );
+                        )
+                        .on_hover_text(&c.notes);
                     }
                 }
                 Column::Protocol => {

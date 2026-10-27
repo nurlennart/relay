@@ -238,6 +238,10 @@ fn parse(text: &str, existing: &[Connection], filename: String) -> Result<Import
                 c.metadata.insert(column.into(), value(Some(idx)));
             }
         }
+        c.notes = c
+            .metadata
+            .remove("ConnectionDescription")
+            .unwrap_or_default();
         let source = format!("Row {} ({})", i + 2, c.name);
         result.add(&source, c)?;
     }
@@ -257,6 +261,7 @@ pub fn export(path: &Path, connections: &[Connection]) -> Result<(), String> {
             ("ConnectionPort", c.port.to_string()),
             ("ConnectionProtocol", c.protocol.label().into()),
             ("FolderName", c.group.clone()),
+            ("ConnectionDescription", c.notes.clone()),
             ("Username", c.username.clone()),
             ("Favorite", c.favorite.to_string()),
         ] {
@@ -298,10 +303,7 @@ mod tests {
         );
         assert_eq!(find("Reception; front desk").port, 3389);
         assert_eq!(find("Design workstation").username, "STUDIO\\alex");
-        assert_eq!(
-            find("Archive").metadata["ConnectionDescription"],
-            "Old \"cold\" storage"
-        );
+        assert_eq!(find("Archive").notes, "Old \"cold\" storage");
         let second = read(&fixture, &first.connections).unwrap();
         assert_eq!(second.duplicates, 7);
         assert!(second.connections.is_empty());
@@ -379,19 +381,19 @@ mod tests {
         c.host = "localhost".into();
         c.username = "DOMAIN\\alex".into();
         c.favorite = true;
-        c.metadata.insert(
-            "ConnectionDescription".into(),
-            "Quoted \"description\"".into(),
-        );
+        c.notes = "Quoted \"description\"\nSecond line".into();
+        c.metadata
+            .insert("ConnectionExternalId".into(), "ext-7".into());
         export(&path, std::slice::from_ref(&c)).unwrap();
         let import = read(&path, &[]).unwrap();
         assert!(import.skipped.is_empty());
         assert_eq!(import.connections[0].name, c.name);
         assert_eq!(import.connections[0].username, c.username);
         assert!(import.connections[0].favorite);
+        assert_eq!(import.connections[0].notes, c.notes);
         assert_eq!(
-            import.connections[0].metadata["ConnectionDescription"],
-            c.metadata["ConnectionDescription"]
+            import.connections[0].metadata["ConnectionExternalId"],
+            "ext-7"
         );
         std::fs::remove_file(path).unwrap();
     }

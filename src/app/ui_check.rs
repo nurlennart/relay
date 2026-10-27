@@ -111,6 +111,7 @@ pub fn seed(app: &mut App) {
         protocol,
         port: protocol.port(),
         favorite: i < 2,
+        notes: Default::default(),
         metadata: Default::default(),
         rdp: Default::default(),
         ssh: Default::default(),

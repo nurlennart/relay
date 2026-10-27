@@ -36,6 +36,9 @@ pub struct Connection {
     pub protocol: Protocol,
     pub port: u16,
     pub favorite: bool,
+    /// Free-form notes, searched along with the other fields.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
     #[serde(default)]
     pub metadata: std::collections::BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "RdpOptions::is_default")]
@@ -227,6 +230,7 @@ impl Connection {
         self.host = self.host.trim().into();
         self.username = self.username.trim().into();
         self.group = self.group.trim().into();
+        self.notes = self.notes.trim().replace("\r\n", "\n");
         if self.name.is_empty() {
             return Err("Give this connection a name.".into());
         }
@@ -382,6 +386,7 @@ impl Connection {
             &self.host,
             &self.group,
             &self.username,
+            &self.notes,
             self.protocol.label(),
         ]
         .iter()
@@ -407,6 +412,12 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Connection>, String> {
     })?;
     let mut ids = std::collections::HashSet::new();
     for c in &mut connections {
+        // CSV descriptions were kept as metadata before connections had notes.
+        if let Some(description) = c.metadata.remove("ConnectionDescription")
+            && c.notes.is_empty()
+        {
+            c.notes = description;
+        }
         c.validate()
             .map_err(|e| format!("Invalid saved connection: {e}"))?;
         if c.id == 0 || !ids.insert(c.id) {
@@ -499,6 +510,9 @@ mod tests {
         assert_eq!(c.address(), "[::1]:3389");
         assert!(c.matches("gateway"));
         assert!(c.matches("ssh"));
+        assert!(!c.matches("rack"));
+        c.notes = "Rack 4, ask Sam before rebooting".into();
+        assert!(c.matches("rack"));
         let json = serde_json::to_string(&c).unwrap();
         assert!(!json.contains("password"));
         assert_eq!(

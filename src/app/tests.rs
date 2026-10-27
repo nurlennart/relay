@@ -114,6 +114,45 @@ fn shortcut_help_respects_session_focus_and_open_editors() {
 }
 
 #[test]
+fn enter_in_notes_adds_a_line_and_notes_are_searchable() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let frame = |app: &mut App, events| {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1200., 800.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| app.editor(ctx),
+        );
+    };
+    app.modal = Modal::Editor(app.connections[0].clone());
+    frame(&mut app, vec![]);
+    ctx.memory_mut(|m| m.request_focus(egui::Id::new(editor::NOTES_ID)));
+    frame(&mut app, vec![egui::Event::Text("Rack 4".into())]);
+    frame(&mut app, vec![press(egui::Key::Enter)]);
+    frame(&mut app, vec![egui::Event::Text("UPS".into())]);
+    assert!(
+        matches!(&app.modal, Modal::Editor(c) if c.notes == "Rack 4\nUPS"),
+        "Enter in the notes saved or lost the line break"
+    );
+    ctx.memory_mut(|m| m.surrender_focus(egui::Id::new(editor::NOTES_ID)));
+    frame(&mut app, vec![press(egui::Key::Enter)]);
+    assert!(matches!(app.modal, Modal::None));
+    while app.pending.is_some() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        app.poll_storage();
+    }
+    assert_eq!(app.connections[0].notes, "Rack 4\nUPS");
+    app.query = "ups".into();
+    assert_eq!(app.filtered(), vec![0]);
+}
+
+#[test]
 fn search_enter_connects_the_top_match() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);

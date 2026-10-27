@@ -1,6 +1,8 @@
 //! The dialog that creates and edits a connection.
 use super::*;
 
+pub(super) const NOTES_ID: &str = "connection-notes";
+
 impl App {
     pub(super) fn editor(&mut self, ctx: &egui::Context) {
         let colors = theme::palette(ctx);
@@ -15,6 +17,7 @@ impl App {
             self.connections.iter().map(|c| c.group.clone()).collect();
         let fields_height = (ctx.content_rect().height() - 300.).max(200.);
         let parent = self.parent;
+        let mut notes_focused = false;
         dialog("edit-connection", ctx).show(ctx, |ui| {
             ui.set_width(440.);
             let title = if c.id == 0 {
@@ -116,6 +119,18 @@ impl App {
                             });
                         });
                     });
+                    labeled(ui, "Notes (optional)", |ui| {
+                        let notes = egui::TextEdit::multiline(&mut c.notes)
+                            .id(NOTES_ID.into())
+                            .hint_text(
+                                RichText::new("Searchable, e.g. who to ask before rebooting")
+                                    .weak(),
+                            )
+                            .margin(egui::Margin::symmetric(10, 6))
+                            .desired_rows(3)
+                            .desired_width(f32::INFINITY);
+                        notes_focused = ui.add(notes).has_focus();
+                    });
                     ui.add_space(2.);
                     ui.checkbox(&mut c.favorite, "Add to favorites");
                     // The optional settings start a section of their own.
@@ -160,7 +175,8 @@ impl App {
             self.modal = Modal::None;
             return;
         }
-        save |= enter;
+        // Enter starts a new line in the notes rather than saving.
+        save |= enter && !notes_focused;
         if save && let Err(e) = c.validate() {
             self.editor_error = e;
             save = false;
