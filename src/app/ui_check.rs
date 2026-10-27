@@ -375,4 +375,9 @@ fn files(app: &mut App) {
         browser,
         app.ctx.clone(),
     ));
+    // Show the library with the tabs open beside it.
+    if std::env::var_os("RELAY_UI_LIBRARY").is_some() {
+        app.active = None;
+        app.split = None;
+    }
 }

@@ -121,22 +121,7 @@ impl App {
                     if open > 0 {
                         summary.push_str(&format!(" · {open} open"));
                     }
-                    // One line of text, so the title and the smaller count share a baseline.
-                    let mut line = egui::text::LayoutJob::default();
-                    for part in [
-                        RichText::new(title).size(TITLE_SIZE).strong(),
-                        RichText::new(format!("  {summary}"))
-                            .size(12.)
-                            .color(colors.muted),
-                    ] {
-                        part.append_to(
-                            &mut line,
-                            ui.style(),
-                            egui::FontSelection::Default,
-                            Align::BOTTOM,
-                        );
-                    }
-                    ui.add(egui::Label::new(line).truncate());
+                    title_line(ui, title, &summary);
                 });
             });
         });
@@ -596,6 +581,48 @@ impl App {
     }
 }
 
+/// A view's title with its count beside it in smaller text, the two sharing a baseline.
+fn title_line(ui: &mut egui::Ui, title: &str, count: &str) {
+    let colors = theme::palette(ui.ctx());
+    let width = ui.available_width();
+    let galley = |ui: &egui::Ui, text: RichText, width: f32| {
+        egui::WidgetText::from(text).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            width.max(0.),
+            egui::TextStyle::Body,
+        )
+    };
+    let title = galley(ui, RichText::new(title).size(TITLE_SIZE).strong(), width);
+    let gap = 8.;
+    let count = galley(
+        ui,
+        RichText::new(count).size(12.).color(colors.muted),
+        width - title.size().x - gap,
+    );
+    // Where the first line's letters sit, from the top of a galley.
+    let baseline = |g: &egui::Galley| {
+        g.rows
+            .first()
+            .and_then(|row| row.row.glyphs.first().map(|glyph| row.pos.y + glyph.pos.y))
+            .unwrap_or(g.size().y)
+    };
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(
+            (title.size().x + gap + count.size().x).min(width),
+            title.size().y,
+        ),
+        Sense::hover(),
+    );
+    let top = rect.top();
+    let shift = baseline(&title) - baseline(&count);
+    let count_pos = egui::pos2(rect.left() + title.size().x + gap, top + shift);
+    ui.painter().galley(rect.left_top(), title, colors.text);
+    if count_pos.x < rect.right() {
+        ui.painter().galley(count_pos, count, colors.muted);
+    }
+}
+
 pub(super) const ROW: f32 = 40.;
 
 pub(super) const GAP: f32 = 16.;
@@ -639,7 +666,8 @@ pub(super) fn table_columns(width: f32) -> Vec<(Column, f32)> {
     if width >= 720. {
         columns.push((Column::Group, 0.24));
     }
-    columns.push((Column::Actions, 100.));
+    // More, Connect, and for SSH the file browser button.
+    columns.push((Column::Actions, 130.));
     let fixed: f32 = columns.iter().filter(|c| c.1 > 1.).map(|c| c.1).sum();
     let weights: f32 = columns.iter().filter(|c| c.1 <= 1.).map(|c| c.1).sum();
     let flexible = (width - fixed - GAP * (columns.len() - 1) as f32).max(120.);
