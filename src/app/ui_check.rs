@@ -351,6 +351,17 @@ fn files(app: &mut App) {
                 "relay-0.4.0.tar.gz".into(),
             ]));
         }
+        // A queue longer than its share of the tab, which scrolls.
+        Ok("queue") => {
+            for n in 1..=8 {
+                browser.demo_transfer(
+                    &format!("build-{n:02}.log"),
+                    Direction::Download,
+                    n * 40_000,
+                    400_000,
+                );
+            }
+        }
         Ok("password") => browser.demo_prompt(
             "deploy@build.example.com's password:",
             crate::askpass::Kind::Secret,

@@ -7,13 +7,16 @@ use crate::sftp::{
 };
 use egui::{Align, Layout, Margin, Rect, Sense, UiBuilder};
 
-/// The height of a row in the listing and in the transfer queue.
+/// The height of a row in the listing.
 const FILE_ROW: f32 = 30.;
 
 /// The height of fields and buttons in the bars above the listing.
 const BAR_CONTROL: f32 = 28.;
 
-/// Rows of the transfer queue shown before it scrolls.
+/// The height of a row in the transfer queue: name and status, progress, destination.
+const TRANSFER_ROW: f32 = 46.;
+
+/// Rows of the transfer queue shown before it scrolls, when the tab has room for them.
 const TRANSFER_ROWS: usize = 4;
 
 /// Items dragged in a listing, which can be dropped on a folder to move them there.
@@ -184,7 +187,8 @@ fn browser(
             }
             if !files.transfers.is_empty() {
                 ui.add_space(20.);
-                transfers(ui, files);
+                let height = ui.available_height() - 60.;
+                transfers(ui, files, height);
             }
             return;
         }
@@ -214,15 +218,22 @@ fn browser(
             .layout(Layout::top_down(Align::LEFT)),
     );
     let target = table(&mut top, files, key, &names, listing.height(), actions);
+    // Not bounded below, so it takes the height it wants and the next frame makes room.
     let mut below = ui.new_child(
         UiBuilder::new()
-            .max_rect(Rect::from_min_max(egui::pos2(full.left(), split), full.max))
+            .max_rect(Rect::from_min_max(
+                egui::pos2(full.left(), split),
+                egui::pos2(full.right(), split + full.height()),
+            ))
             .layout(Layout::top_down(Align::LEFT)),
     );
     status_bar(&mut below, files, &names);
     if !files.transfers.is_empty() {
         below.add_space(2.);
-        transfers(&mut below, files);
+        // At most a third of the tab, so a long queue scrolls instead of crowding out the
+        // listing.
+        let height = (full.height() / 3.).max(TRANSFER_ROW * 1.5);
+        transfers(&mut below, files, height);
     }
     let used = below.min_rect().height();
     if (used - bottom).abs() > 0.5 {
@@ -1317,8 +1328,8 @@ fn status_bar(ui: &mut egui::Ui, files: &mut Browser, names: &[String]) {
     });
 }
 
-/// The queue of uploads and downloads, newest last.
-fn transfers(ui: &mut egui::Ui, files: &mut Browser) {
+/// The queue of uploads and downloads, newest last, scrolling past `max_height` of rows.
+fn transfers(ui: &mut egui::Ui, files: &mut Browser, max_height: f32) {
     let colors = theme::palette(ui.ctx());
     let active = files.active_transfers();
     let failed = files
@@ -1366,7 +1377,7 @@ fn transfers(ui: &mut egui::Ui, files: &mut Browser) {
             });
             egui::ScrollArea::vertical()
                 .id_salt("files-transfers")
-                .max_height(FILE_ROW * TRANSFER_ROWS as f32)
+                .max_height((TRANSFER_ROW * TRANSFER_ROWS as f32).min(max_height))
                 .auto_shrink([false, true])
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
@@ -1391,88 +1402,154 @@ enum TransferAction {
     Replace,
 }
 
+/// One transfer on two lines: the name with its status, a progress bar beneath while it
+/// runs, and where it goes. The full paths show on hover.
 fn transfer_row(ui: &mut egui::Ui, t: &Transfer, actions: &mut Vec<(u64, TransferAction)>) {
     let colors = theme::palette(ui.ctx());
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, FILE_ROW), Sense::hover());
-    let mut row = ui.new_child(
-        UiBuilder::new()
-            .max_rect(rect)
-            .layout(Layout::left_to_right(Align::Center)),
-    );
-    row.spacing_mut().item_spacing.x = 8.;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, TRANSFER_ROW), Sense::hover());
     let (icon, verb) = match t.direction {
         Direction::Upload => (Icon::Upload, "Upload to"),
         Direction::Download => (Icon::Download, "Download to"),
     };
-    let (icon_rect, _) = row.allocate_exact_size(Vec2::splat(16.), Sense::hover());
     let tint = match &t.state {
         TransferState::Done => colors.accent,
-        TransferState::Stopped(Failure::Error(_)) => row.visuals().error_fg_color,
-        TransferState::Stopped(Failure::Exists(_)) => row.visuals().warn_fg_color,
+        TransferState::Stopped(Failure::Error(_)) => ui.visuals().error_fg_color,
+        TransferState::Stopped(Failure::Exists(_)) => ui.visuals().warn_fg_color,
         _ => colors.muted,
     };
-    icons::paint_sized(row.painter(), icon, icon_rect.center(), ICON_SIZE, tint);
-    // Buttons and status sit at the right; the name and progress share what is left.
-    let (status, color) = transfer_status(&row, t);
-    row.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        match &t.state {
-            TransferState::Queued | TransferState::Running => {
-                if icon_button(ui, Icon::Close, 22., "Cancel").clicked() {
-                    actions.push((t.id, TransferAction::Cancel));
-                }
+    icons::paint_sized(
+        ui.painter(),
+        icon,
+        egui::pos2(rect.left() + 8., rect.center().y),
+        ICON_SIZE,
+        tint,
+    );
+    // The button sits at the right, centered on the row; a finished transfer keeps an
+    // empty slot the size of the cancel button, so the statuses line up.
+    let mut buttons = ui.new_child(
+        UiBuilder::new()
+            .max_rect(Rect::from_min_max(
+                egui::pos2(rect.right() - 120., rect.top()),
+                rect.max,
+            ))
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    match &t.state {
+        TransferState::Queued | TransferState::Running => {
+            if icon_button(&mut buttons, Icon::Close, 22., "Cancel").clicked() {
+                actions.push((t.id, TransferAction::Cancel));
             }
-            TransferState::Stopped(Failure::Exists(_)) => {
-                if ui.small_button("Replace").clicked() {
-                    actions.push((t.id, TransferAction::Replace));
-                }
-            }
-            TransferState::Stopped(_) => {
-                if ui.small_button("Retry").clicked() {
-                    actions.push((t.id, TransferAction::Retry));
-                }
-            }
-            TransferState::Done => {}
         }
-        let status_width = (ui.available_width() * 0.42).clamp(90., 300.);
-        let (cell, response) =
-            ui.allocate_exact_size(Vec2::new(status_width, FILE_ROW), Sense::hover());
-        cell_text(
+        TransferState::Stopped(Failure::Exists(_)) => {
+            if buttons.small_button("Replace").clicked() {
+                actions.push((t.id, TransferAction::Replace));
+            }
+        }
+        TransferState::Stopped(_) => {
+            if buttons.small_button("Retry").clicked() {
+                actions.push((t.id, TransferAction::Retry));
+            }
+        }
+        TransferState::Done => {
+            buttons.allocate_exact_size(Vec2::splat(22.), Sense::hover());
+        }
+    }
+    let right = buttons.min_rect().left() - 10.;
+    let column = Rect::from_min_max(
+        egui::pos2(rect.left() + 24., rect.top()),
+        egui::pos2(right, rect.bottom()),
+    );
+    if column.width() <= 0. {
+        return;
+    }
+    let line = |center: f32, height: f32| {
+        Rect::from_center_size(
+            egui::pos2(column.center().x, rect.top() + center),
+            Vec2::new(column.width(), height),
+        )
+    };
+    let (first, bar, second) = (line(13., 18.), line(26., 4.), line(37., 14.));
+    // The status keeps its full width up to most of the line; the name takes the rest.
+    let (status, color) = transfer_status(ui, t);
+    let status_galley = egui::WidgetText::from(RichText::new(&status).size(12.).color(color))
+        .into_galley(
             ui,
-            cell,
-            cell.left(),
-            cell.width(),
-            RichText::new(&status).size(12.).color(color),
-            true,
+            Some(egui::TextWrapMode::Truncate),
+            column.width() * 0.6,
+            egui::TextStyle::Body,
         );
-        response.on_hover_text(&status);
-        if let (TransferState::Running | TransferState::Queued, Some(fraction)) =
-            (&t.state, t.fraction())
-        {
-            ui.add(
-                egui::ProgressBar::new(fraction)
-                    .desired_width(ui.available_width().min(140.) - 8.)
-                    .desired_height(6.)
-                    .fill(colors.accent)
-                    .corner_radius(3),
-            );
-        } else if t.state == TransferState::Running {
-            ui.add(egui::Spinner::new().size(14.));
-        }
-        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-            let (cell, response) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), FILE_ROW), Sense::hover());
-            cell_text(
+    let status_width = status_galley.size().x;
+    ui.painter().galley(
+        egui::pos2(
+            first.right() - status_width,
+            first.center().y - status_galley.size().y / 2.,
+        ),
+        status_galley,
+        colors.text,
+    );
+    cell_text(
+        ui,
+        first,
+        first.left(),
+        first.width() - status_width - 12.,
+        RichText::new(&t.name).size(13.),
+        false,
+    );
+    if let (TransferState::Running | TransferState::Queued, Some(fraction)) =
+        (&t.state, t.fraction())
+    {
+        // In a child, so the row's layout keeps its place below the whole row.
+        ui.new_child(UiBuilder::new().max_rect(bar)).add(
+            egui::ProgressBar::new(fraction)
+                .desired_height(bar.height())
+                .fill(colors.accent)
+                .corner_radius(2),
+        );
+    }
+    let small = |text: String| RichText::new(text).size(11.5).color(colors.muted);
+    let destination = fit_path(ui, verb, &t.destination, second.width(), small);
+    cell_text(
+        ui,
+        second,
+        second.left(),
+        second.width(),
+        destination,
+        false,
+    );
+    let (from, to) = t.paths();
+    response.on_hover_text(format!("{status}\n\nFrom  {from}\nTo  {to}"));
+}
+
+/// "`verb` `path`" styled by `style`, with the start of the path dropped as needed to fit
+/// `width`: the folders nearest the item say the most about where it goes.
+fn fit_path(
+    ui: &egui::Ui,
+    verb: &str,
+    path: &str,
+    width: f32,
+    style: impl Fn(String) -> RichText,
+) -> RichText {
+    let fits = |text: &RichText| {
+        egui::WidgetText::from(text.clone())
+            .into_galley(
                 ui,
-                cell,
-                cell.left(),
-                cell.width(),
-                RichText::new(&t.name).size(13.),
-                false,
-            );
-            response.on_hover_text(format!("{verb} {}", t.destination));
-        });
-    });
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Body,
+            )
+            .size()
+            .x
+            <= width
+    };
+    let mut text = style(format!("{verb} {path}"));
+    for (index, _) in path.char_indices().skip(1) {
+        if fits(&text) {
+            break;
+        }
+        text = style(format!("{verb} …{}", &path[index..]));
+    }
+    text
 }
 
 /// What a transfer is doing, in words, and the color to show it in.

@@ -196,6 +196,14 @@ impl Transfer {
         }
     }
 
+    /// The full paths it copies from and to, for display.
+    pub fn paths(&self) -> (String, String) {
+        match &self.job {
+            Job::Upload { local, remote, .. } => (local.display().to_string(), remote.clone()),
+            Job::Download { remote, local, .. } => (remote.clone(), local.display().to_string()),
+        }
+    }
+
     /// Bytes per second since the transfer started.
     pub fn rate(&self) -> Option<f64> {
         let seconds = self.started?.elapsed().as_secs_f64();
@@ -430,16 +438,25 @@ impl Browser {
     /// Adds a transfer as if it were under way, for rendering checks.
     #[cfg(feature = "ui-check")]
     pub fn demo_transfer(&mut self, name: &str, direction: Direction, done: u64, total: u64) {
-        let id = self.queue(
-            Job::Download {
-                remote: join(&self.path, name),
-                local: PathBuf::from(name),
-                replace: false,
-            },
-            direction,
-            name.into(),
-            "~/Downloads".into(),
-        );
+        let (job, destination) = match direction {
+            Direction::Download => (
+                Job::Download {
+                    remote: join(&self.path, name),
+                    local: Path::new("~/Downloads").join(name),
+                    replace: false,
+                },
+                "~/Downloads".into(),
+            ),
+            Direction::Upload => (
+                Job::Upload {
+                    local: Path::new("~/Projects/relay").join(name),
+                    remote: join(&self.path, name),
+                    replace: false,
+                },
+                self.path.clone(),
+            ),
+        };
+        let id = self.queue(job, direction, name.into(), destination);
         let transfer = self.transfers.iter_mut().find(|t| t.id == id).unwrap();
         transfer.total = Some(total);
         transfer.done = done;
