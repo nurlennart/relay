@@ -31,6 +31,7 @@ impl App {
                             let mut dragging = None;
                             let mut dropped = None;
                             let mut close = None;
+                            let mut reconnect = None;
                             for (index, s) in self.sessions.iter().enumerate() {
                                 ui.push_id(index, |ui| {
                                     let session = session_tab(
@@ -70,6 +71,14 @@ impl App {
                                         close = Some(index);
                                     }
                                     session.inner.0.context_menu(|ui| {
+                                        // A session can look open after its network went away,
+                                        // so reconnecting is offered whenever it has connected.
+                                        if s.tab_state() != session::TabState::Waiting
+                                            && ui.button("Reconnect").clicked()
+                                        {
+                                            reconnect = Some(index);
+                                            ui.close();
+                                        }
                                         let beside = self.split == Some(index);
                                         let other =
                                             self.active.is_some_and(|a| a != index) && !detached;
@@ -103,6 +112,9 @@ impl App {
                             }
                             if let Some(index) = split_with {
                                 self.split_with(index);
+                            }
+                            if let Some(index) = reconnect {
+                                self.reconnect(index);
                             }
                             if let Some(index) = close {
                                 self.request_close(index);

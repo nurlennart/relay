@@ -1016,3 +1016,60 @@ fn number_shortcuts_switch_tabs_from_the_library() {
     frame(&mut app, egui::Key::Num9);
     assert_eq!(app.active, Some(2), "Ctrl+9 is the last tab");
 }
+
+#[test]
+fn connected_tabs_offer_reconnect_from_their_menu() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut app = test_app(&ctx);
+    let mut c = app.connections[0].clone();
+    c.protocol = Protocol::Ssh;
+    let browser = crate::sftp::Browser::demo("/srv", vec![]);
+    app.sessions
+        .push(session::Session::demo_files(c, browser, ctx.clone()));
+    let c = app.connections[1].clone();
+    app.sessions
+        .push(session::Session::restored(c, false, ctx.clone()));
+    let frame = |app: &mut App, events| {
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1200., 800.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| app.tabs(ctx),
+        );
+        let update = output.platform_output.accesskit_update.unwrap();
+        (update.nodes.iter()).any(|(_, node)| node.label() == Some("Reconnect"))
+    };
+    let tab_center = |app: &mut App, name: &str| {
+        let output = ctx.run(Default::default(), |ctx| app.tabs(ctx));
+        let update = output.platform_output.accesskit_update.unwrap();
+        let (_, node) = (update.nodes.iter())
+            .find(|(_, node)| node.label() == Some(name))
+            .unwrap();
+        let b = node.bounds().unwrap();
+        egui::pos2(((b.x0 + b.x1) / 2.) as f32, ((b.y0 + b.y1) / 2.) as f32)
+    };
+    // A right click opens the tab's menu, which offers reconnecting only after connecting.
+    let offered = |app: &mut App, name: &str| {
+        let pos = tab_center(app, name);
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(app, vec![egui::Event::PointerMoved(pos)]);
+        frame(app, vec![button(true)]);
+        frame(app, vec![button(false)]);
+        let shown = frame(app, vec![]);
+        frame(app, vec![press(egui::Key::Escape)]);
+        shown
+    };
+    assert!(offered(&mut app, "Alpha"));
+    assert!(!offered(&mut app, "Bravo"));
+}

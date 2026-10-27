@@ -45,7 +45,7 @@ Open **Settings → Keyboard shortcuts**, or press `F1` while Relay has keyboard
 - The **Library** tab returns to the list while sessions stay open.
 - Closing a tab with a connected session, or quitting with active sessions, asks for confirmation. Tabs whose session has ended, or that have not connected yet, close right away.
 - The **···** menu edits, duplicates, copies the address of, or deletes a profile. Changes apply to future connections. The editor suggests existing groups.
-- **Split view:** right-click a tab and choose **Open beside current tab**, or press `Ctrl+\` to pair the current tab with its neighbour. Drag the divider to resize; selecting the right-hand tab swaps the sides. **Move to new window** in the same menu detaches a session into its own window; its tab brings the window forward, and **Back to tabs** or closing the window returns it.
+- **Split view:** right-click a tab and choose **Open beside current tab**, or press `Ctrl+\` to pair the current tab with its neighbour. Drag the divider to resize; selecting the right-hand tab swaps the sides. **Move to new window** in the same menu detaches a session into its own window; its tab brings the window forward, and **Back to tabs** or closing the window returns it. **Reconnect** in the same menu restarts a session in place, for example after a VPN change left it hanging.
 
 ### Where Relay keeps data
 
