@@ -32,6 +32,11 @@ pub fn seed(app: &mut App) {
     if std::env::var_os("RELAY_UI_SETTINGS").is_some() {
         app.modal = Modal::Settings;
     }
+    match std::env::var("RELAY_UI_FILTER").as_deref() {
+        Ok("favorites") => app.filter = Filter::Favorites,
+        Ok("recent") => app.filter = Filter::Recent,
+        _ => {}
+    }
     if let Ok(query) = std::env::var("RELAY_UI_QUERY") {
         app.query = query;
     }
@@ -85,6 +90,11 @@ pub fn seed(app: &mut App) {
         ssh: Default::default(),
     })
     .collect();
+    if std::env::var_os("RELAY_UI_NO_FAVORITES").is_some() {
+        for c in &mut app.connections {
+            c.favorite = false;
+        }
+    }
     if std::env::var_os("RELAY_UI_EMPTY").is_some() {
         app.connections.clear();
     }
@@ -115,6 +125,10 @@ git pull && ./deploy.sh",
         let mut terminal = crate::terminal::Terminal::demo(TRANSCRIPT);
         if std::env::var_os("RELAY_UI_SELECTION").is_some() {
             terminal.select((13, 0), (15, 40));
+        }
+        if std::env::var_os("RELAY_UI_ENDED").is_some() {
+            terminal.ended = true;
+            terminal.exit_code = Some(0);
         }
         app.sessions.push(session::Session::demo(
             connection,

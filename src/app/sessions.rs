@@ -164,27 +164,6 @@ impl App {
         ui.horizontal(|ui| {
             ui.set_min_height(26.);
             ui.spacing_mut().button_padding = Vec2::new(10., 3.);
-            let (icon, _) = ui.allocate_exact_size(Vec2::splat(16.), egui::Sense::hover());
-            icons::paint(
-                ui.painter(),
-                if s.browsing {
-                    Icon::Folder
-                } else {
-                    Icon::protocol(s.connection.protocol)
-                },
-                icon.center(),
-                match s.connection.protocol {
-                    Protocol::Rdp => colors.rdp,
-                    Protocol::Ssh => colors.accent,
-                },
-            );
-            ui.label(RichText::new(&s.connection.name).size(14.).strong());
-            ui.label(
-                RichText::new(s.connection.address())
-                    .monospace()
-                    .size(12.)
-                    .color(colors.muted),
-            );
             let desktop = s.has_desktop();
             // Quick connections are not in the library until saved.
             let unsaved = s.connection.id == 0
@@ -252,6 +231,37 @@ impl App {
                         .color(colors.muted),
                     );
                 }
+                // The name and address take the room the buttons leave, shortened to fit.
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let (icon, _) = ui.allocate_exact_size(Vec2::splat(16.), egui::Sense::hover());
+                    icons::paint(
+                        ui.painter(),
+                        if s.browsing {
+                            Icon::Folder
+                        } else {
+                            Icon::protocol(s.connection.protocol)
+                        },
+                        icon.center(),
+                        match s.connection.protocol {
+                            Protocol::Rdp => colors.rdp,
+                            Protocol::Ssh => colors.accent,
+                        },
+                    );
+                    ui.add(
+                        egui::Label::new(RichText::new(&s.connection.name).size(14.).strong())
+                            .truncate(),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(s.connection.address())
+                                .monospace()
+                                .size(12.)
+                                .color(colors.muted),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(s.connection.address());
+                });
             });
         });
         if full_screen && let Err(e) = self.sessions[index].enter_full_screen() {
