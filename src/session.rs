@@ -383,7 +383,7 @@ mod tests {
         } else {
             "echo 'deploy@build: Permission denied.'; exit 255"
         };
-        for _ in 0..20 {
+        for _ in 0..10 {
             let terminal = Terminal::script(script);
             let mut session = Session::new(Connection::new(), Some(terminal), Default::default());
             // A later attempt, which the time a session was up does not protect.

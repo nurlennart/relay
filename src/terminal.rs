@@ -12,9 +12,9 @@ use std::{
 
 /// How much of the latest output is kept as it arrived, for ssh's parting words.
 const TAIL: usize = 4096;
-/// How long after the process exits its output is awaited, where the pseudo-terminal does
-/// not report its end (as on Windows).
-const DRAIN_WAIT: Duration = Duration::from_secs(2);
+/// Where the pseudo-terminal does not report the end of the output (as on Windows), the
+/// output of an exited process is complete once none has arrived for this long.
+const QUIET: Duration = Duration::from_millis(250);
 
 pub struct Terminal {
     pub parser: Arc<Mutex<vt100::Parser<Replies>>>,
@@ -30,8 +30,8 @@ pub struct Terminal {
     started: Instant,
     /// When the process was seen to exit.
     exited: Option<Instant>,
-    /// The latest output as received, before the screen interprets it.
-    tail: Arc<Mutex<Vec<u8>>>,
+    /// The latest output as received, before the screen interprets it, and when it arrived.
+    tail: Arc<Mutex<(Vec<u8>, Instant)>>,
     /// Whether all output has been read.
     drained: Arc<AtomicBool>,
     /// A mouse selection between two visible cells, in drag order.
@@ -130,7 +130,7 @@ impl Terminal {
         )));
         let output = parser.clone();
         let replies = writer.clone();
-        let tail = Arc::new(Mutex::new(Vec::new()));
+        let tail = Arc::new(Mutex::new((Vec::new(), Instant::now())));
         let drained = Arc::new(AtomicBool::new(false));
         let (received, done) = (tail.clone(), drained.clone());
         std::thread::spawn(move || {
@@ -150,9 +150,10 @@ impl Terminal {
                     }
                     Ok(n) => {
                         if let Ok(mut tail) = received.lock() {
-                            tail.extend_from_slice(&bytes[..n]);
-                            let excess = tail.len().saturating_sub(TAIL);
-                            tail.drain(..excess);
+                            let (latest, at) = &mut *tail;
+                            latest.extend_from_slice(&bytes[..n]);
+                            latest.drain(..latest.len().saturating_sub(TAIL));
+                            *at = Instant::now();
                         }
                         if let Ok(mut parser) = output.lock() {
                             parser.process(&bytes[..n]);
@@ -244,14 +245,15 @@ impl Terminal {
 
     /// Whether the ended process's output has all arrived, or has had time to.
     pub fn output_complete(&self) -> bool {
+        let quiet = self.tail.lock().unwrap().1.elapsed() >= QUIET;
         self.drained.load(Ordering::Acquire)
-            || self.exited.is_some_and(|at| at.elapsed() >= DRAIN_WAIT)
+            || self.exited.is_some_and(|at| at.elapsed() >= QUIET) && quiet
     }
 
     /// The last `n` lines of output with text, oldest first, such as ssh's parting words. They
     /// come from the output as received, so a cleared or redrawn screen does not hide them.
     pub fn last_lines(&self, n: usize) -> Vec<String> {
-        plain_lines(&self.tail.lock().unwrap(), n)
+        plain_lines(&self.tail.lock().unwrap().0, n)
     }
 
     /// Focuses the terminal the next time it is shown.
