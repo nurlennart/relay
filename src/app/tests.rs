@@ -763,3 +763,35 @@ fn shared_library_syncs_silently() {
     assert!(app.notice.is_none() && app.error.is_none());
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn search_clear_button_empties_the_search() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    library_frame(&mut app, &ctx, vec![]);
+    let clear_id = egui::Id::new("library-search").with("clear");
+    assert!(
+        ctx.read_response(clear_id).is_none(),
+        "clear shown while empty"
+    );
+    app.query = "ch".into();
+    library_frame(&mut app, &ctx, vec![]);
+    let at = ctx
+        .read_response(clear_id)
+        .expect("no clear button")
+        .rect
+        .center();
+    let click = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    library_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(at)]);
+    library_frame(&mut app, &ctx, vec![click(true)]);
+    library_frame(&mut app, &ctx, vec![click(false)]);
+    library_frame(&mut app, &ctx, vec![]);
+    assert!(app.query.is_empty());
+    assert_eq!(app.filtered().len(), 3);
+    assert!(ctx.memory(|m| m.has_focus(egui::Id::new("library-search"))));
+}

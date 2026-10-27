@@ -163,14 +163,15 @@ pub(super) fn search_field(
 ) -> egui::Response {
     let colors = theme::palette(ui.ctx());
     let empty = value.is_empty();
-    let response = ui.add_sized(
+    let mut response = ui.add_sized(
         [width, CONTROL_HEIGHT],
         egui::TextEdit::singleline(value)
             // Weak text takes the placeholder color, which the theme's text color would override.
             .hint_text(RichText::new(hint).weak())
             .margin(egui::Margin {
                 left: 30,
-                right: 10,
+                // Typed text stops short of the clear button.
+                right: if empty { 10 } else { 30 },
                 top: 6,
                 bottom: 6,
             })
@@ -193,6 +194,35 @@ pub(super) fn search_field(
             egui::FontId::proportional(11.),
             colors.muted,
         );
+    }
+    // A clear button mirrors the search icon at the other end once something is typed.
+    if !value.is_empty() {
+        let center = egui::pos2(rect.right() - 16., rect.center().y);
+        let clear = ui
+            .interact(
+                egui::Rect::from_center_size(center, Vec2::splat(20.)),
+                id.with("clear"),
+                egui::Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Clear");
+        clear.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Clear"));
+        if clear.hovered() {
+            ui.painter().circle_filled(center, 10., colors.hover);
+        }
+        let color = if clear.hovered() {
+            colors.text
+        } else {
+            colors.muted
+        };
+        icons::paint_sized(ui.painter(), icons::Icon::Close, center, 14., color);
+        if clear.clicked() {
+            value.clear();
+            response.mark_changed();
+            // Keep typing in the field rather than wherever the click left focus.
+            response.request_focus();
+            ui.ctx().request_repaint();
+        }
     }
     response
 }
