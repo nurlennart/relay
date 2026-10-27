@@ -304,6 +304,15 @@ impl Connection {
             ..Self::default()
         }
     }
+    /// Moves a CSV description kept as metadata, before connections had notes, into the notes.
+    pub fn adopt_description(&mut self) {
+        if let Some(description) = self.metadata.remove("ConnectionDescription")
+            && self.notes.is_empty()
+        {
+            self.notes = description;
+        }
+    }
+
     pub fn validate(&mut self) -> Result<(), String> {
         self.name = self.name.trim().into();
         self.host = self.host.trim().into();
@@ -491,12 +500,7 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Connection>, String> {
     })?;
     let mut ids = std::collections::HashSet::new();
     for c in &mut connections {
-        // CSV descriptions were kept as metadata before connections had notes.
-        if let Some(description) = c.metadata.remove("ConnectionDescription")
-            && c.notes.is_empty()
-        {
-            c.notes = description;
-        }
+        c.adopt_description();
         c.validate()
             .map_err(|e| format!("Invalid saved connection: {e}"))?;
         if c.id == 0 || !ids.insert(c.id) {

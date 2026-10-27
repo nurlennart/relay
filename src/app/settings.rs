@@ -13,7 +13,7 @@ impl App {
         let mut close = false;
         let mut manage = false;
         let mut import = None;
-        let mut export = false;
+        let mut export = None;
         let mut recovery = false;
         let mut copied_version = None;
         let mut shortcuts = false;
@@ -130,7 +130,10 @@ impl App {
                     ui.separator();
                     section_label(ui, "IMPORT & EXPORT");
                     ui.label(
-                        RichText::new("Bring in connections from CSV, your SSH config, or .rdp files. Export as CSV.")
+                        RichText::new(
+                            "Bring in connections from CSV, your SSH config, .rdp files, or a Relay \
+                             JSON file. JSON keeps every setting; CSV suits other tools.",
+                        )
                             .color(colors.muted),
                     );
                     ui.add_space(4.);
@@ -149,13 +152,32 @@ impl App {
                             }
                         });
                     });
-                    ui.horizontal(|ui| {
-                        ui.add_enabled_ui(idle, |ui| {
+                    ui.add_enabled_ui(idle, |ui| {
+                        ui.horizontal(|ui| {
                             if outline_button(ui, "Import .rdp files", button_width).clicked() {
                                 import = Some(Source::RdpFiles);
                             }
+                            if outline_button(ui, "Import JSON", button_width)
+                                .on_hover_text("A Relay JSON export, or a connections.json library")
+                                .clicked()
+                            {
+                                import = Some(Source::Json);
+                            }
                         });
-                        export = outline_button(ui, "Export CSV", button_width).clicked();
+                    });
+                    ui.horizontal(|ui| {
+                        if outline_button(ui, "Export JSON", button_width)
+                            .on_hover_text("Every setting, including SSH and remote desktop options")
+                            .clicked()
+                        {
+                            export = Some(file_dialog::Kind::ExportJson);
+                        }
+                        if outline_button(ui, "Export CSV", button_width)
+                            .on_hover_text("Without SSH and remote desktop options")
+                            .clicked()
+                        {
+                            export = Some(file_dialog::Kind::ExportCsv);
+                        }
                     });
                     if self.recovery.is_some() {
                         recovery = ui.button("Export unsaved changes").clicked();
@@ -215,13 +237,14 @@ impl App {
             Some(Source::Csv) => self.import_csv(),
             Some(Source::SshConfig) => self.import_ssh_config(),
             Some(Source::RdpFiles) => self.import_rdp_files(),
+            Some(Source::Json) => self.import_json(),
             None => {}
         }
-        if export {
-            self.export_csv(false);
+        if let Some(kind) = export {
+            self.export(kind, false);
         }
         if recovery {
-            self.export_csv(true);
+            self.export(file_dialog::Kind::ExportJson, true);
         }
     }
 
@@ -476,6 +499,7 @@ pub(super) enum Source {
     Csv,
     SshConfig,
     RdpFiles,
+    Json,
 }
 
 /// Relay's version, with the commit it was built from when that is known, such as

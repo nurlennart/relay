@@ -144,6 +144,17 @@ impl App {
         }
     }
 
+    /// Imports a Relay JSON export or a personal library file for review.
+    pub(super) fn import_json(&mut self) {
+        for s in &mut self.sessions {
+            s.place(None);
+        }
+        if let Some(path) = file_dialog::choose(self.parent, file_dialog::Kind::ImportJson).first()
+        {
+            self.review(json_io::read(path, &self.connections));
+        }
+    }
+
     /// Imports the user's OpenSSH configuration for review.
     pub(super) fn import_ssh_config(&mut self) {
         match import::ssh_config_path() {
@@ -190,20 +201,29 @@ impl App {
         }
     }
 
-    pub(super) fn export_csv(&mut self, recovery: bool) {
+    /// Exports the library as CSV, or as JSON with every setting (`Kind::ExportJson`).
+    /// Unsaved changes are always exported as JSON, so nothing in them is lost.
+    pub(super) fn export(&mut self, kind: file_dialog::Kind, recovery: bool) {
         for s in &mut self.sessions {
             s.place(None);
         }
-        if let Some(path) = file_dialog::choose(self.parent, file_dialog::Kind::ExportCsv)
-            .into_iter()
-            .next()
-        {
+        let kind = if recovery {
+            file_dialog::Kind::ExportJson
+        } else {
+            kind
+        };
+        if let Some(path) = file_dialog::choose(self.parent, kind).into_iter().next() {
             let connections = if recovery {
                 self.recovery.as_deref().unwrap_or(&self.connections)
             } else {
                 &self.connections
             };
-            match csv_io::export(&path, connections) {
+            let written = if kind == file_dialog::Kind::ExportJson {
+                json_io::export(&path, connections)
+            } else {
+                csv_io::export(&path, connections)
+            };
+            match written {
                 Ok(()) => {
                     let text = format!(
                         "Exported {} connections to {}",
@@ -437,7 +457,7 @@ impl App {
             let mut cancel = false;
             dialog("import", ctx).show(ctx, |ui| {
                 ui.set_width(dialog_width(ctx, 680.));
-                ui.heading("Review CSV import");
+                ui.heading("Review import");
                 ui.label(
                     RichText::new(format!(
                         "{}, into the {}",

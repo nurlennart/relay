@@ -7,6 +7,7 @@ mod csv_io;
 mod database;
 mod file_dialog;
 mod import;
+mod json_io;
 mod model;
 mod platform;
 mod rdp;

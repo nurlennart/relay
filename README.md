@@ -63,13 +63,15 @@ The personal library is `connections.json` in that folder. Writes use atomic rep
 
 **Settings → Import .rdp files** accepts one or more Remote Desktop files (UTF-16 or UTF-8) and maps the address, user, RD Gateway, redirections, audio, keyboard and resolution settings.
 
+**Settings → Export JSON** writes the whole library in Relay's own format, which keeps every setting, including SSH and remote desktop options; use it for backups and for moving connections between libraries. **Settings → Import JSON** reads such a file, or a personal library's `connections.json`. A file from a newer Relay is refused rather than partly read.
+
 Every import shows a review before anything is saved, skips duplicates, and lists skipped entries with reasons.
 
 Open **Settings → Import CSV** and review the preview before committing. The importer supports the full export schema (see [tests/fixtures/export-sample.csv](tests/fixtures/export-sample.csv)), including semicolon delimiters, quoted fields, UTF-8, UTF-16, and Windows-1252. A simpler `Name,Host,Protocol,Port,Username,Group,Favorite` schema also works. Blank ports use protocol defaults. Blank destinations fall back to `ConnectionIpAddress`.
 
 RDP and SSH records can be imported; VNC and other protocols are listed as unsupported in the preview. Duplicates are skipped using source IDs, or an endpoint/name/group identity when an ID is absent. Existing profiles are not modified by import.
 
-**Settings → Export CSV** writes the whole current library as semicolon-delimited CSV. Descriptions become connection notes, and other known source metadata (external ID, image ID, URL, IP/MAC, and custom fields) is retained; credential columns are not imported. Cells starting with spreadsheet formula characters (`= + - @`, tab, carriage return) are prefixed with an apostrophe for safety. Relay removes that prefix on reimport, so exported values round-trip exactly. Exports replace files atomically after the save dialog confirms an overwrite.
+**Settings → Export CSV** writes the whole current library as semicolon-delimited CSV, for other tools; it leaves out SSH and remote desktop options. Descriptions become connection notes, and other known source metadata (external ID, image ID, URL, IP/MAC, and custom fields) is retained; credential columns are not imported. Cells starting with spreadsheet formula characters (`= + - @`, tab, carriage return) are prefixed with an apostrophe for safety. Relay removes that prefix on reimport, so exported values round-trip exactly. Exports replace files atomically after the save dialog confirms an overwrite.
 
 ## Shared team libraries
 
@@ -119,7 +121,7 @@ SQLite uses rollback journaling, full synchronization, a five-second busy timeou
 
 ### Concurrent edits
 
-A shared library reloads quietly every minute and when Relay's window regains focus, so teammates' changes appear on their own; **Refresh** loads them right away. Shared saves compare the revision read by your client and reject stale updates. Saving a connection applies only the fields you changed, so a teammate's edits to its other fields while the editor was open are kept. If you both changed the same field, or they deleted the connection, the editor says so, and saving again keeps your version. Failed changes remain in memory with **Export unsaved changes** available. Export, refresh, and reapply deliberately. Quitting warns if unsaved changes remain. Database operations run off the UI thread; MSSQL and MySQL operations have a 15-second timeout. If a save times out, refresh before retrying because the server may have committed it.
+A shared library reloads quietly every minute and when Relay's window regains focus, so teammates' changes appear on their own; **Refresh** loads them right away. Shared saves compare the revision read by your client and reject stale updates. Saving a connection applies only the fields you changed, so a teammate's edits to its other fields while the editor was open are kept. If you both changed the same field, or they deleted the connection, the editor says so, and saving again keeps your version. Failed changes remain in memory with **Export unsaved changes** available, which writes them as JSON so no setting is lost. Export, refresh, and reapply deliberately. Quitting warns if unsaved changes remain. Database operations run off the UI thread; MSSQL and MySQL operations have a 15-second timeout. If a save times out, refresh before retrying because the server may have committed it.
 
 ## Sessions
 

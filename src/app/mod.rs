@@ -16,7 +16,7 @@ mod ui_check;
 mod widgets;
 
 use crate::{
-    csv_io, database, file_dialog, import,
+    csv_io, database, file_dialog, import, json_io,
     model::{self, Connection, Protocol},
     platform, rdp, secret,
     session::{self, Session},
@@ -1072,7 +1072,7 @@ impl eframe::App for App {
                             "Unsaved changes are held in memory.",
                         );
                         if ui.button("Export unsaved changes").clicked() {
-                            self.export_csv(true);
+                            self.export(file_dialog::Kind::ExportJson, true);
                         }
                     });
                     ui.add_space(10.);

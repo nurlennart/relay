@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 pub enum Kind {
     ImportCsv,
     ExportCsv,
+    /// A Relay JSON export, or a personal library file.
+    ImportJson,
+    ExportJson,
     /// An existing SQLite library.
     Database,
     /// A new SQLite library, created when it opens.
@@ -21,6 +24,7 @@ impl Kind {
     fn filter(self) -> Option<(&'static str, &'static [&'static str])> {
         match self {
             Self::ImportCsv | Self::ExportCsv => Some(("CSV file", &["csv"])),
+            Self::ImportJson | Self::ExportJson => Some(("Relay JSON file", &["json"])),
             Self::Database | Self::NewDatabase => {
                 Some(("SQLite database", &["sqlite", "db", "sqlite3"]))
             }
@@ -46,12 +50,19 @@ pub fn choose(parent: Option<Window>, kind: Kind) -> Vec<PathBuf> {
             .save_file()
             .into_iter()
             .collect(),
+        Kind::ExportJson => dialog
+            .set_file_name("relay-connections.json")
+            .save_file()
+            .into_iter()
+            .collect(),
         Kind::NewDatabase => dialog
             .set_file_name("relay.sqlite")
             .save_file()
             .into_iter()
             .collect(),
-        Kind::ImportCsv | Kind::Database | Kind::Key => dialog.pick_file().into_iter().collect(),
+        Kind::ImportCsv | Kind::ImportJson | Kind::Database | Kind::Key => {
+            dialog.pick_file().into_iter().collect()
+        }
     }
 }
 
