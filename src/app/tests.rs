@@ -548,3 +548,25 @@ fn file_tabs_are_remembered_as_browsers() {
     app.open_companion(1);
     assert_eq!((app.active, app.split), (Some(1), Some(0)));
 }
+
+#[test]
+fn breadcrumbs_read_like_the_path() {
+    let trail = |path: &str, home: &str| {
+        let crumbs = crate::sftp::crumbs(path, home);
+        (0..crumbs.len())
+            .map(|i| {
+                let slash = if super::files::separated(&crumbs, i) {
+                    "/"
+                } else {
+                    ""
+                };
+                format!("{slash}{}", crumbs[i].0)
+            })
+            .collect::<String>()
+    };
+    assert_eq!(trail("/var", "/home/deploy"), "/var");
+    assert_eq!(trail("/var/log/nginx", "/home/deploy"), "/var/log/nginx");
+    assert_eq!(trail("/", "/home/deploy"), "/");
+    assert_eq!(trail("/home/deploy/app/src", "/home/deploy"), "~/app/src");
+    assert_eq!(trail("/home/deploy", "/home/deploy"), "~");
+}

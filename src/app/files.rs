@@ -496,8 +496,9 @@ fn path_bar(ui: &mut egui::Ui, files: &mut Browser, key: u64) {
             ui.spacing_mut().button_padding = Vec2::new(5., 2.);
             let crumbs = sftp::crumbs(&files.path, &files.home);
             let last = crumbs.len() - 1;
+            let separated: Vec<_> = (0..crumbs.len()).map(|i| separated(&crumbs, i)).collect();
             for (i, (name, path)) in crumbs.into_iter().enumerate() {
-                if i > 1 || (i == 1 && name != "/") {
+                if separated[i] {
                     ui.label(RichText::new("/").size(12.).color(colors.muted));
                 }
                 let text = RichText::new(&name).size(12.5).color(if i == last {
@@ -532,6 +533,12 @@ fn path_bar(ui: &mut egui::Ui, files: &mut Browser, key: u64) {
                 }
             }
         });
+}
+
+/// Whether breadcrumb `i` follows a `/`: every one after the first, except right after the
+/// root, which is a slash itself.
+pub(super) fn separated(crumbs: &[(String, String)], i: usize) -> bool {
+    i > 0 && crumbs[i - 1].0 != "/"
 }
 
 /// Errors, confirmations, and the new-folder field, above the listing.
