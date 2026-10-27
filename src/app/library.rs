@@ -496,6 +496,8 @@ impl App {
                     .on_hover_text(&c.group);
                 }
                 Column::Actions => {
+                    // Keep the buttons inside the row's highlight, clear of its rounded end.
+                    ui.add_space(ACTION_INSET);
                     let more = icon_button(ui, Icon::More, ACTION_SIZE, "More actions");
                     egui::Popup::menu(&more).show(|ui| self.connection_menu(ui, c));
                     // Connect appears where the pointer or keyboard is; double-click and
@@ -633,6 +635,9 @@ const SUBLINE_GAP: f32 = 2.;
 /// The height of the buttons at the end of a row.
 const ACTION_SIZE: f32 = 26.;
 
+/// The space between the last button in a row and the end of its highlight.
+const ACTION_INSET: f32 = 10.;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Column {
     Star,
@@ -667,7 +672,7 @@ pub(super) fn table_columns(width: f32) -> Vec<(Column, f32)> {
         columns.push((Column::Group, 0.24));
     }
     // More, Connect, and for SSH the file browser button.
-    columns.push((Column::Actions, 130.));
+    columns.push((Column::Actions, 128. + ACTION_INSET));
     let fixed: f32 = columns.iter().filter(|c| c.1 > 1.).map(|c| c.1).sum();
     let weights: f32 = columns.iter().filter(|c| c.1 <= 1.).map(|c| c.1).sum();
     let flexible = (width - fixed - GAP * (columns.len() - 1) as f32).max(120.);
