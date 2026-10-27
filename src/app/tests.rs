@@ -18,9 +18,16 @@ fn test_app(ctx: &egui::Context) -> App {
             c
         })
         .collect();
+    // Tests that save write here, never into the working directory.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "relay-test-{}-{}.json",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     App::with(
         ctx.clone(),
-        PathBuf::from("unused.json"),
+        path,
         Ok(connections),
         None,
         None,
