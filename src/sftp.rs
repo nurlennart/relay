@@ -7,6 +7,7 @@
 //! each frame; transfers stream through a fixed buffer and run one at a time in a queue.
 use crate::{askpass, model::Connection};
 use eframe::egui;
+use futures_util::stream::{self, StreamExt};
 use russh_sftp::{
     client::{
         SftpSession,
@@ -31,6 +32,8 @@ use tokio_util::sync::CancellationToken;
 const CONNECT_TIMEOUT: u64 = 60 * 60;
 /// How long the server may take to answer each request once connected.
 const REQUEST_TIMEOUT: u64 = 60;
+/// How many links a listing resolves at once.
+const LOOKUPS: usize = 16;
 /// How much of a file is in memory at once while it is copied.
 const CHUNK: usize = 256 * 1024;
 /// How often a running transfer reports progress.
@@ -1264,18 +1267,23 @@ async fn list(session: &SftpSession, path: &str) -> Result<(String, Vec<Entry>),
     let fail = |e| format!("Cannot open {path}: {}", describe(e));
     let path = session.canonicalize(path).await.map_err(fail)?;
     let items = session.read_dir(path.clone()).await.map_err(fail)?;
-    let mut entries = vec![];
-    for item in items {
-        let meta = item.metadata();
-        let name = item.file_name();
-        // Links show what they point to, so links to folders open like folders.
-        let target = if file_type(&meta) == TYPE_LINK {
-            session.metadata(join(&path, &name)).await.ok()
-        } else {
-            None
-        };
-        entries.push(Entry::new(name, &meta, target.as_ref()));
-    }
+    // Links show what they point to, so links to folders open like folders. Their targets are
+    // looked up several at a time, as one by one a folder of links takes a round trip each.
+    let folder = &path;
+    let entries = stream::iter(items)
+        .map(|item| async move {
+            let meta = item.metadata();
+            let name = item.file_name();
+            let target = if file_type(&meta) == TYPE_LINK {
+                session.metadata(join(folder, &name)).await.ok()
+            } else {
+                None
+            };
+            Entry::new(name, &meta, target.as_ref())
+        })
+        .buffered(LOOKUPS)
+        .collect()
+        .await;
     Ok((path, entries))
 }
 
@@ -2143,6 +2151,36 @@ mod tests {
         wait(&mut browser, "the failed listing", |b| !b.loading);
         assert!(browser.error.as_deref().unwrap().contains("No such file"));
         assert_eq!(browser.path, canonical, "a failed listing keeps the folder");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listings_resolve_every_link() {
+        use std::os::unix::fs::symlink;
+        let root = scratch("links");
+        std::fs::create_dir(root.join("folder")).unwrap();
+        std::fs::write(root.join("file.txt"), "12345").unwrap();
+        // More links than are resolved at once.
+        for i in 0..LOOKUPS * 2 {
+            let target = if i % 2 == 0 { "folder" } else { "file.txt" };
+            symlink(target, root.join(format!("link-{i:02}"))).unwrap();
+        }
+        symlink("missing", root.join("broken")).unwrap();
+        let Some(browser) = local_browser(&root) else {
+            return;
+        };
+        let entry = |name: &str| browser.entries.iter().find(|e| e.name == name).unwrap();
+        assert_eq!(browser.entries.len(), LOOKUPS * 2 + 3);
+        for i in 0..LOOKUPS * 2 {
+            let link = entry(&format!("link-{i:02}"));
+            assert!(link.link);
+            assert_eq!(link.dir, i % 2 == 0, "{}", link.name);
+            if i % 2 == 1 {
+                assert_eq!(link.size, 5, "a link to a file shows its size");
+            }
+        }
+        assert!(entry("broken").link && !entry("broken").dir);
         let _ = std::fs::remove_dir_all(&root);
     }
 
