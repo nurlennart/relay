@@ -72,16 +72,26 @@ pub struct Search {
     found: Option<(String, u64, Instant)>,
     /// Focuses the search field the next time it is shown.
     pub focus: bool,
+    /// The screen changed without output, as on a resize, so matches may be gone.
+    invalid: bool,
 }
 
 impl Search {
     /// Whether the matches need finding again for `output` bytes received so far.
     pub fn stale(&self, output: u64) -> bool {
+        if self.invalid {
+            return true;
+        }
         match &self.found {
             None => true,
             Some((query, _, _)) if *query != self.query => true,
             Some((_, seen, at)) => *seen != output && at.elapsed() >= REFRESH,
         }
+    }
+
+    /// Finds the matches again on the next look, keeping the selected one where it is.
+    pub fn invalidate(&mut self) {
+        self.invalid = true;
     }
 
     /// How long until output beyond the `output` bytes searched may be searched, while the
@@ -101,6 +111,7 @@ impl Search {
         let new_query =
             self.found.as_ref().is_none_or(|(q, _, _)| *q != self.query) || self.current.is_none();
         self.found = Some((self.query.clone(), output, Instant::now()));
+        self.invalid = false;
         let before = self.current.and_then(|i| self.matches.get(i)).map(|m| m[0]);
         self.matches = matches;
         if new_query {

@@ -110,7 +110,8 @@ impl Terminal {
         std::thread::spawn(move || {
             // Let the pseudo-terminal's startup output settle first.
             std::thread::sleep(std::time::Duration::from_millis(500));
-            parser.lock().unwrap().process(transcript);
+            let mut parser = parser.lock().unwrap();
+            parser.process(transcript);
             // Counted as output, so an open search looks again.
             counted.fetch_add(transcript.len() as u64, Ordering::Relaxed);
         });
@@ -184,7 +185,6 @@ impl Terminal {
                         break;
                     }
                     Ok(n) => {
-                        counted.fetch_add(n as u64, Ordering::Relaxed);
                         if let Ok(mut tail) = received.lock() {
                             let (latest, at) = &mut *tail;
                             latest.extend_from_slice(&bytes[..n]);
@@ -193,6 +193,10 @@ impl Terminal {
                         }
                         if let Ok(mut parser) = output.lock() {
                             parser.process(&bytes[..n]);
+                            // Counted only once on the screen, under the same lock a search
+                            // reads both with, so it never takes output it has not seen as
+                            // searched.
+                            counted.fetch_add(n as u64, Ordering::Relaxed);
                             let response = std::mem::take(&mut parser.callbacks_mut().0);
                             drop(parser);
                             if !response.is_empty() {
@@ -378,6 +382,10 @@ impl Terminal {
                         .unwrap()
                         .screen_mut()
                         .set_size(rows, cols);
+                    // Resizing drops rows and columns without any output.
+                    if let Some(search) = &mut self.search {
+                        search.invalidate();
+                    }
                 }
                 Err(e) => self.error = Some(format!("Terminal resize failed: {e}")),
             }
@@ -458,8 +466,11 @@ impl Terminal {
         let modifiers = ui.input(|i| i.modifiers);
         let mouse_mode = parser.screen().mouse_protocol_mode();
         let encoding = parser.screen().mouse_protocol_encoding();
-        let reporting =
-            mouse_mode != vt100::MouseProtocolMode::None && !modifiers.shift && !self.ended;
+        // A drag the program has seen start stays with it until released, even if Shift is
+        // pressed on the way, so the program never misses the release.
+        let reporting = mouse_mode != vt100::MouseProtocolMode::None
+            && (!modifiers.shift || self.mouse_held.is_some())
+            && !self.ended;
         let pointer = ui
             .input(|i| i.pointer.hover_pos())
             .filter(|p| content.contains(*p));
@@ -1649,9 +1660,20 @@ mod tests {
         events: Vec<egui::Event>,
         modifiers: egui::Modifiers,
     ) -> egui::FullOutput {
+        show_sized(ctx, terminal, Vec2::new(800., 400.), events, modifiers)
+    }
+
+    /// Shows `terminal` for one frame in a window of `size`.
+    fn show_sized(
+        ctx: &egui::Context,
+        terminal: &mut Terminal,
+        size: Vec2,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) -> egui::FullOutput {
         ctx.run(
             egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800., 400.))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
                 events,
                 modifiers,
                 ..Default::default()
@@ -1773,6 +1795,14 @@ mod tests {
         );
         show_frame(&ctx, &mut terminal, vec![button(false, none)], none);
         assert_eq!(terminal.sent, b"\x1b[<0;4;3M\x1b[<0;4;3m");
+        // Shift pressed during a drag the program has seen start leaves the drag with it, so
+        // the program gets its release.
+        terminal.sent.clear();
+        let shift = egui::Modifiers::SHIFT;
+        show_frame(&ctx, &mut terminal, vec![button(true, none)], none);
+        show_frame(&ctx, &mut terminal, vec![button(false, shift)], shift);
+        assert_eq!(terminal.sent, b"\x1b[<0;4;3M\x1b[<4;4;3m");
+        assert_eq!(terminal.selection, None);
         // With Shift, a drag selects instead.
         terminal.sent.clear();
         let shift = egui::Modifiers::SHIFT;
@@ -1817,6 +1847,58 @@ mod tests {
             none,
         );
         assert_eq!(terminal.sent, b"\x1b[B\x1b[B");
+    }
+
+    #[test]
+    fn output_counts_for_search_only_once_on_the_screen() {
+        // A search reads the screen and the count under the parser's lock. Holding the lock
+        // as a search does, output that has arrived must not be counted until it is on the
+        // screen, or the search would take it as searched.
+        let script = if cfg!(windows) {
+            "ping -n 2 127.0.0.1 >nul& echo late"
+        } else {
+            "sleep 0.5; echo late"
+        };
+        let terminal = Terminal::spawn(shell(script), None).unwrap();
+        let parser = terminal.parser.lock().unwrap();
+        let before = terminal.output_bytes.load(Ordering::Relaxed);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        // The raw output is kept before the screen is updated, so this is the moment between.
+        while !String::from_utf8_lossy(&terminal.tail.lock().unwrap().0).contains("late") {
+            assert!(Instant::now() < deadline, "the output did not arrive");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            terminal.output_bytes.load(Ordering::Relaxed),
+            before,
+            "output was counted before it reached the screen"
+        );
+        drop(parser);
+        while terminal.output_bytes.load(Ordering::Relaxed) == before {
+            assert!(Instant::now() < deadline, "the output was never counted");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let screen = terminal.parser.lock().unwrap().screen().contents();
+        assert!(
+            screen.contains("late"),
+            "counted but not on the screen: {screen:?}"
+        );
+    }
+
+    #[test]
+    fn resizing_finds_matches_again() {
+        let (mut terminal, _parser, ctx) = harness();
+        let line = format!("{} needle", "x".repeat(60));
+        settle(&ctx, &mut terminal, line.as_bytes());
+        let none = egui::Modifiers::NONE;
+        terminal.search = Some(search::Search::default());
+        terminal.search.as_mut().unwrap().query = "needle".into();
+        show_frame(&ctx, &mut terminal, vec![], none);
+        assert_eq!(terminal.search.as_ref().unwrap().summary(), "1 of 1");
+        // Narrower, the line is cut before the match, with no output to say so.
+        show_sized(&ctx, &mut terminal, Vec2::new(400., 400.), vec![], none);
+        assert_eq!(terminal.search.as_ref().unwrap().summary(), "No results");
     }
 
     #[test]
