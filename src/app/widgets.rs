@@ -99,7 +99,8 @@ pub(super) const CONTROL_HEIGHT: f32 = 32.;
 /// A single-line text field with room around its text, which is vertically centered.
 pub(super) fn input<'a>(value: &'a mut String, hint: &str) -> egui::TextEdit<'a> {
     egui::TextEdit::singleline(value)
-        .hint_text(hint)
+        // Weak text takes the placeholder color, which the theme's text color would override.
+        .hint_text(RichText::new(hint).weak())
         .margin(egui::Margin::symmetric(10, 6))
         .vertical_align(egui::Align::Center)
 }
@@ -165,7 +166,8 @@ pub(super) fn search_field(
     let response = ui.add_sized(
         [width, CONTROL_HEIGHT],
         egui::TextEdit::singleline(value)
-            .hint_text(hint)
+            // Weak text takes the placeholder color, which the theme's text color would override.
+            .hint_text(RichText::new(hint).weak())
             .margin(egui::Margin {
                 left: 30,
                 right: 10,

@@ -245,7 +245,7 @@ impl App {
                         .desired_rows(3)
                         .desired_width(f32::INFINITY)
                         .margin(Margin::symmetric(11, 8))
-                        .hint_text("tail -f /var/log/syslog"),
+                        .hint_text(RichText::new("tail -f /var/log/syslog").weak()),
                 );
             });
             ui.checkbox(

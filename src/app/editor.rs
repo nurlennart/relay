@@ -116,8 +116,12 @@ impl App {
                             });
                         });
                     });
+                    ui.add_space(2.);
                     ui.checkbox(&mut c.favorite, "Add to favorites");
-                    ui.add_space(4.);
+                    // The optional settings start a section of their own.
+                    ui.add_space(10.);
+                    ui.separator();
+                    ui.add_space(2.);
                     if c.protocol == Protocol::Rdp {
                         rdp_options(ui, &mut c.rdp);
                     } else {
@@ -205,7 +209,10 @@ pub(super) fn ssh_options(
                             ui.available_width() - browse - ui.spacing().item_spacing.x,
                             CONTROL_HEIGHT,
                         ],
-                        input(&mut options.identity, "Uses your SSH config and agent"),
+                        input(
+                            &mut options.identity,
+                            "Default: from your SSH config or agent",
+                        ),
                     );
                     let button =
                         egui::Button::new("Browse…").min_size(Vec2::new(browse, CONTROL_HEIGHT));
@@ -246,56 +253,65 @@ pub(super) fn rdp_options(ui: &mut egui::Ui, options: &mut model::RdpOptions) {
                 &mut options.gateway,
                 "gateway.example.com",
             );
-            ui.label("Use on the remote computer");
-            ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut options.clipboard, "Clipboard");
-                ui.checkbox(&mut options.drives, "Local drives");
-                ui.checkbox(&mut options.printers, "Printers");
-                ui.checkbox(&mut options.smart_cards, "Smart cards");
-                ui.checkbox(&mut options.microphone, "Microphone");
+            ui.add_space(6.);
+            // Every option has its label above it, as the fields do.
+            labeled(ui, "Use on the remote computer", |ui| {
+                egui::Grid::new("rdp-resources")
+                    .num_columns(3)
+                    .spacing([24., 8.])
+                    .show(ui, |ui| {
+                        ui.checkbox(&mut options.clipboard, "Clipboard");
+                        ui.checkbox(&mut options.drives, "Local drives");
+                        ui.checkbox(&mut options.printers, "Printers");
+                        ui.end_row();
+                        ui.checkbox(&mut options.smart_cards, "Smart cards");
+                        ui.checkbox(&mut options.microphone, "Microphone");
+                        ui.end_row();
+                    });
             });
-            egui::Grid::new("rdp-choices")
-                .num_columns(2)
-                .spacing([12., 8.])
-                .show(ui, |ui| {
-                    ui.label("Remote audio");
-                    egui::ComboBox::from_id_salt("rdp-audio")
-                        .width(220.)
-                        .selected_text(options.audio.label())
-                        .show_ui(ui, |ui| {
-                            for audio in Audio::ALL {
-                                ui.selectable_value(&mut options.audio, audio, audio.label());
-                            }
-                        });
-                    ui.end_row();
-                    ui.label("System key combinations");
-                    egui::ComboBox::from_id_salt("rdp-keys")
-                        .width(220.)
-                        .selected_text(options.keys.label())
-                        .show_ui(ui, |ui| {
-                            for keys in Keys::ALL {
-                                ui.selectable_value(&mut options.keys, keys, keys.label());
-                            }
-                        });
-                    ui.end_row();
-                    ui.label("Resolution");
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut options.display, Display::Fit, "Fit to tab");
-                        let fixed = matches!(options.display, Display::Fixed { .. });
-                        if ui.radio(fixed, "Fixed").clicked() && !fixed {
-                            options.display = Display::Fixed {
-                                width: 1920,
-                                height: 1080,
-                            };
-                        }
-                        if let Display::Fixed { width, height } = &mut options.display {
-                            ui.add(egui::DragValue::new(width).range(200..=8192));
-                            ui.label("×");
-                            ui.add(egui::DragValue::new(height).range(200..=8192));
+            ui.add_space(6.);
+            let width = ui.available_width();
+            // Drop-downs as tall as the text fields above them.
+            ui.spacing_mut().interact_size.y = CONTROL_HEIGHT;
+            labeled(ui, "Remote audio", |ui| {
+                egui::ComboBox::from_id_salt("rdp-audio")
+                    .width(width)
+                    .selected_text(options.audio.label())
+                    .show_ui(ui, |ui| {
+                        for audio in Audio::ALL {
+                            ui.selectable_value(&mut options.audio, audio, audio.label());
                         }
                     });
-                    ui.end_row();
+            });
+            ui.add_space(6.);
+            labeled(ui, "System key combinations, such as Alt+Tab", |ui| {
+                egui::ComboBox::from_id_salt("rdp-keys")
+                    .width(width)
+                    .selected_text(options.keys.label())
+                    .show_ui(ui, |ui| {
+                        for keys in Keys::ALL {
+                            ui.selectable_value(&mut options.keys, keys, keys.label());
+                        }
+                    });
+            });
+            ui.add_space(6.);
+            labeled(ui, "Resolution", |ui| {
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut options.display, Display::Fit, "Fit to tab");
+                    let fixed = matches!(options.display, Display::Fixed { .. });
+                    if ui.radio(fixed, "Fixed").clicked() && !fixed {
+                        options.display = Display::Fixed {
+                            width: 1920,
+                            height: 1080,
+                        };
+                    }
+                    if let Display::Fixed { width, height } = &mut options.display {
+                        ui.add(egui::DragValue::new(width).range(200..=8192));
+                        ui.label("×");
+                        ui.add(egui::DragValue::new(height).range(200..=8192));
+                    }
                 });
+            });
         });
     // Shown outside the collapsed options too, since the defaults can be affected.
     let missing = rdp::unsupported(options);

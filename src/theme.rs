@@ -140,6 +140,8 @@ impl Theme {
         v.extreme_bg_color = c.bg;
         v.faint_bg_color = c.panel;
         v.override_text_color = Some(c.text);
+        // Placeholders sit clearly below labels and values, so they never read as entries.
+        v.weak_text_color = Some(c.muted.lerp_to_gamma(c.bg, 0.35));
         v.hyperlink_color = c.accent;
         v.selection.bg_fill = c.selected;
         v.selection.stroke = Stroke::new(1_f32, c.accent);
