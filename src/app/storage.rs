@@ -434,18 +434,25 @@ impl App {
     }
 
     /// Stores or removes a server library's connection string after it opened successfully.
-    pub(super) fn remember_server(&self, location: &database::Location) -> Result<(), String> {
+    /// Saves or forgets the connection string of a server library that just opened, as its
+    /// form asks, and notes whether it is now saved.
+    pub(super) fn remember_server(&mut self, location: &database::Location) -> Result<(), String> {
         let (form, account, server) = match location {
             database::Location::Mssql(server) => (&self.db_mssql, secret::Account::Mssql, server),
             database::Location::Mysql(server) => (&self.db_mysql, secret::Account::Mysql, server),
             database::Location::Local(_) | database::Location::Sqlite(_) => return Ok(()),
         };
         if form.remember {
-            secret::save(account, &server.connection).map_err(|e| {
+            let saved = secret::save(account, &server.connection);
+            self.server_remembered = saved.is_ok();
+            saved.map_err(|e| {
                 format!("The library opened, but the connection string could not be saved: {e}")
             })
         } else {
-            secret::forget(account).map_err(|e| {
+            // A string that could not be removed is still there, and reopens the library.
+            let forgotten = secret::forget(account);
+            self.server_remembered = forgotten.is_err();
+            forgotten.map_err(|e| {
                 format!(
                     "The library opened, but the saved connection string could not be removed: {e}"
                 )

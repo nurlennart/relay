@@ -69,7 +69,7 @@ RDP and SSH records can be imported; VNC and other protocols are listed as unsup
 
 ## Shared team libraries
 
-Open **Settings → Manage library**, or click the library name at the bottom of the sidebar, and choose **Personal**, **SQLite file**, **MSSQL server**, or **MySQL server**. Switching does not move or merge profiles and does not close sessions. To fill a library, open it and use **Settings → Import CSV** (or SSH config or `.rdp` import): imports always go into the library that is open, and the review names it before anything is saved. To move a library to another backend, export CSV from the old one, open the new one, and import.
+**Settings → Connection library** shows where your connections are stored: the file, or the server and database (never the password), whether a server library uses TLS, and whether it reopens at startup. Click **Switch library…** there, or the library name at the bottom of the sidebar, and choose **Personal**, **SQLite file**, **MSSQL server**, or **MySQL server**. Switching does not move or merge profiles and does not close sessions. To fill a library, open it and use **Settings → Import CSV** (or SSH config or `.rdp` import): imports always go into the library that is open, and the review names it before anything is saved. To move a library to another backend, export CSV from the old one, open the new one, and import.
 
 ### MSSQL
 

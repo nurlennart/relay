@@ -24,6 +24,45 @@ pub struct Server {
     pub tls: bool,
 }
 impl Location {
+    /// Where the library is, for people: its file, or its server and database. Never shows a
+    /// password or the rest of a connection string.
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Local(path) | Self::Sqlite(path) => path.display().to_string(),
+            Self::Mssql(server) => {
+                let value = |keys: &[&str]| {
+                    server.connection.split(';').find_map(|part| {
+                        let (key, value) = part.split_once('=')?;
+                        keys.contains(&key.trim().to_ascii_lowercase().as_str())
+                            .then(|| value.trim().trim_matches(['"', '\'']).to_string())
+                    })
+                };
+                let host = value(&[
+                    "server",
+                    "data source",
+                    "address",
+                    "addr",
+                    "network address",
+                ])
+                .map(|h| h.strip_prefix("tcp:").unwrap_or(&h).to_string());
+                let database = value(&["database", "initial catalog"]);
+                [host, database]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            }
+            Self::Mysql(server) => mysql::Opts::from_url(&server.connection)
+                .map(|opts| {
+                    let host = format!("{}:{}", opts.get_ip_or_hostname(), opts.get_tcp_port());
+                    match opts.get_db_name() {
+                        Some(db) => format!("{host} · {db}"),
+                        None => host,
+                    }
+                })
+                .unwrap_or_default(),
+        }
+    }
     pub fn label(&self) -> &'static str {
         match self {
             Self::Local(_) => "Personal library",
@@ -346,6 +385,26 @@ mod tests {
         ] {
             assert!(tiberius::Config::from_ado_string(connection).is_ok());
         }
+    }
+    #[test]
+    fn library_details_name_the_place_but_never_the_password() {
+        let mssql = Location::Mssql(server(
+            "Server=tcp:sql01\\SQLEXPRESS;Database=Relay;User ID=relay;Password=hunter2",
+            true,
+        ));
+        assert_eq!(mssql.detail(), "sql01\\SQLEXPRESS · Relay");
+        let mssql = Location::Mssql(server(
+            "data source = sql01,1433 ; Initial Catalog='Team';Integrated Security=true",
+            true,
+        ));
+        assert_eq!(mssql.detail(), "sql01,1433 · Team");
+        let mysql = Location::Mysql(server("mysql://relay:hunter2@db.example.com/relay", true));
+        assert_eq!(mysql.detail(), "db.example.com:3306 · relay");
+        for location in [&mssql, &mysql] {
+            assert!(!location.detail().contains("hunter2"));
+        }
+        let sqlite = Location::Sqlite(PathBuf::from("/srv/team/relay.sqlite"));
+        assert_eq!(sqlite.detail(), "/srv/team/relay.sqlite");
     }
     #[test]
     fn named_instances_ask_the_browser_unless_a_port_is_given() {

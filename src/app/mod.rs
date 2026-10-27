@@ -155,6 +155,9 @@ struct App {
     db_mssql: ServerForm,
     db_mysql: ServerForm,
     db_reveal: bool,
+    /// Whether the open server library's connection string is in the credential store, so it
+    /// reopens at startup.
+    server_remembered: bool,
     /// A short confirmation shown as a toast until it expires.
     notice: Option<(String, Instant)>,
     group: Option<String>,
@@ -283,6 +286,7 @@ impl App {
             db_mssql: ServerForm::new(saved_mssql, MSSQL_EXAMPLE, state.mssql_without_tls),
             db_mysql: ServerForm::new(saved_mysql, "", state.mysql_without_tls),
             db_reveal: false,
+            server_remembered: false,
             notice: None,
             group: None,
             selected: None,
@@ -367,10 +371,12 @@ impl App {
             // Only a remembered connection string can reopen a server library.
             state::Library::Mssql if self.db_mssql.remember => {
                 self.db_kind = LibraryKind::Mssql;
+                self.server_remembered = true;
                 database::Location::Mssql(self.db_mssql.server())
             }
             state::Library::Mysql if self.db_mysql.remember => {
                 self.db_kind = LibraryKind::Mysql;
+                self.server_remembered = true;
                 database::Location::Mysql(self.db_mysql.server())
             }
             state::Library::Mssql | state::Library::Mysql => return,

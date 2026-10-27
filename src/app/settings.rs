@@ -73,27 +73,42 @@ impl App {
                     ui.add_space(14.);
                     ui.separator();
                     section_label(ui, "CONNECTION LIBRARY");
-                    // The button comes first so the row takes its height and centers the label.
+                    ui.label(RichText::new("Your connections are stored in").color(colors.muted));
+                    ui.add_space(2.);
+                    let (detail, facts) = self.library_summary();
+                    // The button comes first so the row takes its height and centers the name.
                     ui.horizontal(|ui| {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             manage = ui
                                 .add_enabled(
                                     self.pending.is_none(),
-                                    egui::Button::new("Manage library"),
+                                    egui::Button::new("Switch library…"),
                                 )
+                                .on_hover_text("Personal, a shared SQLite file, MSSQL, or MySQL")
                                 .clicked();
                             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                ui.label(RichText::new(self.location.label()).strong());
+                                let (dot, _) =
+                                    ui.allocate_exact_size(Vec2::splat(8.), Sense::hover());
+                                ui.painter().circle_filled(dot.center(), 3.5, colors.accent);
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(self.location.label()).strong(),
+                                    )
+                                    .truncate(),
+                                );
                             });
                         });
                     });
-                    ui.label(
-                        RichText::new(
-                            "Personal storage, shared SQLite files, Microsoft SQL Server, or MySQL.",
+                    if !detail.is_empty() {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&detail).monospace().size(12.).color(colors.text),
+                            )
+                            .truncate(),
                         )
-                        .size(12.)
-                        .color(colors.muted),
-                    );
+                        .on_hover_text(&detail);
+                    }
+                    ui.label(RichText::new(facts).size(12.).color(colors.muted));
                     ui.add_space(14.);
                     ui.separator();
                     section_label(ui, "IMPORT & EXPORT");
@@ -178,6 +193,26 @@ impl App {
         if recovery {
             self.export_csv(true);
         }
+    }
+
+    /// Where the open library is, and what to know about it: who shares it, whether it is
+    /// encrypted, and whether it opens again when Relay starts.
+    fn library_summary(&self) -> (String, String) {
+        let detail = self.location.detail();
+        let facts = match &self.location {
+            database::Location::Local(_) => "On this computer only. Opens at startup.".into(),
+            database::Location::Sqlite(_) => "A shared file. Reopens at startup.".into(),
+            database::Location::Mssql(server) | database::Location::Mysql(server) => {
+                let tls = if server.tls { "TLS on" } else { "TLS off" };
+                let startup = if self.server_remembered {
+                    "Reopens at startup."
+                } else {
+                    "Not remembered, so Relay starts with Personal next time."
+                };
+                format!("Shared with your team · {tls} · {startup}")
+            }
+        };
+        (detail, facts)
     }
 
     /// Lists, adds, edits, and deletes snippets inside Settings.

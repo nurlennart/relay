@@ -29,6 +29,29 @@ pub fn seed(app: &mut App) {
     {
         app.ctx.set_zoom_factor(zoom);
     }
+    // The open library, for Settings: sqlite, mssql, mssql-forgotten, or mysql.
+    let server = |connection: &str| database::Server {
+        connection: connection.into(),
+        tls: true,
+    };
+    match std::env::var("RELAY_UI_LOCATION").as_deref() {
+        Ok("sqlite") => {
+            app.location =
+                database::Location::Sqlite(PathBuf::from("\\\\fileserver\\team\\relay.sqlite"))
+        }
+        Ok(kind @ ("mssql" | "mssql-forgotten")) => {
+            app.location = database::Location::Mssql(server(
+                "Server=tcp:sql01\\SQLEXPRESS;Database=Relay;Integrated Security=true",
+            ));
+            app.server_remembered = kind == "mssql";
+        }
+        Ok("mysql") => {
+            app.location =
+                database::Location::Mysql(server("mysql://relay:secret@db.example.com:3306/relay"));
+            app.server_remembered = true;
+        }
+        _ => {}
+    }
     if std::env::var_os("RELAY_UI_SETTINGS").is_some() {
         app.modal = Modal::Settings;
     }
