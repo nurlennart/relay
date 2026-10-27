@@ -15,12 +15,27 @@ impl App {
         let mut import = None;
         let mut export = false;
         let mut recovery = false;
+        let mut copied_version = None;
         dialog("settings", ctx).show(ctx, |ui| {
             ui.set_width(dialog_width(ctx, 540.));
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Settings").size(TITLE_SIZE).strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     close = icon_button(ui, Icon::Close, 26., "Close (Esc)").clicked();
+                    let version = version();
+                    if ui
+                        .add(
+                            egui::Label::new(
+                                RichText::new(&version).size(12.).color(colors.muted),
+                            )
+                            .sense(Sense::click()),
+                        )
+                        .on_hover_text("Click to copy")
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(version.clone());
+                        copied_version = Some(version);
+                    }
                 });
             });
             egui::ScrollArea::vertical()
@@ -173,6 +188,9 @@ impl App {
                     "Theme applied, but could not save preference: {error}"
                 ));
             }
+        }
+        if let Some(version) = copied_version {
+            self.notify(format!("Copied {version}"));
         }
         if close || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             self.modal = Modal::None;
@@ -446,6 +464,15 @@ pub(super) enum Source {
     Csv,
     SshConfig,
     RdpFiles,
+}
+
+/// Relay's version, with the commit it was built from when that is known, such as
+/// `Relay 0.4.0 · a0bb71f`.
+pub(super) fn version() -> String {
+    match option_env!("RELAY_COMMIT") {
+        Some(commit) => format!("Relay {} · {commit}", env!("CARGO_PKG_VERSION")),
+        None => format!("Relay {}", env!("CARGO_PKG_VERSION")),
+    }
 }
 
 pub(super) fn theme_option(

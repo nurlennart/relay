@@ -21,7 +21,7 @@ SSH and SFTP use the system's OpenSSH client everywhere, so your SSH config, key
 - **Windows:** the remote desktop is embedded in the tab with the Windows RDP control, the same one Remote Desktop Connection uses.
 - **macOS and Linux:** Relay's built-in RDP client, based on [IronRDP](https://github.com/Devolutions/IronRDP), draws the remote desktop in the tab. Nothing else needs to be installed.
 
-To build from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
+The version is shown at the top of **Settings**, with the commit it was built from (click it to copy both, for example into a bug report). To build from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Color themes
 

@@ -698,3 +698,9 @@ fn middle_clicking_a_tab_closes_it() {
     }
     panic!("no middle click closed the tab");
 }
+
+#[test]
+fn the_version_names_the_release() {
+    let version = super::settings::version();
+    assert!(version.starts_with(&format!("Relay {}", env!("CARGO_PKG_VERSION"))));
+}
