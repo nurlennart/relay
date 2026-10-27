@@ -153,6 +153,9 @@ git pull && ./deploy.sh",
         if std::env::var_os("RELAY_UI_SELECTION").is_some() {
             terminal.select((13, 0), (15, 40));
         }
+        if let Ok(query) = std::env::var("RELAY_UI_SEARCH") {
+            terminal.search_for(&query);
+        }
         if std::env::var_os("RELAY_UI_ENDED").is_some() {
             terminal.ended = true;
             terminal.exit_code = Some(0);
