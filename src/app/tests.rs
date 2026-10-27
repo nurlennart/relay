@@ -63,6 +63,57 @@ fn press(key: egui::Key) -> egui::Event {
 }
 
 #[test]
+fn shortcut_help_respects_session_focus_and_open_editors() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let frame = |app: &mut App, key, session_focused| {
+        let mut key_remaining = false;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1200., 800.),
+                )),
+                events: vec![press(key)],
+                ..Default::default()
+            },
+            |ctx| {
+                app.keyboard_shortcuts(ctx, session_focused);
+                key_remaining = ctx.input(|i| i.key_pressed(key));
+            },
+        );
+        key_remaining
+    };
+    assert!(!frame(&mut app, egui::Key::F1, false));
+    assert!(matches!(app.modal, Modal::Shortcuts));
+    frame(&mut app, egui::Key::Escape, false);
+    assert!(matches!(app.modal, Modal::None));
+
+    assert!(
+        frame(&mut app, egui::Key::F1, true),
+        "F1 belongs to the session"
+    );
+    assert!(matches!(app.modal, Modal::None));
+    app.modal = Modal::Editor(Connection::new());
+    frame(&mut app, egui::Key::F1, false);
+    assert!(
+        matches!(app.modal, Modal::Editor(_)),
+        "keep the editor draft"
+    );
+
+    app.modal = Modal::Settings;
+    frame(&mut app, egui::Key::F1, true);
+    assert!(matches!(app.modal, Modal::Shortcuts));
+    app.modal = Modal::None;
+    app.quitting = true;
+    frame(&mut app, egui::Key::F1, false);
+    assert!(
+        matches!(app.modal, Modal::None),
+        "keep the quit confirmation"
+    );
+}
+
+#[test]
 fn search_enter_connects_the_top_match() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);

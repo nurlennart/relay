@@ -31,6 +31,8 @@ On Windows 11, the native title bar follows the selected theme, including detach
 
 ## Connection library
 
+Open **Settings → Keyboard shortcuts**, or press `F1` while Relay has keyboard focus, for the grouped shortcut reference. A focused SSH terminal or remote desktop keeps `F1` for the remote session.
+
 - **New connection** saves a name, host, port, optional username, group, and favorite.
 - Click **Connect**, double-click a row, or select it and press `Enter` to open a tab. For SSH connections, the folder button, **Browse files** in the row's menu, or `Shift+Enter` opens an [SFTP file browser](#sftp-file-browser) instead.
 - Sidebar filters and groups narrow the library. Search matches names, addresses, usernames, groups, and protocols.

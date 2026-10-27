@@ -1,0 +1,113 @@
+//! The keyboard reference, available from Settings or F1 while Relay has the keyboard.
+use super::*;
+
+impl App {
+    pub(super) fn keyboard_shortcuts(&mut self, ctx: &egui::Context, session_focused: bool) {
+        if !self.quitting
+            && (matches!(self.modal, Modal::Settings)
+                || (!session_focused && matches!(self.modal, Modal::None)))
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F1))
+        {
+            self.modal = Modal::Shortcuts;
+        }
+        if !matches!(self.modal, Modal::Shortcuts) {
+            return;
+        }
+        let colors = theme::palette(ctx);
+        let modifier = if cfg!(target_os = "macos") {
+            "Cmd"
+        } else {
+            "Ctrl"
+        };
+        let mut close = false;
+        dialog("keyboard-shortcuts", ctx).show(ctx, |ui| {
+            ui.set_width(dialog_width(ctx, 620.));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Keyboard shortcuts").size(TITLE_SIZE).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    close = icon_button(ui, Icon::Close, 26., "Close (Esc)").clicked();
+                });
+            });
+            ui.label(RichText::new("Shortcuts apply to the area with keyboard focus.").size(12.).color(colors.muted));
+            let groups: &[(&str, &[(&str, &str)])] = &[
+                ("WORKSPACE & TABS", &[
+                    ("F1", "Open keyboard shortcuts"),
+                    ("Mod+K", "Open library search"),
+                    ("Mod+N", "New connection"),
+                    ("Mod+B", "Toggle sidebar"),
+                    ("Mod+W", "Close current session tab"),
+                    ("Mod+1", "Open library tab"),
+                    ("Mod+2–8", "Open session tabs 1–7"),
+                    ("Mod+9", "Open last tab"),
+                    ("Mod+Tab / Mod+Shift+Tab", "Next / previous tab"),
+                    ("Mod+Alt+PageDown / PageUp", "Next / previous tab"),
+                    ("Mod+Shift+PageUp / PageDown", "Move tab left / right"),
+                    ("Mod+\\", "Toggle split view"),
+                ]),
+                ("CONNECTION LIBRARY & DIALOGS", &[
+                    ("↑ / ↓", "Select connection"),
+                    ("Enter", "Connect; quick-connect when no results match"),
+                    ("Shift+Enter", "Browse selected SSH connection's files"),
+                    ("Alt+Enter", "Quick-connect to the typed address"),
+                    ("Enter in connection editor", "Save connection"),
+                    ("Esc", "Clear search or close dialog"),
+                ]),
+                ("FILE BROWSER", &[
+                    ("Mod+L", "Edit remote path"),
+                    ("Mod+F", "Filter folder"),
+                    ("F5 / Mod+R", "Refresh folder"),
+                    ("Backspace / Alt+↑", "Go to parent folder"),
+                    ("Alt+←", "Go back"),
+                    ("↑ / ↓", "Move selection"),
+                    ("Home / End", "First / last item"),
+                    ("PageUp / PageDown", "Move selection by 10 items"),
+                    ("Shift+navigation", "Extend selection"),
+                    ("Mod+A", "Select all listed items"),
+                    ("Enter", "Open folder or download selected files"),
+                    ("Mod+U", "Choose files to upload"),
+                    ("Mod+Shift+N", "New folder"),
+                    ("F2", "Rename selected item"),
+                    ("Delete", "Delete selected items, with confirmation"),
+                    ("Esc", "Cancel editing or clear selection"),
+                ]),
+                ("SSH TERMINAL & SNIPPETS", &[
+                    ("Ctrl+C", "Interrupt remote command"),
+                    (if cfg!(target_os = "macos") { "Cmd+C" } else { "Ctrl+Shift+C" }, "Copy selection, or screen if nothing is selected"),
+                    ("Mod+V / Shift+Insert", "Paste"),
+                    ("Mod+Shift+P", "Open snippets"),
+                    ("↑ / ↓ in snippets", "Select snippet"),
+                    ("Enter in snippets", "Send selected snippet"),
+                    ("Esc in snippets", "Close snippets"),
+                ]),
+                #[cfg(windows)]
+                ("WINDOWS REMOTE DESKTOP", &[
+                    ("Ctrl+Alt+Home", "Return keyboard focus to Relay"),
+                    ("Ctrl+Alt+PageUp / PageDown", "Previous / next tab"),
+                    ("Ctrl+Alt+Break", "Toggle remote desktop full screen"),
+                ]),
+            ];
+            egui::ScrollArea::vertical()
+                .id_salt("keyboard-shortcuts-list")
+                .min_scrolled_height((ctx.content_rect().height() - 240.).max(160.))
+                .max_height((ctx.content_rect().height() - 240.).max(160.))
+                .show(ui, |ui| {
+                    for (section, rows) in groups {
+                        ui.add_space(12.);
+                        section_label(ui, section);
+                        egui::Grid::new(section).num_columns(2).min_row_height(0.).spacing([20., 8.]).show(ui, |ui| {
+                            for (keys, action) in *rows {
+                                ui.label(RichText::new(keys.replace("Mod", modifier)).monospace());
+                                ui.add(egui::Label::new(*action).wrap());
+                                ui.end_row();
+                            }
+                        });
+                    }
+                    ui.add_space(12.);
+                    ui.label(RichText::new("Focused terminals and remote desktops receive most keys. Tab cycling stays available. Windows RDP tab shortcuts require Relay in the foreground and do not apply in full screen or when Windows keys go to the remote computer.").size(12.).color(colors.muted));
+                });
+        });
+        if close || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.modal = Modal::None;
+        }
+    }
+}

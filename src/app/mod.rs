@@ -5,6 +5,7 @@ mod icons;
 mod library;
 mod sessions;
 mod settings;
+mod shortcuts;
 mod sidebar;
 mod storage;
 mod tabs;
@@ -80,6 +81,7 @@ enum Modal {
     Delete(u64),
     Close(usize),
     Settings,
+    Shortcuts,
     Library,
     Import(csv_io::Import),
 }
@@ -1112,6 +1114,7 @@ impl eframe::App for App {
         self.editor(ctx);
         self.confirmations(ctx);
         self.settings(ctx);
+        self.keyboard_shortcuts(ctx, terminal_focused);
         self.library_dialogs(ctx);
         self.snippet_palette(ctx);
         self.toast(ctx);

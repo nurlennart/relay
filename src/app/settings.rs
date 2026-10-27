@@ -16,12 +16,14 @@ impl App {
         let mut export = false;
         let mut recovery = false;
         let mut copied_version = None;
+        let mut shortcuts = false;
         dialog("settings", ctx).show(ctx, |ui| {
             ui.set_width(dialog_width(ctx, 540.));
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Settings").size(TITLE_SIZE).strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     close = icon_button(ui, Icon::Close, 26., "Close (Esc)").clicked();
+                    shortcuts = ui.button("Keyboard shortcuts").on_hover_text("F1").clicked();
                     let version = version();
                     if ui
                         .add(
@@ -204,6 +206,9 @@ impl App {
         }
         if manage {
             self.modal = Modal::Library;
+        }
+        if shortcuts {
+            self.modal = Modal::Shortcuts;
         }
         // Each import replaces settings with its preview once read.
         match import {
