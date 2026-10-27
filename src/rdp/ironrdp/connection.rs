@@ -29,6 +29,8 @@ use tokio::{
 
 /// Reconnection attempts after a connection that was up drops.
 const RETRIES: u32 = 5;
+/// How long connecting may take, through any gateway and sign-in, before it is given up.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What one connection needs, taken from the saved connection and the sign-in prompt.
 #[derive(Clone)]
@@ -228,7 +230,20 @@ async fn run(mut settings: Settings, mut commands: UnboundedReceiver<Command>, l
                 offered.clone(),
             )
         });
-        let error = match connect(&settings, &untrusted, backend).await {
+        let attempt = tokio::select! {
+            attempt = tokio::time::timeout(CONNECT_TIMEOUT, connect(&settings, &untrusted, backend)) => {
+                attempt.unwrap_or_else(|_| {
+                    let silent = std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "the server stopped answering",
+                    );
+                    Err(ironrdp_connector::custom_err!("connect", silent))
+                })
+            }
+            // A tab closed while connecting takes its connection, and the password, with it.
+            () = closed(&commands) => return,
+        };
+        let error = match attempt {
             Ok((result, framed)) => {
                 link.send(Event::Connected);
                 was_up = true;
@@ -272,7 +287,17 @@ async fn run(mut settings: Settings, mut commands: UnboundedReceiver<Command>, l
         }
         retries += 1;
         link.send(Event::Reconnecting);
-        tokio::time::sleep(Duration::from_secs(2 << retries.min(4))).await;
+        tokio::select! {
+            () = tokio::time::sleep(Duration::from_secs(2 << retries.min(4))) => {}
+            () = closed(&commands) => return,
+        }
+    }
+}
+
+/// Finishes once the UI has closed the tab, without taking its commands.
+async fn closed(commands: &UnboundedReceiver<Command>) {
+    while !commands.is_closed() {
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 
@@ -723,6 +748,37 @@ mod tests {
             size: [1600, 900],
             scale: 150,
             clipboard: true,
+        }
+    }
+
+    #[test]
+    fn closing_while_connecting_lets_go_of_the_server() {
+        use std::io::Read;
+        // A server that accepts the connection and never answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let worker = Worker::start(
+            Settings {
+                host: "127.0.0.1".into(),
+                port,
+                ..settings()
+            },
+            egui::Context::default(),
+        )
+        .unwrap();
+        let (mut socket, _) = listener.accept().unwrap();
+        drop(worker);
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        // The client's opening request arrives, then the end of the connection.
+        let mut buffer = [0u8; 4096];
+        loop {
+            match socket.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) => panic!("the connection stayed open: {e}"),
+            }
         }
     }
 
