@@ -381,13 +381,27 @@ impl App {
                                 .color(colors.muted),
                             );
                         }
-                        ui.add_space(10.);
-                        ui.label(if mysql {
-                            "Run sql/mysql.sql once in an existing database. \
-                             Your team needs SELECT and UPDATE on RelayLibrary."
-                        } else {
-                            "Run sql/mssql.sql once in an existing database. \
-                             Your team needs SELECT and UPDATE on dbo.RelayLibrary."
+                        ui.add_space(4.);
+                        egui::CollapsingHeader::new(
+                            RichText::new("First-time setup")
+                                .size(12.)
+                                .color(colors.muted),
+                        )
+                        .id_salt(("database-setup", mysql))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(if mysql {
+                                    "Existing libraries are ready to use. For a new library, ask \
+                                     your database administrator to run sql/mysql.sql once and \
+                                     give your team read and update access to RelayLibrary."
+                                } else {
+                                    "Existing libraries are ready to use. For a new library, ask \
+                                     your database administrator to run sql/mssql.sql once and \
+                                     give your team read and update access to dbo.RelayLibrary."
+                                })
+                                .size(12.)
+                                .color(colors.muted),
+                            );
                         });
                     }
                 }
