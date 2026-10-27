@@ -61,7 +61,11 @@ impl App {
                                         }
                                         self.active = Some(index);
                                     }
-                                    if session.inner.1.clicked() {
+                                    // The close button, or a middle click anywhere on the tab.
+                                    if session.inner.1.clicked()
+                                        || session.inner.0.middle_clicked()
+                                        || session.inner.1.middle_clicked()
+                                    {
                                         close = Some(index);
                                     }
                                     session.inner.0.context_menu(|ui| {

@@ -1,5 +1,16 @@
 [
   {
+    "id": 1,
+    "name": "Alpha",
+    "host": "alpha.example",
+    "username": "",
+    "group": "Personal",
+    "protocol": "Rdp",
+    "port": 3389,
+    "favorite": false,
+    "metadata": {}
+  },
+  {
     "id": 2,
     "name": "Bravo",
     "host": "bravo.example",
@@ -9,16 +20,6 @@
     "port": 3389,
     "favorite": false,
     "metadata": {}
-  },
-  {
-    "id": 3,
-    "name": "Charlie",
-    "host": "charlie.example",
-    "username": "",
-    "group": "Personal",
-    "protocol": "Rdp",
-    "port": 3389,
-    "favorite": false,
-    "metadata": {}
   }
+] }
 ]

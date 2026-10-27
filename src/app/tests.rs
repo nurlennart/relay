@@ -651,3 +651,43 @@ fn deleting_the_last_search_match_clears_the_search() {
     assert!(app.delete_connection(1));
     assert_eq!(app.query, "a");
 }
+
+#[test]
+fn middle_clicking_a_tab_closes_it() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let c = app.connections[0].clone();
+    app.sessions
+        .push(session::Session::restored(c, false, ctx.clone()));
+    let frame = |app: &mut App, events| {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1200., 800.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| app.tabs(ctx),
+        );
+    };
+    frame(&mut app, vec![]);
+    // Walk along the tab bar; past the library tab, the session tab closes.
+    for x in (20..400).step_by(10) {
+        let pos = egui::pos2(x as f32, 20.);
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Middle,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+        frame(&mut app, vec![button(true)]);
+        frame(&mut app, vec![button(false)]);
+        if app.sessions.is_empty() {
+            return;
+        }
+    }
+    panic!("no middle click closed the tab");
+}
