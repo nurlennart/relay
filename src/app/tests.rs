@@ -950,7 +950,7 @@ fn number_shortcuts_switch_tabs_from_the_library() {
         app.sessions
             .push(session::Session::restored(c, false, ctx.clone()));
     }
-    let mut frame = |app: &mut App, key| {
+    let frame = |app: &mut App, key| {
         let _ = ctx.run(
             egui::RawInput {
                 events: vec![egui::Event::Key {
