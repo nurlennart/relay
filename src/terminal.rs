@@ -555,12 +555,13 @@ fn plain_lines(output: &[u8], n: usize) -> Vec<String> {
     while let Some(c) = chars.next() {
         match c {
             '\x1b' => match chars.next() {
-                // Control sequences end with a byte from @ to ~.
+                // Control sequences end with a byte from @ to ~. Those that move the cursor to
+                // a line start a new one: Windows draws line breaks that way.
                 Some('[') => {
-                    for c in chars.by_ref() {
-                        if ('@'..='~').contains(&c) {
-                            break;
-                        }
+                    if let Some(end) = chars.by_ref().find(|c| ('@'..='~').contains(c))
+                        && matches!(end, 'H' | 'f' | 'd' | 'E' | 'F')
+                    {
+                        text.push('\n');
                     }
                 }
                 // Operating system commands, such as window titles, end with BEL or ESC and a
@@ -1101,7 +1102,7 @@ mod tests {
     #[test]
     fn plain_lines_drop_escapes_and_overwritten_text() {
         let output = b"\x1b]0;deploy@build\x07\x1b[1;31mfailed\x1b[0m\r\n\
-            Password: \r\n\r\n10%\r50%\r100%\r\n\x1b[2Jdeploy@build: Permission denied.\r\n";
+            Password: \r\n\r\n10%\r50%\r100%\x1b[2J\x1b[5;1Hdeploy@build: Permission denied.\x1b[K";
         assert_eq!(
             plain_lines(output, 3),
             ["Password: ", "100%", "deploy@build: Permission denied."]
