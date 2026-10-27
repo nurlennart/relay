@@ -52,6 +52,26 @@ impl App {
                     }
                     ui.add_space(14.);
                     ui.separator();
+                    section_label(ui, "SESSIONS");
+                    let mut reopen = !self.state.forget_tabs;
+                    if ui
+                        .checkbox(&mut reopen, "Reopen tabs at startup")
+                        .changed()
+                    {
+                        self.state.forget_tabs = !reopen;
+                        self.remember_tabs();
+                    }
+                    ui.label(
+                        RichText::new(
+                            "Tabs open when Relay closes come back, and each connects when you \
+                             first select it. Turned off, Relay starts with only the library \
+                             and keeps no list of your tabs.",
+                        )
+                        .size(12.)
+                        .color(colors.muted),
+                    );
+                    ui.add_space(14.);
+                    ui.separator();
                     section_label(ui, "CONNECTION LIBRARY");
                     // The button comes first so the row takes its height and centers the label.
                     ui.horizontal(|ui| {

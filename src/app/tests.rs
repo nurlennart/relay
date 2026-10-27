@@ -605,3 +605,33 @@ fn ended_and_unconnected_tabs_close_without_asking() {
     assert!(matches!(app.modal, Modal::None));
     assert_eq!(app.sessions.len(), 2);
 }
+
+#[test]
+fn turning_off_reopening_forgets_and_skips_tabs() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    for c in app.connections.clone() {
+        app.sessions
+            .push(session::Session::restored(c, false, ctx.clone()));
+    }
+    app.active = Some(1);
+    app.remember_tabs();
+    assert_eq!(app.state.open.len(), 3);
+    app.state.forget_tabs = true;
+    app.remember_tabs();
+    assert!(app.state.open.is_empty() && app.state.active_tab.is_none());
+    // Even a state file that still lists tabs opens none.
+    let mut state = app.state.clone();
+    state.open = app.connections.clone();
+    let mut next = App::with(
+        ctx.clone(),
+        PathBuf::from("unused.json"),
+        Ok(vec![]),
+        None,
+        None,
+        None,
+        state,
+    );
+    next.restore_tabs();
+    assert!(next.sessions.is_empty());
+}

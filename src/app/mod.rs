@@ -327,6 +327,9 @@ impl App {
 
     /// Reopens last run's tabs. Each connects when first shown, starting with the selected one.
     fn restore_tabs(&mut self) {
+        if self.state.forget_tabs {
+            return;
+        }
         for (index, connection) in self.state.open.clone().into_iter().enumerate() {
             let browsing = self.state.file_tabs.contains(&index);
             self.sessions
@@ -337,6 +340,13 @@ impl App {
 
     /// Records the open tabs so the next start can restore them.
     fn remember_tabs(&mut self) {
+        if self.state.forget_tabs {
+            self.state.open.clear();
+            self.state.file_tabs.clear();
+            self.state.active_tab = None;
+            self.save_state();
+            return;
+        }
         self.state.open = self.sessions.iter().map(|s| s.connection.clone()).collect();
         self.state.file_tabs = (0..self.sessions.len())
             .filter(|i| self.sessions[*i].browsing)
@@ -736,7 +746,7 @@ impl App {
 impl eframe::App for App {
     fn on_exit(&mut self) {
         // Quitting ends sessions first; keep the tabs recorded before that.
-        if !self.sessions.is_empty() {
+        if !self.sessions.is_empty() && !self.state.forget_tabs {
             self.state.active_tab = self.active;
         }
         self.save_state();

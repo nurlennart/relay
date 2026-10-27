@@ -39,6 +39,8 @@ pub struct State {
     pub open: Vec<crate::model::Connection>,
     /// The selected tab among `open`.
     pub active_tab: Option<usize>,
+    /// Start with no tabs instead of reopening last run's, and keep no record of them.
+    pub forget_tabs: bool,
     /// Which of `open` are SFTP file browsers rather than terminals. A separate list keeps
     /// `open` readable by earlier versions, which restore them as terminals.
     pub file_tabs: Vec<usize>,
