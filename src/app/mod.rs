@@ -919,7 +919,8 @@ impl eframe::App for App {
             if ssh && shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::P) {
                 self.palette = Some(Palette::default());
             }
-            // Tab switching also works from a focused terminal, which has no use for these keys.
+            // Tab switching, including Ctrl+1–9, also works from a focused terminal, which has no use
+            // for these keys.
             let ctrl_alt = ctrl | egui::Modifiers::ALT;
             let command = native.or_else(|| {
                 if shortcut(ctrl_alt, egui::Key::PageUp)
@@ -939,6 +940,24 @@ impl eframe::App for App {
                 Some(Command::PreviousTab) => self.select_tab((current + tabs - 1) % tabs),
                 Some(Command::NextTab) => self.select_tab((current + 1) % tabs),
                 Some(Command::Release) | None => {}
+            }
+            let numbers = [
+                egui::Key::Num1,
+                egui::Key::Num2,
+                egui::Key::Num3,
+                egui::Key::Num4,
+                egui::Key::Num5,
+                egui::Key::Num6,
+                egui::Key::Num7,
+                egui::Key::Num8,
+            ];
+            for (index, key) in numbers.into_iter().enumerate() {
+                if shortcut(ctrl, key) {
+                    self.select_tab(index);
+                }
+            }
+            if shortcut(ctrl, egui::Key::Num9) {
+                self.select_tab(self.sessions.len());
             }
             if native.is_some()
                 && let Some(parent) = self.parent
@@ -971,24 +990,6 @@ impl eframe::App for App {
                 } else if shortcut(shift, egui::Key::PageDown) {
                     self.move_session(active, active + 1);
                 }
-            }
-            let numbers = [
-                egui::Key::Num1,
-                egui::Key::Num2,
-                egui::Key::Num3,
-                egui::Key::Num4,
-                egui::Key::Num5,
-                egui::Key::Num6,
-                egui::Key::Num7,
-                egui::Key::Num8,
-            ];
-            for (index, key) in numbers.into_iter().enumerate() {
-                if shortcut(ctrl, key) {
-                    self.select_tab(index);
-                }
-            }
-            if shortcut(ctrl, egui::Key::Num9) {
-                self.select_tab(self.sessions.len());
             }
         }
         // A click on Relay's own interface takes the keyboard back from a remote desktop, whose

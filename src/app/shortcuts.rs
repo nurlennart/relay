@@ -122,7 +122,7 @@ impl App {
                         }
                     }
                     ui.add_space(12.);
-                    ui.label(RichText::new("Focused terminals and remote desktops receive most keys. Tab cycling stays available. Windows RDP tab shortcuts require Relay in the foreground and do not apply in full screen or when Windows keys go to the remote computer.").size(12.).color(colors.muted));
+                    ui.label(RichText::new("Focused terminals and remote desktops receive most keys. Tab switching stays available. Windows RDP tab shortcuts require Relay in the foreground and do not apply in full screen or when Windows keys go to the remote computer.").size(12.).color(colors.muted));
                 });
         });
         if close || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
