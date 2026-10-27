@@ -180,6 +180,10 @@ impl Session {
                     self.ctx.request_repaint_after(Duration::from_millis(50));
                     return;
                 }
+                // A session that stayed up a while starts its reconnection attempts afresh.
+                if terminal.uptime() > Duration::from_secs(30) {
+                    self.attempts = 0;
+                }
                 let failed = sign_in_failed(&terminal.last_lines(2));
                 if let Some(delay) =
                     retry_delay(terminal.exit_code, terminal.uptime(), self.attempts, failed)
@@ -187,8 +191,6 @@ impl Session {
                     self.retry = Some(Instant::now() + delay);
                     self.attempts += 1;
                 }
-            } else if !terminal.ended && terminal.uptime() > Duration::from_secs(30) {
-                self.attempts = 0;
             }
             self.ended = terminal.ended;
             if self.retry.is_some_and(|at| Instant::now() >= at) {
@@ -196,6 +198,18 @@ impl Session {
                 if let Err(e) = self.restart(self.connection.clone()) {
                     self.error = Some(e);
                 }
+            }
+            // Nothing else wakes the window for a reconnection: wake it when the countdown
+            // shows another second, and when the retry is due.
+            if let Some(at) = self.retry {
+                let left = at.saturating_duration_since(Instant::now());
+                let tick = Duration::from_nanos((left.as_nanos() % 1_000_000_000) as u64);
+                let wait = if tick.is_zero() {
+                    left.min(Duration::from_secs(1))
+                } else {
+                    tick
+                };
+                self.ctx.request_repaint_after(wait);
             }
             return;
         }
@@ -376,6 +390,49 @@ mod tests {
     }
 
     #[test]
+    fn exits_and_reconnections_wake_the_window_with_no_timer() {
+        // Repaints requested from outside a frame, as the windowing layer would receive them.
+        let ctx = eframe::egui::Context::default();
+        let wakes = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+        let seen = wakes.clone();
+        ctx.set_request_repaint_callback(move |info| seen.lock().unwrap().push(info.delay));
+        let script = if cfg!(windows) {
+            "ping -n 2 127.0.0.1 >nul& echo Connection reset by peer& exit 255"
+        } else {
+            "sleep 1; echo 'Connection reset by peer'; exit 255"
+        };
+        let terminal = Terminal::script(script, Some(ctx.clone()));
+        let mut session = Session::new(Connection::new(), Some(terminal), ctx.clone());
+        // A later attempt, which the time a session was up does not protect.
+        session.attempts = 1;
+        // The exit wakes the window by itself, with nothing checking on the process.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !session.terminal.as_ref().unwrap().exit_seen() {
+            assert!(Instant::now() < deadline, "the process did not end");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            wakes.lock().unwrap().contains(&Duration::ZERO),
+            "the exit woke nothing"
+        );
+        while session.retry.is_none() {
+            assert!(Instant::now() < deadline, "no reconnection was scheduled");
+            std::thread::sleep(Duration::from_millis(20));
+            session.poll(None);
+        }
+        // Once egui's own first frames are past, the countdown asks to be woken within a second.
+        for _ in 0..3 {
+            let _ = ctx.run(Default::default(), |_| {});
+        }
+        let output = ctx.run(Default::default(), |_| session.poll(None));
+        let delay = output.viewport_output[&eframe::egui::ViewportId::ROOT].repaint_delay;
+        assert!(
+            delay > Duration::ZERO && delay <= Duration::from_secs(1),
+            "the countdown asked for {delay:?}"
+        );
+    }
+
+    #[test]
     fn a_failed_sign_in_is_recognized_however_fast_ssh_exits() {
         // ssh can exit before its last words are read; they must still count.
         let script = if cfg!(windows) {
@@ -384,7 +441,7 @@ mod tests {
             "echo 'deploy@build: Permission denied.'; exit 255"
         };
         for _ in 0..10 {
-            let terminal = Terminal::script(script);
+            let terminal = Terminal::script(script, None);
             let mut session = Session::new(Connection::new(), Some(terminal), Default::default());
             // A later attempt, which the time a session was up does not protect.
             session.attempts = 1;

@@ -322,8 +322,13 @@ impl App {
                 RichText::new("Complete any Windows authentication prompt to continue.")
                     .color(colors.muted),
             );
-            if s.started.elapsed().as_secs() > 20 {
-                ui.label("Waiting for the Windows RDP control to initialize.");
+            let patience = Duration::from_secs(20);
+            match patience.checked_sub(s.started.elapsed()) {
+                // Nothing else wakes the window when the note becomes due.
+                Some(left) => ui.ctx().request_repaint_after(left),
+                None => {
+                    ui.label("Waiting for the Windows RDP control to initialize.");
+                }
             }
         } else {
             if let Some(status) = s.status() {

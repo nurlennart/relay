@@ -279,12 +279,17 @@ fn connecting(ui: &mut egui::Ui, files: &mut Browser) {
                 RichText::new("Opening SFTP with your SSH settings, keys and agent.")
                     .color(colors.muted),
             );
-            if files.started.elapsed() > Duration::from_secs(15) {
-                ui.label(
-                    RichText::new("Still waiting for the server or a jump host.")
-                        .size(12.)
-                        .color(colors.muted),
-                );
+            let patience = Duration::from_secs(15);
+            match patience.checked_sub(files.started.elapsed()) {
+                // Nothing else wakes the window when the note becomes due.
+                Some(left) => ui.ctx().request_repaint_after(left),
+                None => {
+                    ui.label(
+                        RichText::new("Still waiting for the server or a jump host.")
+                            .size(12.)
+                            .color(colors.muted),
+                    );
+                }
             }
             ui.add_space(12.);
             if ui.button("Cancel").clicked() {

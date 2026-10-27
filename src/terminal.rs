@@ -4,7 +4,7 @@ mod search;
 
 use crate::model::Connection;
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{ChildKiller, CommandBuilder, ExitStatus, MasterPty, PtySize};
 use std::{
     io::{Read, Write},
     sync::{
@@ -24,7 +24,10 @@ pub struct Terminal {
     pub parser: Arc<Mutex<vt100::Parser<Replies>>>,
     master: Box<dyn MasterPty + Send>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    child: Box<dyn Child + Send + Sync>,
+    /// Stops the process, which a thread of its own waits for.
+    killer: Box<dyn ChildKiller + Send + Sync>,
+    /// How the process ended, once it has, as its waiting thread saw.
+    exit: Arc<Mutex<Option<std::io::Result<ExitStatus>>>>,
     size: (u16, u16),
     pub ended: bool,
     pub focused: bool,
@@ -135,11 +138,24 @@ impl Terminal {
         let writer = Arc::new(Mutex::new(
             pair.master.take_writer().map_err(|e| e.to_string())?,
         ));
-        let child = pair
+        let mut child = pair
             .slave
             .spawn_command(command)
             .map_err(|e| e.to_string())?;
         drop(pair.slave);
+        // Waiting on a thread wakes the window once when the process ends, so nothing has to
+        // check on it while it runs.
+        let killer = child.clone_killer();
+        let exit = Arc::new(Mutex::new(None));
+        let waited = exit.clone();
+        let wake = ctx.clone();
+        std::thread::spawn(move || {
+            let status = child.wait();
+            *waited.lock().unwrap() = Some(status);
+            if let Some(ctx) = wake {
+                ctx.request_repaint();
+            }
+        });
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             24,
             80,
@@ -207,7 +223,8 @@ impl Terminal {
             parser,
             master: pair.master,
             writer,
-            child,
+            killer,
+            exit,
             size: (24, 80),
             ended: false,
             focused: false,
@@ -231,19 +248,30 @@ impl Terminal {
 
     pub fn poll(&mut self) {
         if !self.ended {
-            match self.child.try_wait() {
-                Ok(Some(status)) => {
+            match self.exit.lock().unwrap().take() {
+                Some(Ok(status)) => {
                     self.ended = true;
                     self.exited = Some(Instant::now());
                     self.exit_code = Some(status.exit_code());
                     self.error = Some(format!("Session ended ({status})."));
                 }
-                Err(e) => {
+                Some(Err(e)) => {
+                    self.ended = true;
+                    self.exited = Some(Instant::now());
                     self.error = Some(format!("Cannot check SSH process: {e}"));
                 }
-                _ => {}
+                None => {}
             }
         }
+    }
+
+    /// A terminal printing log lines steadily, for measuring rendering under load.
+    #[cfg(feature = "ui-check")]
+    pub fn demo_stream(ctx: egui::Context) -> Self {
+        let script = "i=0; while :; do i=$((i+1)); \
+            echo \"$i 2026-10-27T21:00:00Z GET /api/v1/items?page=$i status=200 time=12ms \
+            user=deploy host=build.example.com\"; sleep 0.01; done";
+        Self::spawn(shell(script), Some(ctx)).unwrap()
     }
 
     /// Opens the search bar with `query`, for rendering checks.
@@ -275,7 +303,7 @@ impl Terminal {
 
     /// How long the session has been running, or ran before it ended.
     pub fn uptime(&self) -> Duration {
-        self.started.elapsed()
+        self.exited.unwrap_or_else(Instant::now) - self.started
     }
 
     /// Whether the ended process's output has all arrived, or has had time to.
@@ -400,9 +428,15 @@ impl Terminal {
         let mut reveal = false;
         if let Some(search) = &mut self.search {
             if search.stale(output) {
-                let lines = all_lines(parser.screen_mut(), rows, cols, history);
+                let mut finder = search::Finder::new(&search.query);
+                each_line(parser.screen_mut(), rows, cols, history, |line| {
+                    finder.line(line)
+                });
                 let bottom = history - offset + rows as usize - 1;
-                reveal = search.update(search::find(&lines, &search.query), output, bottom);
+                reveal = search.update(finder.found, output, bottom);
+            }
+            if let Some(wait) = search.refresh_in(output) {
+                ui.ctx().request_repaint_after(wait);
             }
             if let Some(older) = step {
                 search.step(older);
@@ -944,22 +978,18 @@ fn wheel_lines(unit: egui::MouseWheelUnit, delta: f32, height: f32, rows: u16) -
     }
 }
 
-/// Appends the visible `rows` of `screen` to `lines`, numbering the first visible row `top`.
-/// A row that wrapped continues on the next as one line; `joined` says whether the row before
-/// the first wrapped. Returns whether the last row wrapped.
-fn append_rows(
+/// Reads the visible `rows` of `screen` into `line`, numbering the first visible row `top`,
+/// and hands each line to `done` once it is complete, reusing `line` for the next. A row that
+/// wrapped continues on the next as one line, so a line can stay incomplete for a later call.
+fn read_rows(
     screen: &vt100::Screen,
     rows: std::ops::Range<u16>,
     cols: u16,
     top: usize,
-    lines: &mut Vec<search::Line>,
-    mut joined: bool,
-) -> bool {
+    line: &mut search::Line,
+    done: &mut impl FnMut(&search::Line),
+) {
     for row in rows {
-        if !joined || lines.is_empty() {
-            lines.push(search::Line::default());
-        }
-        let line = lines.last_mut().unwrap();
         for col in 0..cols {
             let Some(c) = screen.cell(row, col) else {
                 continue;
@@ -970,40 +1000,51 @@ fn append_rows(
             line.text.push(c.contents().chars().next().unwrap_or(' '));
             line.cells.push((top + row as usize, col));
         }
-        joined = screen.row_wrapped(row);
+        if !screen.row_wrapped(row) {
+            done(line);
+            line.text.clear();
+            line.cells.clear();
+        }
     }
-    joined
 }
 
 /// The lines in view, numbered from the top of the view.
 fn visible_lines(screen: &vt100::Screen, rows: u16, cols: u16) -> Vec<search::Line> {
-    let mut lines = vec![];
-    append_rows(screen, 0..rows, cols, 0, &mut lines, false);
+    let (mut lines, mut line) = (vec![], search::Line::default());
+    read_rows(screen, 0..rows, cols, 0, &mut line, &mut |l| {
+        lines.push(l.clone())
+    });
+    if !line.text.is_empty() {
+        lines.push(line);
+    }
     lines
 }
 
-/// Every line, from the oldest in the `history` to the bottom of the screen. The view is
-/// moved through the history to read it, and put back.
-fn all_lines(
+/// Hands `done` every line, from the oldest in the `history` to the bottom of the screen, one
+/// at a time, so the whole history is never copied. The view is moved through the history to
+/// read it, and put back.
+fn each_line(
     screen: &mut vt100::Screen,
     rows: u16,
     cols: u16,
     history: usize,
-) -> Vec<search::Line> {
+    mut done: impl FnMut(&search::Line),
+) {
     let offset = screen.scrollback();
     let total = history + rows as usize;
-    let mut lines = vec![];
-    let (mut read, mut joined) = (0, false);
+    let (mut read, mut line) = (0, search::Line::default());
     while read < total {
         let scrollback = history.saturating_sub(read);
         screen.set_scrollback(scrollback);
         let top = history - scrollback;
         let first = (read - top) as u16;
-        joined = append_rows(screen, first..rows, cols, top, &mut lines, joined);
+        read_rows(screen, first..rows, cols, top, &mut line, &mut done);
         read = top + rows as usize;
     }
+    if !line.text.is_empty() {
+        done(&line);
+    }
     screen.set_scrollback(offset);
-    lines
 }
 
 /// The last `n` lines of `output` with text, without escape sequences or text a carriage
@@ -1060,9 +1101,14 @@ fn plain_lines(output: &[u8], n: usize) -> Vec<String> {
 
 #[cfg(test)]
 impl Terminal {
-    /// A terminal running `script` with the system shell.
-    pub fn script(script: &str) -> Self {
-        Self::spawn(shell(script), None).unwrap()
+    /// A terminal running `script` with the system shell, waking `ctx` if given.
+    pub fn script(script: &str, ctx: Option<egui::Context>) -> Self {
+        Self::spawn(shell(script), ctx).unwrap()
+    }
+
+    /// Whether the waiting thread has seen the process end, before anything polled it.
+    pub fn exit_seen(&self) -> bool {
+        self.exit.lock().unwrap().is_some()
     }
 }
 
@@ -1153,8 +1199,8 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // Its waiting thread collects it once it has stopped.
+        let _ = self.killer.kill();
     }
 }
 

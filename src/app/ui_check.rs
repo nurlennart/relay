@@ -149,7 +149,11 @@ git pull && ./deploy.sh",
     if std::env::var_os("RELAY_UI_TERMINAL").is_some() {
         let mut connection = app.connections[1].clone();
         connection.host = "build.example.com".into();
-        let mut terminal = crate::terminal::Terminal::demo(TRANSCRIPT);
+        let mut terminal = if std::env::var_os("RELAY_UI_STREAM").is_some() {
+            crate::terminal::Terminal::demo_stream(app.ctx.clone())
+        } else {
+            crate::terminal::Terminal::demo(TRANSCRIPT)
+        };
         if std::env::var_os("RELAY_UI_SELECTION").is_some() {
             terminal.select((13, 0), (15, 40));
         }
@@ -274,6 +278,11 @@ pub fn capture(ctx: &egui::Context) {
     let Some(path) = std::env::var_os("RELAY_UI_CHECK") else {
         return;
     };
+    // Shows the fixture without capturing it, so Relay repaints only when it would anyway,
+    // for measuring what it costs while idle.
+    if path == "idle" {
+        return;
+    }
     static FRAMES: AtomicU32 = AtomicU32::new(0);
     // The terminal fixture needs its transcript in place before the capture.
     let frame = match std::env::var("RELAY_UI_FRAMES").map(|f| f.parse()) {

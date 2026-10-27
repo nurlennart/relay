@@ -763,12 +763,6 @@ impl App {
         }
     }
 
-    /// Whether a session must be checked regularly, for an exited ssh or a due reconnection.
-    /// Ended and waiting ones change only when the user acts.
-    fn sessions_live(&self) -> bool {
-        (self.sessions.iter()).any(|s| s.tab_state() == session::TabState::Open)
-    }
-
     /// Session `index`'s connection with its current saved settings, when it came from the
     /// open library.
     fn current_settings(&self, index: usize) -> Connection {
@@ -1190,9 +1184,6 @@ impl eframe::App for App {
                 .find(|(index, _)| *index == i && !covered)
                 .map(|(_, rect)| *rect);
             s.place_around(rect.map(pixels), &rect.map(holes).unwrap_or_default());
-        }
-        if self.sessions_live() {
-            ctx.request_repaint_after(Duration::from_millis(200));
         }
     }
 }

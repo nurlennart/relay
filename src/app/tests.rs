@@ -304,8 +304,6 @@ fn tabs_from_the_last_run_come_back_waiting() {
             .all(|s| s.tab_state() == session::TabState::Waiting)
     );
     assert_eq!(app.sessions[1].connection.username, "deploy");
-    // Tabs waiting to be shown leave the window idle.
-    assert!(!app.sessions_live());
     // Out-of-range selections are dropped rather than trusted.
     app.state.active_tab = Some(9);
     app.sessions.clear();

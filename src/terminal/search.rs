@@ -3,32 +3,55 @@ use std::time::{Duration, Instant};
 
 /// A line of text as the terminal shows it, with rows that wrapped joined, and the cell each
 /// character is in: a row of the whole output, counted from the oldest, and a column.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Line {
     pub text: Vec<char>,
     pub cells: Vec<(usize, u16)>,
 }
 
-/// The cells of each occurrence of `query` in `lines`, oldest first, ignoring case.
-pub fn find(lines: &[Line], query: &str) -> Vec<Vec<(usize, u16)>> {
-    let query: Vec<char> = query.chars().map(fold).collect();
-    let mut found = vec![];
-    if query.is_empty() {
-        return found;
+/// Finds a query in lines handed to it one at a time, ignoring case.
+pub struct Finder {
+    query: Vec<char>,
+    /// A line's text with case folded, kept to reuse its memory.
+    folded: Vec<char>,
+    /// The cells of each occurrence, oldest first.
+    pub found: Vec<Vec<(usize, u16)>>,
+}
+
+impl Finder {
+    pub fn new(query: &str) -> Self {
+        Self {
+            query: query.chars().map(fold).collect(),
+            folded: vec![],
+            found: vec![],
+        }
     }
-    for line in lines {
-        let text: Vec<char> = line.text.iter().copied().map(fold).collect();
+
+    pub fn line(&mut self, line: &Line) {
+        let n = self.query.len();
+        if n == 0 || line.text.len() < n {
+            return;
+        }
+        self.folded.clear();
+        self.folded.extend(line.text.iter().copied().map(fold));
         let mut i = 0;
-        while i + query.len() <= text.len() {
-            if text[i..i + query.len()] == query[..] {
-                found.push(line.cells[i..i + query.len()].to_vec());
-                i += query.len();
+        while i + n <= self.folded.len() {
+            if self.folded[i..i + n] == self.query[..] {
+                self.found.push(line.cells[i..i + n].to_vec());
+                i += n;
             } else {
                 i += 1;
             }
         }
     }
-    found
+}
+
+/// The cells of each occurrence of `query` in `lines`, oldest first, ignoring case.
+#[cfg(test)]
+pub fn find(lines: &[Line], query: &str) -> Vec<Vec<(usize, u16)>> {
+    let mut finder = Finder::new(query);
+    lines.iter().for_each(|line| finder.line(line));
+    finder.found
 }
 
 fn fold(c: char) -> char {
@@ -58,6 +81,16 @@ impl Search {
             None => true,
             Some((query, _, _)) if *query != self.query => true,
             Some((_, seen, at)) => *seen != output && at.elapsed() >= REFRESH,
+        }
+    }
+
+    /// How long until output beyond the `output` bytes searched may be searched, while the
+    /// matches are for less than that. The last output before a pause needs this wake-up, as
+    /// none follows it.
+    pub fn refresh_in(&self, output: u64) -> Option<Duration> {
+        match &self.found {
+            Some((_, seen, at)) if *seen != output => Some(REFRESH.saturating_sub(at.elapsed())),
+            _ => None,
         }
     }
 
@@ -160,6 +193,10 @@ mod tests {
             (Some(2), "3 of 4")
         );
         assert!(!search.stale(0));
+        // Output right after a search waits, with a wake-up for when it may be searched.
+        assert!(!search.stale(5));
+        assert!(search.refresh_in(5).is_some_and(|d| d <= REFRESH));
+        assert_eq!(search.refresh_in(0), None);
         search.step(true);
         search.step(true);
         search.step(true);
