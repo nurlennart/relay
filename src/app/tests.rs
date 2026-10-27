@@ -222,6 +222,36 @@ fn tabs_from_the_last_run_come_back_waiting() {
 }
 
 #[test]
+fn tabs_take_saved_settings_only_from_their_own_library() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let team = state::Library::Sqlite(PathBuf::from("team.sqlite"));
+    // A tab from a shared library whose ID 2 is Bravo's here, and one of Alpha's from before
+    // its host changed.
+    let mut elsewhere = Connection::new();
+    elsewhere.id = 2;
+    elsewhere.host = "elsewhere.example".into();
+    let mut alpha = app.connections[0].clone();
+    alpha.host = "old.example".into();
+    app.state.open = vec![elsewhere, alpha];
+    // Tabs saved before libraries were recorded came from the library then open.
+    app.state.tab_libraries = vec![team.clone()];
+    app.restore_tabs();
+    assert_eq!(app.current_settings(0).host, "elsewhere.example");
+    assert_eq!(app.current_settings(1).host, "alpha.example");
+
+    // Once Alpha is deleted, a new connection that reuses its ID is not its tab's.
+    app.connections.remove(0);
+    app.forget_removed();
+    assert_eq!(app.sessions[1].connection.id, 0);
+    assert_eq!(
+        app.sessions[0].connection.id, 2,
+        "other libraries are left alone"
+    );
+    assert_eq!(app.state.tab_libraries, [team, state::Library::Personal]);
+}
+
+#[test]
 fn split_view_pairs_two_tabs_and_follows_moves() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);

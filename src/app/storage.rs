@@ -54,6 +54,7 @@ impl App {
                     self.pending_editor = None;
                     self.pending = None;
                     self.error = remember_error;
+                    self.forget_removed();
                     // Routine saves stay silent; loads say what happened.
                     if let Some(opened) = opened {
                         self.notify(format!("Opened the {opened}."));
@@ -105,6 +106,7 @@ impl App {
                     {
                         self.connections = snapshot.connections;
                         self.revision = snapshot.revision;
+                        self.forget_removed();
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.sync = None,

@@ -346,8 +346,11 @@ impl App {
         }
         for (index, connection) in self.state.open.clone().into_iter().enumerate() {
             let browsing = self.state.file_tabs.contains(&index);
-            self.sessions
-                .push(Session::restored(connection, browsing, self.ctx.clone()));
+            let mut session = Session::restored(connection, browsing, self.ctx.clone());
+            session.library = (self.state.tab_libraries.get(index))
+                .unwrap_or(&self.state.library)
+                .clone();
+            self.sessions.push(session);
         }
         self.active = self.state.active_tab.filter(|i| *i < self.sessions.len());
     }
@@ -357,6 +360,7 @@ impl App {
         if self.state.forget_tabs {
             self.state.open.clear();
             self.state.file_tabs.clear();
+            self.state.tab_libraries.clear();
             self.state.active_tab = None;
             self.save_state();
             return;
@@ -365,6 +369,7 @@ impl App {
         self.state.file_tabs = (0..self.sessions.len())
             .filter(|i| self.sessions[*i].browsing)
             .collect();
+        self.state.tab_libraries = self.sessions.iter().map(|s| s.library.clone()).collect();
         self.state.active_tab = self.active;
         self.save_state();
     }
@@ -493,27 +498,29 @@ impl App {
     }
 
     fn connect(&mut self, connection: Connection) {
-        self.open_session(connection, false);
+        self.open_session(connection, false, state::Library::of(&self.location));
     }
 
-    /// Opens a new tab for `connection`: its files if `browsing`, otherwise its terminal or
-    /// desktop.
-    fn open_session(&mut self, connection: Connection, browsing: bool) {
+    /// Opens a new tab for `connection` from `library`: its files if `browsing`, otherwise its
+    /// terminal or desktop.
+    fn open_session(&mut self, connection: Connection, browsing: bool, library: state::Library) {
         let id = connection.id;
+        let current = library == state::Library::of(&self.location);
         let started = if browsing {
             Session::browse(connection, self.ctx.clone())
         } else {
             Session::start(connection, self.ctx.clone())
         };
         match started {
-            Ok(session) => {
+            Ok(mut session) => {
+                session.library = library;
                 for s in &mut self.sessions {
                     s.place(None);
                 }
                 self.sessions.push(session);
                 self.active = Some(self.sessions.len() - 1);
                 self.remember_tabs();
-                if id != 0 {
+                if id != 0 && current {
                     self.state.note_recent(&self.location, id);
                     self.save_state();
                 }
@@ -529,6 +536,7 @@ impl App {
             return;
         };
         let (connection, browsing) = (session.connection.clone(), !session.browsing);
+        let library = session.library.clone();
         let existing = self.sessions.iter().position(|s| {
             s.browsing == browsing
                 && s.connection.same_target(&connection)
@@ -538,7 +546,7 @@ impl App {
             Some(other) => other,
             None => {
                 let count = self.sessions.len();
-                self.open_session(connection, browsing);
+                self.open_session(connection, browsing, library);
                 if self.sessions.len() == count {
                     return;
                 }
@@ -604,15 +612,39 @@ impl App {
         true
     }
 
-    /// Reconnects a session in its tab with the connection's current saved settings.
-    fn reconnect(&mut self, index: usize) {
+    /// Detaches open sessions from connections that left the open library, so a connection
+    /// added later with the same ID is not mistaken for theirs.
+    fn forget_removed(&mut self) {
+        let library = state::Library::of(&self.location);
+        let mut changed = false;
+        for s in &mut self.sessions {
+            if s.connection.id != 0
+                && s.library == library
+                && !self.connections.iter().any(|c| c.id == s.connection.id)
+            {
+                s.connection.id = 0;
+                changed = true;
+            }
+        }
+        if changed {
+            self.remember_tabs();
+        }
+    }
+
+    /// Session `index`'s connection with its current saved settings, when it came from the
+    /// open library.
+    fn current_settings(&self, index: usize) -> Connection {
         let session = &self.sessions[index];
-        let connection = self
-            .connections
-            .iter()
+        (self.connections.iter())
+            .filter(|_| session.library == state::Library::of(&self.location))
             .find(|c| c.id == session.connection.id)
             .unwrap_or(&session.connection)
-            .clone();
+            .clone()
+    }
+
+    /// Reconnects a session in its tab with the connection's current saved settings.
+    fn reconnect(&mut self, index: usize) {
+        let connection = self.current_settings(index);
         if let Err(e) = self.sessions[index].reconnect(connection) {
             self.error = Some(e);
         }
@@ -808,7 +840,7 @@ impl eframe::App for App {
             self.connect(connection);
         }
         if let Some(connection) = self.browse_request.take() {
-            self.open_session(connection, true);
+            self.open_session(connection, true, state::Library::of(&self.location));
         }
         // Remember the restored window size; a maximized window keeps the size it returns to.
         let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized));

@@ -3,6 +3,7 @@ use crate::{
     platform::Window,
     rdp::RdpClient,
     sftp::Browser,
+    state::Library,
     terminal::Terminal,
 };
 use std::time::{Duration, Instant};
@@ -19,6 +20,8 @@ pub enum TabState {
 /// An open tab: an SSH terminal, an SFTP file browser, or a remote desktop.
 pub struct Session {
     pub connection: Connection,
+    /// The library `connection`'s ID belongs to.
+    pub library: Library,
     pub terminal: Option<Terminal>,
     /// Shows the connection's files over SFTP instead of a terminal.
     pub browsing: bool,
@@ -60,6 +63,7 @@ impl Session {
     fn new(connection: Connection, terminal: Option<Terminal>, ctx: eframe::egui::Context) -> Self {
         Self {
             connection,
+            library: Library::Personal,
             terminal,
             browsing: false,
             files: None,

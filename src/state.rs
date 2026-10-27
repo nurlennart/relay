@@ -44,6 +44,9 @@ pub struct State {
     /// Which of `open` are SFTP file browsers rather than terminals. A separate list keeps
     /// `open` readable by earlier versions, which restore them as terminals.
     pub file_tabs: Vec<usize>,
+    /// The library each of `open` came from, as their IDs belong to it. Tabs saved without
+    /// one came from `library`.
+    pub tab_libraries: Vec<Library>,
     /// The folder downloads from the file browser went to last.
     pub download_folder: Option<PathBuf>,
 }
