@@ -231,15 +231,38 @@ git pull && ./deploy.sh",
     }
 }
 
-/// Moves the pointer to `RELAY_UI_HOVER=x,y` to capture hover states.
+/// Moves the pointer to `RELAY_UI_HOVER=x,y` to capture hover states, after right-clicking
+/// at `RELAY_UI_CONTEXT=x,y` once to capture a context menu.
 pub fn hover(raw_input: &mut egui::RawInput) {
-    if let Ok(position) = std::env::var("RELAY_UI_HOVER")
-        && let Some((x, y)) = position.split_once(',')
-        && let (Ok(x), Ok(y)) = (x.parse(), y.parse())
+    let point = |name: &str| {
+        let position = std::env::var(name).ok()?;
+        let (x, y) = position.split_once(',')?;
+        Some(egui::pos2(x.parse().ok()?, y.parse().ok()?))
+    };
+    static FRAMES: AtomicU32 = AtomicU32::new(0);
+    let frame = FRAMES.fetch_add(1, Ordering::Relaxed);
+    let context = point("RELAY_UI_CONTEXT");
+    if let Some(pos) = context {
+        // Pressed and released on separate frames, as a real click is.
+        if let Some(pressed) = match frame {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        } {
+            raw_input.events.push(egui::Event::PointerMoved(pos));
+            raw_input.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: Default::default(),
+            });
+        }
+    }
+    // The hover waits for the right-click, which moves the pointer too.
+    if let Some(pos) = point("RELAY_UI_HOVER")
+        && (context.is_none() || frame > 2)
     {
-        raw_input
-            .events
-            .push(egui::Event::PointerMoved(egui::pos2(x, y)));
+        raw_input.events.push(egui::Event::PointerMoved(pos));
     }
 }
 

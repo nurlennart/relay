@@ -377,7 +377,7 @@ impl App {
         if response.double_clicked() {
             self.request_connect(c.clone());
         }
-        response.context_menu(|ui| self.connection_menu(ui, c));
+        menu_popup(egui::Popup::context_menu(&response)).show(|ui| self.connection_menu(ui, c));
         let description = c
             .metadata
             .get("ConnectionDescription")
@@ -503,7 +503,7 @@ impl App {
                     // Keep the buttons inside the row's highlight, clear of its rounded end.
                     ui.add_space(ACTION_INSET);
                     let more = icon_button(ui, Icon::More, ACTION_SIZE, "More actions");
-                    egui::Popup::menu(&more).show(|ui| self.connection_menu(ui, c));
+                    menu_popup(egui::Popup::menu(&more)).show(|ui| self.connection_menu(ui, c));
                     // Connect appears where the pointer or keyboard is; double-click and
                     // Enter connect any row.
                     if selected || hovered {
@@ -532,8 +532,11 @@ impl App {
     }
 
     /// Actions on a saved connection, from its row's menu or a right-click.
+    /// Grouped as opening, changing, then removing; styled by `menu_popup`.
     pub(super) fn connection_menu(&mut self, ui: &mut egui::Ui, c: &Connection) {
-        if ui.button("Connect").clicked() {
+        let colors = theme::palette(ui.ctx());
+        ui.set_min_width(MENU_WIDTH);
+        if ui.add(menu_item("Connect", "Enter", &colors)).clicked() {
             self.request_connect(c.clone());
             ui.close();
         }
@@ -555,13 +558,14 @@ impl App {
         }
         if c.protocol == Protocol::Ssh
             && ui
-                .button("Browse files")
-                .on_hover_text("Open the server's files over SFTP · Shift+Enter")
+                .add(menu_item("Browse files", "Shift+Enter", &colors))
+                .on_hover_text("Open the server's files over SFTP")
                 .clicked()
         {
             self.request_browse(c.clone());
             ui.close();
         }
+        menu_separator(ui);
         if ui.button("Edit connection").clicked() {
             self.edit(c.clone());
             ui.close();
@@ -595,7 +599,7 @@ impl App {
             }
             ui.close();
         }
-        ui.separator();
+        menu_separator(ui);
         if ui.button("Delete connection").clicked() {
             self.modal = Modal::Delete(c.id);
             ui.close();

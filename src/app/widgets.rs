@@ -44,6 +44,61 @@ pub(super) const RADIUS: u8 = 6;
 pub(super) const RADIUS_LARGE: u8 = 8;
 pub(super) const RADIUS_DIALOG: u8 = 10;
 
+/// The narrowest a menu gets, so short menus still read as menus.
+pub(super) const MENU_WIDTH: f32 = 200.;
+
+/// A menu popup in the theme's colors: roomy items without outlines, a quiet hover, and
+/// corners that follow the menu's own.
+pub(super) fn menu_popup(popup: egui::Popup<'_>) -> egui::Popup<'_> {
+    let colors = theme::palette(popup.ctx());
+    let light = theme::current(popup.ctx()).is_light();
+    // A hover a shade off the menu's fill, rather than the raised controls' hover.
+    let hover = colors
+        .panel
+        .lerp_to_gamma(colors.text, if light { 0.06 } else { 0.08 });
+    let pressed = colors
+        .panel
+        .lerp_to_gamma(colors.text, if light { 0.10 } else { 0.13 });
+    popup.style(move |style: &mut egui::Style| {
+        egui::containers::menu::menu_style(style);
+        style.spacing.menu_margin = egui::Margin::same(5);
+        style.spacing.button_padding = Vec2::new(10., 4.);
+        style.spacing.item_spacing.y = 1.;
+        style.visuals.menu_corner_radius = egui::CornerRadius::same(RADIUS_LARGE);
+        style.visuals.window_fill = colors.panel;
+        style.visuals.window_stroke = Stroke::new(1_f32, colors.line);
+        // Separators are drawn with the non-interactive stroke.
+        style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1_f32, colors.divider);
+        let widgets = &mut style.visuals.widgets;
+        widgets.hovered.weak_bg_fill = hover;
+        widgets.hovered.bg_fill = hover;
+        widgets.active.weak_bg_fill = pressed;
+        widgets.active.bg_fill = pressed;
+        for widget in [
+            &mut widgets.inactive,
+            &mut widgets.hovered,
+            &mut widgets.active,
+        ] {
+            // Concentric with the menu: its radius less the margin.
+            widget.corner_radius = egui::CornerRadius::same(RADIUS_SMALL);
+        }
+    })
+}
+
+/// A discreet line between groups of menu items.
+pub(super) fn menu_separator(ui: &mut egui::Ui) {
+    ui.add(egui::Separator::default().spacing(7.));
+}
+
+/// A menu item with its keyboard shortcut at the right, in quieter text.
+pub(super) fn menu_item<'a>(
+    text: &'a str,
+    shortcut: &'a str,
+    colors: &theme::Palette,
+) -> egui::Button<'a> {
+    egui::Button::new(text).shortcut_text(RichText::new(shortcut).size(12.).color(colors.muted))
+}
+
 /// The size of icons beside text in rows, tabs and fields.
 pub(super) const ICON_SIZE: f32 = 14.;
 
