@@ -49,26 +49,10 @@ impl vt100::Callbacks for Replies {
 impl Terminal {
     pub fn ssh(c: &Connection, ctx: egui::Context) -> Result<Self, String> {
         let mut command = CommandBuilder::new(crate::platform::ssh_program());
-        command.args(["-p", &c.port.to_string()]);
-        if !c.username.is_empty() {
-            command.args(["-l", &c.username]);
-        }
-        if !c.ssh.jump.is_empty() {
-            command.args(["-J", &c.ssh.jump]);
-        }
-        if !c.ssh.identity.is_empty() {
-            command.args(["-i", &c.ssh.identity]);
-        }
+        command.args(c.ssh_args());
         for (flag, spec) in c.ssh.forward_args()? {
             command.args([flag, &spec]);
         }
-        // Keepalives notice a dead connection within about 45 seconds, so it can reconnect.
-        command.args([
-            "-o",
-            "ServerAliveInterval=15",
-            "-o",
-            "ServerAliveCountMax=3",
-        ]);
         command.args(["--", &c.host]);
         Self::spawn(command, Some(ctx)).map_err(|e| {
             format!(

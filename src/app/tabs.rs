@@ -35,6 +35,7 @@ impl App {
                                     let session = session_tab(
                                         ui,
                                         &s.connection,
+                                        s.browsing,
                                         s.tab_state(),
                                         self.active == Some(index) || self.split == Some(index),
                                     );
@@ -131,7 +132,7 @@ impl App {
                                     } else {
                                         session::TabState::Ended
                                     };
-                                    session_tab(ui, c, state, false);
+                                    session_tab(ui, c, false, state, false);
                                 }
                             }
                             if icon_button(ui, Icon::Plus, 26., "New connection (Ctrl+N)").clicked()
@@ -202,6 +203,7 @@ pub(super) fn library_tab(ui: &mut egui::Ui, selected: bool) -> egui::Response {
 pub(super) fn session_tab(
     ui: &mut egui::Ui,
     connection: &Connection,
+    browsing: bool,
     state: session::TabState,
     selected: bool,
 ) -> egui::InnerResponse<(egui::Response, egui::Response)> {
@@ -227,7 +229,11 @@ pub(super) fn session_tab(
     };
     icons::paint_sized(
         ui.painter(),
-        Icon::protocol(connection.protocol),
+        if browsing {
+            Icon::Folder
+        } else {
+            Icon::protocol(connection.protocol)
+        },
         egui::pos2(rect.left() + 16., rect.center().y),
         ICON_SIZE,
         status,
@@ -242,7 +248,11 @@ pub(super) fn session_tab(
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(format!(
             "{} · {} · {}",
-            connection.protocol.label(),
+            if browsing {
+                "SFTP"
+            } else {
+                connection.protocol.label()
+            },
             connection.address(),
             state
         ));

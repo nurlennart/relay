@@ -137,6 +137,9 @@ git pull && ./deploy.sh",
             app.active = None;
         }
     }
+    if std::env::var_os("RELAY_UI_FILES").is_some() {
+        files(app);
+    }
     if std::env::var_os("RELAY_UI_SSH").is_some() {
         let mut c = app.connections[1].clone();
         c.ssh.jump = "ops@bastion.example.com".into();
@@ -250,3 +253,74 @@ Main PID: 1042 (nginx)\r\n\
 \x1b[33m4938270\x1b[0m Fix SSH sessions exiting with 255 before showing anything\r\n\
 \x1b[33mf52e8fb\x1b[0m Make the library keyboard-driven, denser, and responsive\r\n\
 \x1b[1;32mdeploy@build\x1b[0m:\x1b[1;34m~\x1b[0m$ \x1b[7m \x1b[0m\x1b[2m  # selection, dim and inverse text\x1b[0m";
+
+/// A file browser on the build server with a few items and transfers, beside its terminal
+/// with `RELAY_UI_SPLIT`.
+fn files(app: &mut App) {
+    use crate::sftp::{Browser, Direction, Entry};
+    let day = 1_793_000_000;
+    let item = |name: &str, dir: bool, size: u64, age: u32, mode: u32| Entry {
+        name: name.into(),
+        dir,
+        link: false,
+        special: false,
+        size,
+        modified: Some(day - age * 3600),
+        mode: Some(mode),
+    };
+    let mut browser = Browser::demo(
+        "/home/deploy/relay",
+        vec![
+            item("assets", true, 0, 30, 0o040_755),
+            item("releases", true, 0, 4, 0o040_755),
+            item("src", true, 0, 2, 0o040_755),
+            item(".env", false, 312, 300, 0o100_600),
+            item("Cargo.toml", false, 3_338, 20, 0o100_644),
+            item("deploy.sh", false, 1_204, 50, 0o100_755),
+            item("relay-0.4.0.tar.gz", false, 18_874_368, 1, 0o100_644),
+            item("server.log", false, 4_404_019, 0, 0o100_640),
+        ],
+    );
+    browser.home = "/home/deploy".into();
+    browser.view.select_only("relay-0.4.0.tar.gz");
+    browser.view.focused = true;
+    browser.demo_transfer(
+        "relay-0.4.0.tar.gz",
+        Direction::Download,
+        7_340_032,
+        18_874_368,
+    );
+    browser.demo_transfer("Cargo.toml", Direction::Upload, 3_338, 3_338);
+    match std::env::var("RELAY_UI_FILES").as_deref() {
+        Ok("hostkey") => browser.demo_prompt(
+            "The authenticity of host 'build.example.com (192.0.2.10)' can't be established.\n\
+             ED25519 key fingerprint is SHA256:3vYkqfGx9tQ0mZbXcW8hL2pN7rJ5sD1aE4uK6oI9yTw.\n\
+             This key is not known by any other names.\n\
+             Are you sure you want to continue connecting (yes/no/[fingerprint])?",
+            crate::askpass::Kind::YesNo,
+        ),
+        Ok("password") => browser.demo_prompt(
+            "deploy@build.example.com's password:",
+            crate::askpass::Kind::Secret,
+        ),
+        _ => {}
+    }
+    let connection = app.connections[1].clone();
+    if std::env::var_os("RELAY_UI_SPLIT").is_some() {
+        let terminal = crate::terminal::Terminal::demo(TRANSCRIPT);
+        app.sessions.push(session::Session::demo(
+            connection.clone(),
+            terminal,
+            app.ctx.clone(),
+        ));
+        app.active = Some(app.sessions.len() - 1);
+        app.split = Some(app.sessions.len());
+    } else {
+        app.active = Some(app.sessions.len());
+    }
+    app.sessions.push(session::Session::demo_files(
+        connection,
+        browser,
+        app.ctx.clone(),
+    ));
+}

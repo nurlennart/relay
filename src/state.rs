@@ -39,6 +39,11 @@ pub struct State {
     pub open: Vec<crate::model::Connection>,
     /// The selected tab among `open`.
     pub active_tab: Option<usize>,
+    /// Which of `open` are SFTP file browsers rather than terminals. A separate list keeps
+    /// `open` readable by earlier versions, which restore them as terminals.
+    pub file_tabs: Vec<usize>,
+    /// The folder downloads from the file browser went to last.
+    pub download_folder: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

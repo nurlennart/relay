@@ -38,6 +38,9 @@ pub fn ssh_program() -> PathBuf {
     super::find_program("ssh").unwrap_or_else(|| "ssh".into())
 }
 
+/// Prepares a helper process that runs without a window. Nothing is needed here.
+pub fn background(_command: &mut std::process::Command) {}
+
 pub fn install_shortcuts(_main: Window, _ctx: eframe::egui::Context) {}
 
 pub fn take_command() -> Option<Command> {

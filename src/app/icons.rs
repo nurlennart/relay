@@ -18,6 +18,13 @@ pub(super) enum Icon {
     Search,
     Sidebar,
     ChevronDown,
+    ChevronUp,
+    File,
+    Up,
+    Back,
+    Refresh,
+    Upload,
+    Download,
 }
 
 impl Icon {
@@ -145,6 +152,45 @@ pub(super) fn paint_sized(
             line(&[(-2.5, -6.), (-2.5, 6.)]);
         }
         Icon::ChevronDown => line(&[(-4., -2.), (0., 2.), (4., -2.)]),
+        Icon::ChevronUp => line(&[(-4., 2.), (0., -2.), (4., 2.)]),
+        Icon::File => {
+            painter.add(egui::Shape::closed_line(
+                [(-5., -7.), (1.5, -7.), (5., -3.5), (5., 7.), (-5., 7.)]
+                    .map(|(x, y)| at(x, y))
+                    .to_vec(),
+                stroke,
+            ));
+            line(&[(1.5, -7.), (1.5, -3.5), (5., -3.5)]);
+        }
+        Icon::Up => {
+            line(&[(0., 6.), (0., -6.)]);
+            line(&[(-4.5, -1.5), (0., -6.), (4.5, -1.5)]);
+        }
+        Icon::Back => {
+            line(&[(6., 0.), (-6., 0.)]);
+            line(&[(-1.5, -4.5), (-6., 0.), (-1.5, 4.5)]);
+        }
+        Icon::Refresh => {
+            // Most of a circle, with an arrowhead where it opens.
+            let points = (0..=20)
+                .map(|i| {
+                    let angle = -0.9 + 5.2 * i as f32 / 20.;
+                    at(5.5 * angle.cos(), 5.5 * angle.sin())
+                })
+                .collect();
+            painter.add(egui::Shape::line(points, stroke));
+            let (x, y) = (5.5 * (-0.9f32).cos(), 5.5 * (-0.9f32).sin());
+            line(&[(x - 3.2, y - 0.6), (x, y), (x + 0.4, y - 3.2)]);
+        }
+        Icon::Upload | Icon::Download => {
+            line(&[(-6.5, 3.), (-6.5, 6.5), (6.5, 6.5), (6.5, 3.)]);
+            line(&[(0., -6.5), (0., 3.)]);
+            if icon == Icon::Upload {
+                line(&[(-3.5, -3.), (0., -6.5), (3.5, -3.)]);
+            } else {
+                line(&[(-3.5, -0.5), (0., 3.), (3.5, -0.5)]);
+            }
+        }
     }
 }
 

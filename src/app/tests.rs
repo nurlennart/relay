@@ -1,5 +1,6 @@
 use super::{
     library::{Column, GAP, table_columns},
+    sessions::Pane,
     settings::theme_option,
     tabs::{drop_index, session_tab},
     *,
@@ -208,7 +209,7 @@ fn split_view_pairs_two_tabs_and_follows_moves() {
     let mut app = test_app(&ctx);
     for c in app.connections.clone() {
         app.sessions
-            .push(session::Session::restored(c, ctx.clone()));
+            .push(session::Session::restored(c, false, ctx.clone()));
     }
     app.active = Some(0);
     app.toggle_split();
@@ -298,10 +299,12 @@ fn tab_close_is_inside_tab_and_does_not_select_it() {
                             first.name = "Design workstation".into();
                             let mut second = Connection::new();
                             second.name = "Build server".into();
-                            let session = session_tab(ui, &first, session::TabState::Open, true);
+                            let session =
+                                session_tab(ui, &first, false, session::TabState::Open, true);
                             assert!(session.response.rect.contains_rect(session.inner.1.rect));
                             assert!(!session.inner.0.rect.intersects(session.inner.1.rect));
-                            let next = session_tab(ui, &second, session::TabState::Waiting, false);
+                            let next =
+                                session_tab(ui, &second, true, session::TabState::Waiting, false);
                             assert_eq!(
                                 session.response.rect.center().y,
                                 next.response.rect.center().y
@@ -392,4 +395,156 @@ fn navigation_and_theme_clicks_include_label_and_both_edges() {
         }]);
         assert!(clicked, "navigation row ignored click at x={x}");
     }
+}
+
+/// An app with one file browser tab showing `/srv`.
+fn files_app(ctx: &egui::Context) -> App {
+    let mut app = test_app(ctx);
+    let entry = |name: &str, dir: bool| crate::sftp::Entry {
+        name: name.into(),
+        dir,
+        link: false,
+        special: false,
+        size: 10,
+        modified: Some(1_700_000_000),
+        mode: Some(if dir { 0o040_755 } else { 0o100_644 }),
+    };
+    let browser = crate::sftp::Browser::demo(
+        "/srv",
+        vec![
+            entry("b.txt", false),
+            entry("app", true),
+            entry("c.txt", false),
+        ],
+    );
+    let mut c = app.connections[0].clone();
+    c.protocol = Protocol::Ssh;
+    app.sessions
+        .push(session::Session::demo_files(c, browser, ctx.clone()));
+    app.active = Some(0);
+    app
+}
+
+fn files_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(1200., 800.),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.files_pane(ui, 0, Pane::Main));
+        },
+    );
+}
+
+fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+fn files(app: &App) -> &crate::sftp::Browser {
+    app.sessions[0].files.as_ref().unwrap()
+}
+
+#[test]
+fn file_browser_keys_select_ranges_and_ask_before_deleting() {
+    let ctx = egui::Context::default();
+    let mut app = files_app(&ctx);
+    files_frame(&mut app, &ctx, vec![]);
+    assert!(files(&app).view.focused, "a new browser takes the keyboard");
+    let none = egui::Modifiers::NONE;
+    files_frame(&mut app, &ctx, vec![key(egui::Key::ArrowDown, none)]);
+    assert_eq!(
+        files(&app).view.cursor.as_deref(),
+        Some("app"),
+        "folders come first"
+    );
+    files_frame(&mut app, &ctx, vec![key(egui::Key::ArrowDown, none)]);
+    files_frame(
+        &mut app,
+        &ctx,
+        vec![key(egui::Key::ArrowDown, egui::Modifiers::SHIFT)],
+    );
+    let selected: Vec<_> = files(&app).view.selected.iter().cloned().collect();
+    assert_eq!(selected, ["b.txt", "c.txt"]);
+    files_frame(&mut app, &ctx, vec![key(egui::Key::Delete, none)]);
+    assert_eq!(
+        files(&app).view.confirm,
+        Some(crate::sftp::Confirm::Delete(vec![
+            "b.txt".into(),
+            "c.txt".into()
+        ]))
+    );
+    files_frame(&mut app, &ctx, vec![key(egui::Key::Escape, none)]);
+    files_frame(&mut app, &ctx, vec![]);
+    assert_eq!(files(&app).view.confirm, None, "Escape keeps the files");
+    files_frame(&mut app, &ctx, vec![key(egui::Key::Home, none)]);
+    files_frame(&mut app, &ctx, vec![key(egui::Key::Enter, none)]);
+    assert!(files(&app).loading, "Enter opens the folder");
+    assert!(!files(&app).ended());
+}
+
+#[test]
+fn f2_renames_in_place_and_keeps_the_extension() {
+    let ctx = egui::Context::default();
+    let mut app = files_app(&ctx);
+    files_frame(&mut app, &ctx, vec![]);
+    let none = egui::Modifiers::NONE;
+    files_frame(&mut app, &ctx, vec![key(egui::Key::End, none)]);
+    files_frame(&mut app, &ctx, vec![key(egui::Key::F2, none)]);
+    files_frame(&mut app, &ctx, vec![]);
+    files_frame(&mut app, &ctx, vec![egui::Event::Text("notes".into())]);
+    files_frame(&mut app, &ctx, vec![key(egui::Key::Enter, none)]);
+    let browser = files(&app);
+    assert_eq!(browser.view.rename, None);
+    assert_eq!(browser.error, None);
+    assert_eq!(browser.busy, 1, "the rename was sent");
+    let selected: Vec<_> = browser.view.selected.iter().cloned().collect();
+    assert_eq!(selected, ["notes.txt"]);
+}
+
+#[test]
+fn file_tabs_are_remembered_as_browsers() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let mut c = app.connections[0].clone();
+    c.protocol = Protocol::Ssh;
+    app.sessions
+        .push(session::Session::restored(c.clone(), false, ctx.clone()));
+    app.sessions
+        .push(session::Session::restored(c.clone(), true, ctx.clone()));
+    app.remember_tabs();
+    assert_eq!(app.state.file_tabs, [1]);
+    let mut restored = App::with(
+        ctx.clone(),
+        PathBuf::from("unused.json"),
+        Ok(vec![]),
+        None,
+        None,
+        None,
+        app.state.clone(),
+    );
+    restored.restore_tabs();
+    let kinds: Vec<_> = restored.sessions.iter().map(|s| s.browsing).collect();
+    assert_eq!(kinds, [false, true]);
+
+    // A terminal's Files button pairs it with the open browser instead of opening another.
+    app.active = Some(0);
+    app.open_companion(0);
+    assert_eq!(
+        (app.active, app.split, app.sessions.len()),
+        (Some(0), Some(1), 2)
+    );
+    app.split = None;
+    app.open_companion(1);
+    assert_eq!((app.active, app.split), (Some(1), Some(0)));
 }

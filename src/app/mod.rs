@@ -1,5 +1,6 @@
 //! Relay's workspace: the `App` state, its frame loop, and the screens drawn from it.
 mod editor;
+mod files;
 mod icons;
 mod library;
 mod sessions;
@@ -183,6 +184,8 @@ struct App {
     pending_save: bool,
     /// A connection to open at the start of the next frame, outside any dialog or list.
     connect_request: Option<Connection>,
+    /// A connection whose files to open at the start of the next frame.
+    browse_request: Option<Connection>,
 }
 
 const NOTICE_SECONDS: u64 = 4;
@@ -296,6 +299,7 @@ impl App {
             snippet_draft: None,
             pending_save: false,
             connect_request: None,
+            browse_request: None,
         }
     }
 
@@ -323,9 +327,10 @@ impl App {
 
     /// Reopens last run's tabs. Each connects when first shown, starting with the selected one.
     fn restore_tabs(&mut self) {
-        for connection in self.state.open.clone() {
+        for (index, connection) in self.state.open.clone().into_iter().enumerate() {
+            let browsing = self.state.file_tabs.contains(&index);
             self.sessions
-                .push(Session::restored(connection, self.ctx.clone()));
+                .push(Session::restored(connection, browsing, self.ctx.clone()));
         }
         self.active = self.state.active_tab.filter(|i| *i < self.sessions.len());
     }
@@ -333,6 +338,9 @@ impl App {
     /// Records the open tabs so the next start can restore them.
     fn remember_tabs(&mut self) {
         self.state.open = self.sessions.iter().map(|s| s.connection.clone()).collect();
+        self.state.file_tabs = (0..self.sessions.len())
+            .filter(|i| self.sessions[*i].browsing)
+            .collect();
         self.state.active_tab = self.active;
         self.save_state();
     }
@@ -446,9 +454,26 @@ impl App {
         self.ctx.request_repaint();
     }
 
+    /// Opens a file browser for `connection` in a new tab on the next frame.
+    fn request_browse(&mut self, connection: Connection) {
+        self.browse_request = Some(connection);
+        self.ctx.request_repaint();
+    }
+
     fn connect(&mut self, connection: Connection) {
+        self.open_session(connection, false);
+    }
+
+    /// Opens a new tab for `connection`: its files if `browsing`, otherwise its terminal or
+    /// desktop.
+    fn open_session(&mut self, connection: Connection, browsing: bool) {
         let id = connection.id;
-        match Session::start(connection, self.ctx.clone()) {
+        let started = if browsing {
+            Session::browse(connection, self.ctx.clone())
+        } else {
+            Session::start(connection, self.ctx.clone())
+        };
+        match started {
             Ok(session) => {
                 for s in &mut self.sessions {
                     s.place(None);
@@ -463,6 +488,38 @@ impl App {
             }
             Err(e) => self.error = Some(e),
         }
+    }
+
+    /// Shows session `index`'s terminal beside its file browser, or the other way round,
+    /// reusing an open tab for the same connection when there is one.
+    fn open_companion(&mut self, index: usize) {
+        let Some(session) = self.sessions.get(index) else {
+            return;
+        };
+        let (connection, browsing) = (session.connection.clone(), !session.browsing);
+        let existing = self.sessions.iter().position(|s| {
+            s.browsing == browsing
+                && s.connection.same_target(&connection)
+                && !self.detached.contains(&s.key)
+        });
+        let other = match existing {
+            Some(other) => other,
+            None => {
+                let count = self.sessions.len();
+                self.open_session(connection, browsing);
+                if self.sessions.len() == count {
+                    return;
+                }
+                count
+            }
+        };
+        if self.is_detached(index) {
+            self.active = Some(other);
+            return;
+        }
+        self.active = Some(index);
+        self.split = Some(other);
+        self.remember_tabs();
     }
 
     /// Reconnects a session in its tab with the connection's current saved settings.
@@ -546,6 +603,13 @@ impl App {
                 ui.set_width(380.);
                 ui.heading("Close Relay?");
                 ui.label("Save your work on each remote machine before closing.");
+                let transfers: usize = self.sessions.iter().map(Session::active_transfers).sum();
+                if transfers > 0 {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!("Unfinished file transfers ({transfers}) will be cancelled."),
+                    );
+                }
                 if self.recovery.is_some() {
                     ui.colored_label(
                         ui.visuals().error_fg_color,
@@ -604,12 +668,27 @@ impl App {
                     .sessions
                     .get(index)
                     .map_or("session".into(), |s| format!("“{}”", s.connection.name));
+                let transfers = self
+                    .sessions
+                    .get(index)
+                    .map_or(0, Session::active_transfers);
                 dialog("close", ctx).show(ctx, |ui| {
                     ui.set_width(380.);
                     ui.heading(format!("Close {name}?"));
                     ui.label(
                         "The connection will end. Save your work on the remote machine first.",
                     );
+                    if transfers > 0 {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            match transfers {
+                                1 => "1 transfer is not finished and will be cancelled.".into(),
+                                n => {
+                                    format!("{n} transfers are not finished and will be cancelled.")
+                                }
+                            },
+                        );
+                    }
                     ui.horizontal(|ui| {
                         if ui.button("Close session").clicked() {
                             self.sessions.remove(index);
@@ -653,6 +732,9 @@ impl eframe::App for App {
         self.poll_storage();
         if let Some(connection) = self.connect_request.take() {
             self.connect(connection);
+        }
+        if let Some(connection) = self.browse_request.take() {
+            self.open_session(connection, true);
         }
         // Remember the restored window size; a maximized window keeps the size it returns to.
         let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized));
@@ -726,7 +808,8 @@ impl eframe::App for App {
             }
         }
         if !terminal_focused && !self.covered() {
-            if shortcut(ctrl, egui::Key::N) {
+            // Ctrl+Shift+N creates a folder in the file browser.
+            if !ctx.input(|i| i.modifiers.shift) && shortcut(ctrl, egui::Key::N) {
                 self.new_connection();
             }
             if shortcut(ctrl, egui::Key::K) {
@@ -784,12 +867,13 @@ impl eframe::App for App {
         }
         if self.shown != self.active {
             self.shown = self.active;
-            if let Some(terminal) = self
-                .active
-                .and_then(|i| self.sessions.get_mut(i))
-                .and_then(|s| s.terminal.as_mut())
-            {
-                terminal.focus();
+            if let Some(session) = self.active.and_then(|i| self.sessions.get_mut(i)) {
+                if let Some(terminal) = &mut session.terminal {
+                    terminal.focus();
+                }
+                if let Some(files) = &mut session.files {
+                    files.view.focus_requested = true;
+                }
             }
         }
         // Hide native children before painting overlays; embedded remote desktops sit above GPU content.

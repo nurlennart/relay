@@ -1,6 +1,6 @@
 //! Native file pickers, attached to Relay's window.
 use crate::platform::Window;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What a picker is for, which sets its file types and options.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -53,4 +53,42 @@ pub fn choose(parent: Option<Window>, kind: Kind) -> Vec<PathBuf> {
             .collect(),
         Kind::ImportCsv | Kind::Database | Kind::Key => dialog.pick_file().into_iter().collect(),
     }
+}
+
+/// Asks for files to upload, or folders with `folders`.
+pub fn pick_uploads(parent: Option<Window>, folders: bool) -> Vec<PathBuf> {
+    let mut dialog = rfd::FileDialog::new();
+    if let Some(parent) = &parent {
+        dialog = dialog.set_parent(parent);
+    }
+    if folders {
+        dialog.pick_folders().unwrap_or_default()
+    } else {
+        dialog.pick_files().unwrap_or_default()
+    }
+}
+
+/// Asks for a folder to download into, starting at `start`.
+pub fn pick_folder(parent: Option<Window>, start: Option<&Path>) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new().set_title("Download to folder");
+    if let Some(parent) = &parent {
+        dialog = dialog.set_parent(parent);
+    }
+    if let Some(start) = start {
+        dialog = dialog.set_directory(start);
+    }
+    dialog.pick_folder()
+}
+
+/// Asks where to save a download named `name`, starting at `start`. The dialog asks before
+/// replacing an existing file.
+pub fn save_as(parent: Option<Window>, name: &str, start: Option<&Path>) -> Option<PathBuf> {
+    let mut dialog = rfd::FileDialog::new().set_file_name(name);
+    if let Some(parent) = &parent {
+        dialog = dialog.set_parent(parent);
+    }
+    if let Some(start) = start {
+        dialog = dialog.set_directory(start);
+    }
+    dialog.save_file()
 }

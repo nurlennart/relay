@@ -159,6 +159,7 @@ impl App {
         let mut attach = false;
         let mut save = false;
         let mut snippets = false;
+        let mut companion = false;
         let s = &self.sessions[index];
         ui.horizontal(|ui| {
             ui.set_min_height(26.);
@@ -166,7 +167,11 @@ impl App {
             let (icon, _) = ui.allocate_exact_size(Vec2::splat(16.), egui::Sense::hover());
             icons::paint(
                 ui.painter(),
-                Icon::protocol(s.connection.protocol),
+                if s.browsing {
+                    Icon::Folder
+                } else {
+                    Icon::protocol(s.connection.protocol)
+                },
                 icon.center(),
                 match s.connection.protocol {
                     Protocol::Rdp => colors.rdp,
@@ -209,6 +214,18 @@ impl App {
                         .on_hover_text("Keep this connection in the library")
                         .clicked();
                 }
+                // A terminal and its files open side by side.
+                if s.browsing {
+                    companion = ui
+                        .button("Terminal")
+                        .on_hover_text("Open a terminal on this server beside the files")
+                        .clicked();
+                } else if s.connection.protocol == Protocol::Ssh && s.terminal.is_some() {
+                    companion = ui
+                        .button("Files")
+                        .on_hover_text("Browse this server's files over SFTP beside the terminal")
+                        .clicked();
+                }
                 // The snippet palette opens over the main window's active tab.
                 let ssh = s.connection.protocol == Protocol::Ssh;
                 if ssh && s.terminal.is_some() && s.is_running() && pane != Pane::Window {
@@ -249,12 +266,20 @@ impl App {
         if unsplit {
             self.split = None;
         }
+        if companion {
+            self.open_companion(index);
+            if pane == Pane::Beside {
+                return None;
+            }
+        }
         if attach {
             self.attach(self.sessions[index].key);
         }
         let s = &self.sessions[index];
         ui.add_space(6.);
-        if s.terminal.is_some() {
+        if s.browsing {
+            self.files_pane(ui, index, pane);
+        } else if s.terminal.is_some() {
             if let Some(status) = s.status() {
                 let (mut now, mut stop) = (false, false);
                 ui.horizontal(|ui| {

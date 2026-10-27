@@ -64,6 +64,8 @@ impl App {
                 self.scroll_to = true;
             }
         }
+        // Shift+Enter browses an SSH connection's files instead of opening its terminal.
+        let browse = ui.input(|i| i.modifiers.shift);
         let enter_idle = focused.is_none()
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
 
@@ -158,32 +160,51 @@ impl App {
         // Anything that parses as a host can be reached without a saved profile: Enter does
         // that when nothing matches, and Alt+Enter always does.
         let quick = Connection::quick(&self.query);
+        // `sftp://host` and `sftp host` open a file browser.
+        let quick_browses = model::browses(&self.query);
         let submitted = search.lost_focus() && enter;
         let alt = ui.input(|i| i.modifiers.alt);
         if submitted
             && (alt || connections.is_empty())
             && let Some(target) = &quick
         {
-            self.request_connect(target.clone());
+            if quick_browses {
+                self.request_browse(target.clone());
+            } else {
+                self.request_connect(target.clone());
+            }
             return;
         }
         if (submitted || enter_idle)
             && let Some(c) = connections.get(index.unwrap_or(0))
         {
             self.selected = Some(c.id);
-            self.request_connect(c.clone());
+            if browse && c.protocol == Protocol::Ssh {
+                self.request_browse(c.clone());
+            } else {
+                self.request_connect(c.clone());
+            }
             return;
         }
         ui.add_space(10.);
         if let Some(target) = &quick {
-            let label = format!("{} {}", target.protocol.label(), target_label(target));
+            let kind = if quick_browses {
+                "SFTP"
+            } else {
+                target.protocol.label()
+            };
+            let label = format!("{kind} {}", target_label(target));
             if connections.is_empty() {
                 ui.horizontal(|ui| {
                     if accent_button(ui, &format!("Connect to {label}"), 0.)
                         .on_hover_text("Enter")
                         .clicked()
                     {
-                        self.request_connect(target.clone());
+                        if quick_browses {
+                            self.request_browse(target.clone());
+                        } else {
+                            self.request_connect(target.clone());
+                        }
                     }
                     ui.label(
                         RichText::new(
@@ -493,6 +514,17 @@ impl App {
                         if ui.add_sized([68., ACTION_SIZE], connect).clicked() {
                             self.request_connect(c.clone());
                         }
+                        if c.protocol == Protocol::Ssh
+                            && icon_button(
+                                ui,
+                                Icon::Folder,
+                                ACTION_SIZE,
+                                "Browse files over SFTP (Shift+Enter)",
+                            )
+                            .clicked()
+                        {
+                            self.request_browse(c.clone());
+                        }
                     }
                 }
             }
@@ -503,6 +535,15 @@ impl App {
     pub(super) fn connection_menu(&mut self, ui: &mut egui::Ui, c: &Connection) {
         if ui.button("Connect").clicked() {
             self.request_connect(c.clone());
+            ui.close();
+        }
+        if c.protocol == Protocol::Ssh
+            && ui
+                .button("Browse files")
+                .on_hover_text("Open the server's files over SFTP · Shift+Enter")
+                .clicked()
+        {
+            self.request_browse(c.clone());
             ui.close();
         }
         if ui.button("Edit connection").clicked() {

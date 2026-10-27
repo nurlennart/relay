@@ -186,6 +186,25 @@ impl RdpOptions {
     }
 }
 
+/// Quick-connect prefixes and the protocol each means. Longer prefixes come first.
+const QUICK_PREFIXES: [(&str, Protocol); 6] = [
+    ("ssh://", Protocol::Ssh),
+    ("rdp://", Protocol::Rdp),
+    ("sftp://", Protocol::Ssh),
+    ("ssh ", Protocol::Ssh),
+    ("rdp ", Protocol::Rdp),
+    ("sftp ", Protocol::Ssh),
+];
+
+/// Whether a quick-connect target asks for a file browser (`sftp://` or `sftp `).
+pub fn browses(text: &str) -> bool {
+    let text = text.trim_start();
+    ["sftp://", "sftp "].iter().any(|prefix| {
+        text.get(..prefix.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+    })
+}
+
 /// Accepts hostnames and addresses: no leading dash, no spaces or URL syntax.
 fn valid_host(host: &str) -> bool {
     !host.is_empty()
@@ -270,18 +289,14 @@ impl Connection {
         Ok(())
     }
     /// Parses a quick-connect target: `host`, `host:port`, `user@host`, `[IPv6]:port`, with
-    /// an optional `ssh `, `rdp `, `ssh://` or `rdp://` prefix. Without a prefix, `user@host`
-    /// and port 22 mean SSH and anything else RDP, matching how people write each.
+    /// an optional `ssh `, `rdp `, `sftp `, `ssh://`, `rdp://` or `sftp://` prefix. Without a
+    /// prefix, `user@host` and port 22 mean SSH and anything else RDP, matching how people
+    /// write each. SFTP targets are SSH connections; [`browses`] tells them apart.
     pub fn quick(text: &str) -> Option<Self> {
         // Trailing space matters: "ssh " is a prefix still being typed, not a host.
         let mut rest = text.trim_start();
         let mut protocol = None;
-        for (prefix, kind) in [
-            ("ssh://", Protocol::Ssh),
-            ("rdp://", Protocol::Rdp),
-            ("ssh ", Protocol::Ssh),
-            ("rdp ", Protocol::Rdp),
-        ] {
+        for (prefix, kind) in QUICK_PREFIXES {
             if rest
                 .get(..prefix.len())
                 .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
@@ -335,6 +350,24 @@ impl Connection {
             && self.host.eq_ignore_ascii_case(&other.host)
             && self.port == other.port
             && self.username == other.username
+    }
+    /// OpenSSH options for this connection, without port forwards or the destination.
+    pub fn ssh_args(&self) -> Vec<String> {
+        let mut args = vec!["-p".to_string(), self.port.to_string()];
+        if !self.username.is_empty() {
+            args.extend(["-l".into(), self.username.clone()]);
+        }
+        if !self.ssh.jump.is_empty() {
+            args.extend(["-J".into(), self.ssh.jump.clone()]);
+        }
+        if !self.ssh.identity.is_empty() {
+            args.extend(["-i".into(), self.ssh.identity.clone()]);
+        }
+        // Keepalives notice a dead connection within about 45 seconds.
+        for option in ["ServerAliveInterval=15", "ServerAliveCountMax=3"] {
+            args.extend(["-o".into(), option.into()]);
+        }
+        args
     }
     pub fn address(&self) -> String {
         if self.host.contains(':') {
@@ -504,6 +537,16 @@ mod tests {
             target("rdp://desk/"),
             expect(Protocol::Rdp, "", "desk", 3389, "desk")
         );
+        assert_eq!(
+            target("sftp://deploy@build:2222"),
+            expect(Protocol::Ssh, "deploy", "build", 2222, "deploy@build")
+        );
+        assert_eq!(
+            target("SFTP build"),
+            expect(Protocol::Ssh, "", "build", 22, "build")
+        );
+        assert!(browses(" sftp://build") && browses("Sftp build"));
+        assert!(!browses("ssh build") && !browses("sftpserver") && !browses("sftp"));
         assert_eq!(
             target("rdp alex@desk"),
             expect(Protocol::Rdp, "alex", "desk", 3389, "alex@desk")

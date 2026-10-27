@@ -16,7 +16,7 @@ use other as sys;
 #[cfg(windows)]
 use windows as sys;
 
-pub use sys::{find_window, focus, install_shortcuts, take_command};
+pub use sys::{background, find_window, focus, install_shortcuts, take_command};
 
 /// A native window of Relay's own. File pickers attach to it, and on Windows remote desktops
 /// live inside it.
@@ -76,6 +76,11 @@ pub fn data_dir() -> PathBuf {
 
 pub fn home_dir() -> Option<PathBuf> {
     dirs::home_dir()
+}
+
+/// Where downloads go unless the person picks another folder.
+pub fn downloads_dir() -> Option<PathBuf> {
+    dirs::download_dir().or_else(dirs::home_dir)
 }
 
 /// The OpenSSH client Relay runs for SSH sessions.

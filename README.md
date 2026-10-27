@@ -1,6 +1,6 @@
 # Relay
 
-A remote connection manager for Windows, macOS, and Linux, written in Rust. A dark, GPU-rendered workspace with a searchable library, group filters, favorites, and tabs for RDP and SSH sessions.
+A remote connection manager for Windows, macOS, and Linux, written in Rust. A dark, GPU-rendered workspace with a searchable library, group filters, favorites, and tabs for RDP and SSH sessions and SFTP file browsing.
 
 ![Relay's connection library in the Graphite theme, with an SSH session open in a tab](assets/screenshot.png)
 
@@ -14,7 +14,7 @@ Download the archive for your platform from the [latest release](https://github.
 | macOS 11+ (Apple silicon and Intel) | `relay-<version>-macos-universal.zip` | Unzip and move **Relay.app** to Applications. The app is not notarized: the first time, right-click it and choose **Open**. |
 | Linux (x86_64, aarch64) | `relay-<version>-linux-*.tar.gz` | Extract and run `./install.sh` to install into `~/.local`. |
 
-SSH uses the system's OpenSSH client everywhere, so your SSH config, keys, and agent work as usual.
+SSH and SFTP use the system's OpenSSH client everywhere, so your SSH config, keys, and agent work as usual.
 
 ### How remote desktops open
 
@@ -30,14 +30,14 @@ Open **Settings** at the bottom of the sidebar and use **Appearance** to switch 
 ## Connection library
 
 - **New connection** saves a name, host, port, optional username, group, and favorite.
-- Click **Connect**, double-click a row, or select it and press `Enter` to open a tab.
+- Click **Connect**, double-click a row, or select it and press `Enter` to open a tab. For SSH connections, the folder button, **Browse files** in the row's menu, or `Shift+Enter` opens an [SFTP file browser](#sftp-file-browser) instead.
 - Sidebar filters and groups narrow the library. Search matches names, addresses, usernames, groups, and protocols.
-- **Quick connect:** type a host in search and press `Enter` when nothing in the library matches, or `Alt+Enter` to connect directly even when something does. Search accepts `host`, `host:port`, `user@host`, `[IPv6]:port`, and an `ssh`/`rdp` prefix or `ssh://`/`rdp://`. Without a prefix, `user@host` and port 22 mean SSH and anything else RDP. An unsaved session offers **Save to library**.
+- **Quick connect:** type a host in search and press `Enter` when nothing in the library matches, or `Alt+Enter` to connect directly even when something does. Search accepts `host`, `host:port`, `user@host`, `[IPv6]:port`, and an `ssh`/`rdp`/`sftp` prefix or `ssh://`/`rdp://`/`sftp://`; `sftp` opens a file browser. Without a prefix, `user@host` and port 22 mean SSH and anything else RDP. An unsaved session offers **Save to library**.
 - Keyboard (use `Cmd` instead of `Ctrl` on macOS): `Ctrl+K` searches; `↑`/`↓` move the selection and `Enter` connects (from the search box or the list); `Esc` clears the search and closes dialogs; `Enter` saves the connection editor. `Ctrl+N` adds a profile, `Ctrl+W` closes the selected tab, `Ctrl+1`–`Ctrl+9` jump to tabs, and `Ctrl+B` toggles the sidebar. `Ctrl+Tab`/`Ctrl+Shift+Tab` cycle tabs, even from an SSH terminal; the terminal receives the other shortcuts while focused. Click the manager chrome to regain focus.
 - Below 1000 px wide the sidebar collapses to icons, and narrow tables hide the group and then the protocol column. The window can shrink to 720×560.
 - Session tabs show a status dot: accent while open, red once the session has ended. Drag a tab to reorder it, or use `Ctrl+Shift+PageUp`/`Ctrl+Shift+PageDown`.
 - **Recent** lists the connections you opened in the current library, newest first.
-- Relay remembers the window size, the sidebar choice, the last library, recent connections, snippets and open tabs in `state.json`. A shared SQLite library reopens at startup, and an MSSQL or MySQL library reopens when its connection string is remembered. No connection strings are written to this file; only whether a server library uses TLS. Open tabs come back at startup; each connects when it is first selected, starting with the tab that was selected, so a restart does not open every login prompt at once.
+- Relay remembers the window size, the sidebar choice, the last library, recent connections, snippets, open tabs (including file browsers) and the last download folder in `state.json`. A shared SQLite library reopens at startup, and an MSSQL or MySQL library reopens when its connection string is remembered. No connection strings are written to this file; only whether a server library uses TLS. Open tabs come back at startup; each connects when it is first selected, starting with the tab that was selected, so a restart does not open every login prompt at once.
 - The **Library** tab returns to the list while sessions stay open.
 - Closing a tab or quitting with active sessions asks for confirmation.
 - The **···** menu edits, duplicates, copies the address of, or deletes a profile. Changes apply to future connections. The editor suggests existing groups.
@@ -146,6 +146,19 @@ Each RDP connection has **Remote desktop options** in its editor: an optional **
 SSH runs in a dark terminal panel that keeps its own colors in every app theme, using the system's monospace font (Cascadia Mono or Consolas on Windows, SF Mono or Menlo on macOS, DejaVu Sans Mono or Noto Sans Mono on Linux). It supports 256 and true colors, bold, dim, underline and inverse text, scrolling through 5,000 lines with a scrollbar, resizing, bracketed paste, and navigation, function, control and Alt keys. The terminal is focused when its tab opens; Tab, Escape and the arrow keys stay in it. `Ctrl+C` sends an interrupt. Drag to select text; `Ctrl+Shift+C` (or `Cmd+C` on macOS) or a right-click copies the selection (or the whole screen when nothing is selected), and a right-click without a selection, `Ctrl+V` or `Shift+Insert` pastes. Mouse reporting, hyperlinks and complete xterm compatibility are not implemented. Closing SSH may terminate remote foreground work.
 
 SSH profiles have **SSH options**: a jump host (`ssh -J`), an identity file (`ssh -i`), and port forwards written as `L8080:localhost:80`, `R9000:localhost:9000` or `D1080`, separated by commas. Relay passes `ServerAliveInterval=15`, so a dropped connection is noticed within about 45 seconds. When ssh exits with 255 after the session had been up, Relay reconnects in the same tab after 1, 2, 4, 8, 16, then 30 seconds, up to ten times; **Reconnect now** and **Stop** are shown meanwhile. Wrong passwords, unknown hosts and `exit` are not retried.
+
+### SFTP file browser
+
+An SSH connection's files open in a tab of their own: **Browse files** in a row's menu, the folder button on the row, `Shift+Enter` in the library, or **Files** in an SSH tab's header, which opens the browser beside the terminal in split view (**Terminal** in the browser does the reverse). Relay runs the system's ssh with the `sftp` subsystem (`ssh -T -s host sftp`), so your SSH config, keys, agent, jump hosts and `known_hosts` apply exactly as in the terminal; with a `ControlMaster` in your config, the browser shares the terminal's connection. Port forwards, X11 forwarding and `RemoteCommand` are left out for the browser.
+
+When ssh needs to ask something, the question appears in the tab: passwords, key passphrases and one-time codes, and an unknown host's key fingerprint to trust (which is then added to `known_hosts`, as ssh does). Relay answers through `SSH_ASKPASS`: ssh starts Relay again as its helper, which hands the question to the open window over a loopback connection guarded by a random secret, and passes the answer back. Answers are never stored. **Cancel** stops signing in. Changed host keys are refused, as in the terminal. Prompts need OpenSSH 8.4 or newer (`ssh -V`), which added `SSH_ASKPASS_REQUIRE`; with an older client, the browser can still sign in with keys or an agent.
+
+- **Browse:** double-click or `Enter` opens a folder; `Backspace` or `Alt+↑` goes up, `Alt+←` back. Click the path bar or press `Ctrl+L` to type a path (`~` is home); breadcrumbs jump to a parent. Columns sort by name, size or date. `Ctrl+F` filters the folder, **Show hidden** shows dot files, and `F5` or `Ctrl+R` refreshes.
+- **Select:** click, `Ctrl`-click (`Cmd` on macOS) and `Shift`-click, `↑`/`↓` (with `Shift` to extend), `Home`/`End`, `PageUp`/`PageDown`, and `Ctrl+A`.
+- **Transfer:** **Upload** picks files or folders (`Ctrl+U`); dropping files or folders from your file manager uploads them into the folder, or into a folder row they are dropped on. **Download** (or `Enter` on files) asks where to save: one file through a save dialog, several items into a folder. Folders transfer with their contents; links to folders inside them are skipped, since they can loop. Items that already exist are not overwritten without asking: uploads into the open folder ask to **Replace** or **Skip existing**, and other transfers stop with a **Replace** button.
+- **Organize:** **New folder** (`Ctrl+Shift+N`), rename in place (`F2`), delete with confirmation (`Delete`; folders go with their contents), drag items onto a folder or breadcrumb to move them, and **Copy path** from the right-click menu.
+- **Transfer queue:** transfers run one at a time below the listing with progress, speed and file counts. Each can be cancelled; failed ones can be retried. Files stream through a small buffer, so size does not matter. A download is written next to its destination as `name.relay-part` and gets its name, and the remote modification time, only when complete; cancelled or failed transfers remove their partial file on either side.
+- If the connection drops, the tab says why and offers **Reconnect**, which returns to the same folder. Closing a tab or quitting with unfinished transfers says so first.
 
 **Snippets** are saved commands, managed in **Settings → Snippets**. In an SSH tab, `Ctrl+Shift+P` or **Snippets** opens a palette: type to filter, `↑`/`↓` and `Enter` send, `Esc` closes. A snippet types its command and can press Enter afterwards; multi-line snippets use bracketed paste.
 

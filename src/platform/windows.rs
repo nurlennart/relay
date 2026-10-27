@@ -16,6 +16,13 @@ pub const MONOSPACE_FONTS: &[&str] = &[
 ];
 pub const EXTRA_PROGRAM_DIRS: &[&str] = &[];
 
+/// Keeps a console program such as ssh.exe from opening a console window of its own.
+pub fn background(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
 /// The Windows OpenSSH Client feature, or another `ssh.exe` on `PATH`.
 pub fn ssh_program() -> PathBuf {
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());

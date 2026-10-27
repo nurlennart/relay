@@ -2,6 +2,7 @@ use crate::{
     model::{Connection, Protocol},
     platform::Window,
     rdp::RdpClient,
+    sftp::Browser,
     terminal::Terminal,
 };
 use std::time::{Duration, Instant};
@@ -15,10 +16,13 @@ pub enum TabState {
     Waiting,
 }
 
-/// An open tab: an SSH terminal or a remote desktop.
+/// An open tab: an SSH terminal, an SFTP file browser, or a remote desktop.
 pub struct Session {
     pub connection: Connection,
     pub terminal: Option<Terminal>,
+    /// Shows the connection's files over SFTP instead of a terminal.
+    pub browsing: bool,
+    pub files: Option<Browser>,
     rdp: Option<RdpClient>,
     pub error: Option<String>,
     pub started: Instant,
@@ -57,6 +61,8 @@ impl Session {
         Self {
             connection,
             terminal,
+            browsing: false,
+            files: None,
             rdp: None,
             error: None,
             started: Instant::now(),
@@ -77,11 +83,33 @@ impl Session {
         let terminal = terminal_for(&connection, &ctx)?;
         Ok(Self::new(connection, terminal, ctx))
     }
+    /// Browses an SSH connection's files over SFTP.
+    pub fn browse(mut connection: Connection, ctx: eframe::egui::Context) -> Result<Self, String> {
+        if connection.protocol != Protocol::Ssh {
+            return Err("Files can be browsed on SSH connections.".into());
+        }
+        connection.validate()?;
+        let files = Browser::open(&connection, ctx.clone(), None);
+        Ok(Self {
+            browsing: true,
+            files: Some(files),
+            ..Self::new(connection, None, ctx)
+        })
+    }
     /// A tab from the last run that connects when it is first shown.
-    pub fn restored(connection: Connection, ctx: eframe::egui::Context) -> Self {
+    pub fn restored(connection: Connection, browsing: bool, ctx: eframe::egui::Context) -> Self {
         Self {
             ended: true,
             waiting: true,
+            browsing,
+            ..Self::new(connection, None, ctx)
+        }
+    }
+    #[cfg(any(test, feature = "ui-check"))]
+    pub fn demo_files(connection: Connection, files: Browser, ctx: eframe::egui::Context) -> Self {
+        Self {
+            browsing: true,
+            files: Some(files),
             ..Self::new(connection, None, ctx)
         }
     }
@@ -98,6 +126,13 @@ impl Session {
     }
     pub fn poll(&mut self, parent: Option<Window>) {
         if self.waiting {
+            return;
+        }
+        if self.browsing {
+            if let Some(files) = &mut self.files {
+                files.poll();
+                self.ended = files.ended();
+            }
             return;
         }
         if let Some(terminal) = &mut self.terminal {
@@ -171,7 +206,17 @@ impl Session {
     }
     fn restart(&mut self, mut connection: Connection) -> Result<(), String> {
         connection.validate()?;
-        self.terminal = terminal_for(&connection, &self.ctx)?;
+        if self.browsing {
+            // A reconnected browser returns to the folder it showed.
+            let folder = self
+                .files
+                .as_ref()
+                .map(|f| f.path.clone())
+                .filter(|p| !p.is_empty());
+            self.files = Some(Browser::open(&connection, self.ctx.clone(), folder));
+        } else {
+            self.terminal = terminal_for(&connection, &self.ctx)?;
+        }
         self.rdp = None;
         self.connection = connection;
         self.error = None;
@@ -220,6 +265,10 @@ impl Session {
     /// native desktop window should cover.
     pub fn show_desktop(&mut self, ui: &mut eframe::egui::Ui) -> Option<eframe::egui::Rect> {
         self.rdp.as_mut().map(|rdp| rdp.show(ui))
+    }
+    /// Transfers that are queued or running in the session's file browser.
+    pub fn active_transfers(&self) -> usize {
+        self.files.as_ref().map_or(0, Browser::active_transfers)
     }
     /// Whether the session's terminal or desktop has the keyboard.
     pub fn keyboard_focused(&self) -> bool {
@@ -279,9 +328,21 @@ mod tests {
         let mut c = Connection::new();
         c.name = "Desk".into();
         c.host = "desk.example".into();
-        let session = Session::restored(c, eframe::egui::Context::default());
+        let session = Session::restored(c, false, eframe::egui::Context::default());
         assert!(!session.is_running());
         assert_eq!(session.tab_state(), TabState::Waiting);
         assert!(session.terminal.is_none() && !session.has_desktop());
+    }
+
+    #[test]
+    fn restored_browsers_wait_and_never_open_a_desktop() {
+        let mut c = Connection::new();
+        c.name = "Files".into();
+        c.host = "files.example".into();
+        let mut session = Session::restored(c, true, eframe::egui::Context::default());
+        assert_eq!(session.tab_state(), TabState::Waiting);
+        session.waiting = false;
+        session.poll(None);
+        assert!(session.files.is_none() && !session.has_desktop());
     }
 }
