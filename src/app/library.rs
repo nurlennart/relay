@@ -112,9 +112,6 @@ impl App {
                         Filter::Rdp => "Remote desktops",
                         Filter::Ssh => "SSH terminals",
                     });
-                    ui.add(
-                        egui::Label::new(RichText::new(title).size(TITLE_SIZE).strong()).truncate(),
-                    );
                     let open = self.sessions.iter().filter(|s| s.is_running()).count();
                     let mut summary = if connections.len() == total {
                         total.to_string()
@@ -124,10 +121,22 @@ impl App {
                     if open > 0 {
                         summary.push_str(&format!(" · {open} open"));
                     }
-                    ui.add(
-                        egui::Label::new(RichText::new(summary).size(12.).color(colors.muted))
-                            .truncate(),
-                    );
+                    // One line of text, so the title and the smaller count share a baseline.
+                    let mut line = egui::text::LayoutJob::default();
+                    for part in [
+                        RichText::new(title).size(TITLE_SIZE).strong(),
+                        RichText::new(format!("  {summary}"))
+                            .size(12.)
+                            .color(colors.muted),
+                    ] {
+                        part.append_to(
+                            &mut line,
+                            ui.style(),
+                            egui::FontSelection::Default,
+                            Align::BOTTOM,
+                        );
+                    }
+                    ui.add(egui::Label::new(line).truncate());
                 });
             });
         });
