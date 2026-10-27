@@ -41,7 +41,7 @@ pub fn run() -> eframe::Result {
         state::load(&state::path())
     };
     eframe::run_native(
-        "Relay · Remote workspace",
+        "Relay",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 // Matches the Linux desktop entry, so docks show Relay's icon and name.
