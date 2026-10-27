@@ -127,7 +127,7 @@ By default the remote resolution follows the tab, in physical pixels, and the re
 
 Sessions reconnect automatically after network drops or sleep (up to 20 attempts, shown as *Reconnecting…*). If a session ends, **Reconnect** reopens it in the same tab with the connection's current settings. **Full screen** hands the session to the Windows full-screen mode with its connection bar; `Ctrl+Alt+Break` toggles it.
 
-While a remote desktop has the keyboard, it receives normal shortcuts. Relay reserves three: `Ctrl+Alt+PageUp`/`Ctrl+Alt+PageDown` switch tabs and `Ctrl+Alt+Home` returns the keyboard to Relay. These need Relay in the foreground and do not apply in full screen or when Windows key combinations are set to *On the remote computer*.
+While a remote desktop has the keyboard, it receives normal shortcuts. Relay reserves three: `Ctrl+Alt+PageUp`/`Ctrl+Alt+PageDown` switch tabs and `Ctrl+Alt+Home` returns the keyboard to Relay. Clicking anywhere in Relay outside the remote desktop, or opening a dialog over it, also returns the keyboard. These need Relay in the foreground and do not apply in full screen or when Windows key combinations are set to *On the remote computer*.
 
 ### Remote desktops on macOS and Linux
 

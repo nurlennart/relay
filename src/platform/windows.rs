@@ -87,6 +87,18 @@ pub(crate) fn bounds(window: HWND, parent: HWND) -> Result<[i32; 4], String> {
     }
 }
 
+/// Gives keyboard focus to `parent` if `window` or one of its children has it. Windows keeps
+/// focus on a window it hides, so a hidden remote desktop would otherwise swallow typing.
+pub(crate) fn release_focus(window: HWND, parent: HWND) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
+    unsafe {
+        let focused = GetFocus();
+        if !focused.is_null() && (focused == window || IsChild(window, focused) != 0) {
+            SetFocus(parent);
+        }
+    }
+}
+
 pub(crate) fn position(window: HWND, parent: HWND, rect: [i32; 4]) -> Result<(), String> {
     if bounds(window, parent)? != rect {
         let [x, y, w, h] = rect;

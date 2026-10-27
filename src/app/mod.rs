@@ -871,6 +871,13 @@ impl eframe::App for App {
                 self.select_tab(self.sessions.len());
             }
         }
+        // A click on Relay's own interface takes the keyboard back from a remote desktop, whose
+        // native window gets its clicks directly.
+        if ctx.input(|i| i.pointer.any_pressed())
+            && let Some(parent) = self.parent
+        {
+            platform::focus(parent);
+        }
         for s in &mut self.sessions {
             s.poll(self.parent);
         }

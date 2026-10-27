@@ -469,6 +469,8 @@ impl RdpClient {
     }
     pub fn place(&mut self, rect: Option<[i32; 4]>, holes: &[[i32; 4]]) -> Result<(), String> {
         let Some(rect) = rect else {
+            // Typing goes to Relay, such as a dialog that covers the desktop, not the hidden control.
+            platform::windows::release_focus(self.window.0, self.parent);
             unsafe {
                 ShowWindow(self.window.0, SW_HIDE);
             }
