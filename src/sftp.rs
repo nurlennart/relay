@@ -230,6 +230,22 @@ pub struct Prompt {
     reply: Option<oneshot::Sender<Option<String>>>,
 }
 
+/// The current folder's entries as shown: their positions in `entries`, and their names.
+pub struct Listing {
+    pub order: Vec<usize>,
+    pub names: Vec<String>,
+}
+
+/// What the shown order is worked out from.
+#[derive(PartialEq)]
+struct ListingKey {
+    listed: u64,
+    sort: Sort,
+    descending: bool,
+    filter: String,
+    show_hidden: bool,
+}
+
 /// How the folder's items are ordered.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Sort {
@@ -373,6 +389,10 @@ pub struct Browser {
     pub prompts: Vec<Prompt>,
     pub transfers: Vec<Transfer>,
     pub view: View,
+    /// Counts the listings received, so the shown order knows when to be worked out again.
+    listed: u64,
+    /// The shown order and names, and what they were worked out from.
+    listing: Option<(ListingKey, Arc<Listing>)>,
     /// The folder to open first: where a reconnected browser was.
     start: Option<String>,
     /// The listing request whose answer is awaited; older answers are dropped.
@@ -438,7 +458,7 @@ impl Browser {
         browser.status = Status::Ready;
         browser.path = path.into();
         browser.home = path.into();
-        browser.entries = entries;
+        browser.set_entries(entries);
         browser
     }
 
@@ -513,6 +533,8 @@ impl Browser {
                 focus_requested: true,
                 ..View::default()
             },
+            listed: 0,
+            listing: None,
             start,
             seq: 0,
             land_on: None,
@@ -590,7 +612,7 @@ impl Browser {
                             self.view.focus_requested = true;
                         }
                         self.path = path;
-                        self.entries = entries;
+                        self.set_entries(entries);
                         let names: BTreeSet<_> =
                             self.entries.iter().map(|e| e.name.clone()).collect();
                         self.view.selected.retain(|n| names.contains(n));
@@ -967,6 +989,37 @@ impl Browser {
     #[cfg(test)]
     pub fn visible(&self) -> Vec<&Entry> {
         self.order().into_iter().map(|i| &self.entries[i]).collect()
+    }
+
+    /// Replaces the folder's entries, which the shown order then follows.
+    fn set_entries(&mut self, entries: Vec<Entry>) {
+        self.entries = entries;
+        self.listed += 1;
+    }
+
+    /// The current folder's entries as shown, worked out again only when the listing or how
+    /// it is shown changes rather than every frame, which matters in folders of thousands.
+    pub fn listing(&mut self) -> Arc<Listing> {
+        let key = ListingKey {
+            listed: self.listed,
+            sort: self.view.sort,
+            descending: self.view.descending,
+            filter: self.view.filter.clone(),
+            show_hidden: self.view.show_hidden,
+        };
+        if let Some((cached, listing)) = &self.listing
+            && *cached == key
+        {
+            return listing.clone();
+        }
+        let order = self.order();
+        let names = order
+            .iter()
+            .map(|&i| self.entries[i].name.clone())
+            .collect();
+        let listing = Arc::new(Listing { order, names });
+        self.listing = Some((key, listing.clone()));
+        listing
     }
 
     /// The positions in `entries` of the current folder's entries as shown: filtered, without
@@ -1834,37 +1887,34 @@ pub fn crumbs(path: &str, home: &str) -> Vec<(String, String)> {
     crumbs
 }
 
-/// Compares names as people expect: ignoring case, with numbers in numeric order.
+/// Compares names as people expect: ignoring case, with numbers in numeric order. It reads
+/// the names in place, so sorting thousands allocates nothing.
 pub fn natural(a: &str, b: &str) -> std::cmp::Ordering {
-    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
+    let (mut a, mut b) = (a, b);
     loop {
-        match (a.peek().copied(), b.peek().copied()) {
+        match (a.chars().next(), b.chars().next()) {
             (None, None) => return std::cmp::Ordering::Equal,
             (None, _) => return std::cmp::Ordering::Less,
             (_, None) => return std::cmp::Ordering::Greater,
             (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
-                let number = |chars: &mut std::iter::Peekable<std::str::Chars>| {
-                    let mut digits = String::new();
-                    while let Some(c) = chars.peek().filter(|c| c.is_ascii_digit()) {
-                        digits.push(*c);
-                        chars.next();
-                    }
-                    digits
-                };
-                let (x, y) = (number(&mut a), number(&mut b));
-                let (tx, ty) = (x.trim_start_matches('0'), y.trim_start_matches('0'));
-                let order = tx.len().cmp(&ty.len()).then_with(|| tx.cmp(ty));
+                let digits = |s: &str| s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+                let (end_a, end_b) = (digits(a), digits(b));
+                let (x, y) = (
+                    a[..end_a].trim_start_matches('0'),
+                    b[..end_b].trim_start_matches('0'),
+                );
+                let order = x.len().cmp(&y.len()).then_with(|| x.cmp(y));
                 if order.is_ne() {
                     return order;
                 }
+                (a, b) = (&a[end_a..], &b[end_b..]);
             }
             (Some(x), Some(y)) => {
                 let order = x.to_lowercase().cmp(y.to_lowercase());
                 if order.is_ne() {
                     return order;
                 }
-                a.next();
-                b.next();
+                (a, b) = (&a[x.len_utf8()..], &b[y.len_utf8()..]);
             }
         }
     }
@@ -1968,27 +2018,67 @@ mod tests {
                 entry("alpha", true, 0, 5),
             ],
         );
-        let names = |b: &Browser| {
-            b.visible()
-                .iter()
-                .map(|e| e.name.clone())
-                .collect::<Vec<_>>()
-        };
+        // Through the kept listing, so each change to how it is shown must be seen.
+        let names = |b: &mut Browser| b.listing().names.clone();
         assert_eq!(
-            names(&browser),
+            names(&mut browser),
             ["alpha", "Beta", "file2.txt", "file10.txt"]
         );
         browser.view.sort = Sort::Size;
         browser.view.descending = true;
         browser.view.show_hidden = true;
         assert_eq!(
-            names(&browser),
+            names(&mut browser),
             ["Beta", "alpha", "file2.txt", "file10.txt", ".hidden"]
         );
         browser.view.sort = Sort::Modified;
         browser.view.descending = false;
         browser.view.filter = "FILE".into();
-        assert_eq!(names(&browser), ["file2.txt", "file10.txt"]);
+        assert_eq!(names(&mut browser), ["file2.txt", "file10.txt"]);
+        assert_eq!(
+            browser.listing().names,
+            browser
+                .visible()
+                .iter()
+                .map(|e| e.name.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_shown_listing_is_kept_until_the_folder_or_its_view_changes() {
+        let mut browser = Browser::demo("/srv", vec![entry("b", false, 1, 1)]);
+        let first = browser.listing();
+        assert!(
+            Arc::ptr_eq(&first, &browser.listing()),
+            "sorted again unchanged"
+        );
+        // A new listing of the same folder, as a refresh brings.
+        browser.set_entries(vec![entry("a", false, 1, 1), entry("b", false, 1, 1)]);
+        let refreshed = browser.listing();
+        assert!(!Arc::ptr_eq(&first, &refreshed));
+        assert_eq!(refreshed.names, ["a", "b"]);
+        assert_eq!(refreshed.order, [0, 1]);
+    }
+
+    #[test]
+    fn names_compare_naturally_without_regard_to_case() {
+        use std::cmp::Ordering::*;
+        for (a, b, expected) in [
+            ("file2", "file10", Less),
+            ("file02", "file2", Equal),
+            ("file007", "file10", Less),
+            ("Alpha", "alpha", Equal),
+            ("alpha", "Beta", Less),
+            ("v1.10.2", "v1.9.9", Greater),
+            ("x", "x1", Less),
+            ("Äpfel2", "äpfel10", Less),
+            ("10", "9", Greater),
+            ("", "a", Less),
+        ] {
+            assert_eq!(natural(a, b), expected, "{a} vs {b}");
+            assert_eq!(natural(b, a), expected.reverse(), "{b} vs {a}");
+        }
     }
 
     #[test]

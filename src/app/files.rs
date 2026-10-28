@@ -198,20 +198,17 @@ fn browser(
         prompt_card(ui, files, index);
         ui.add_space(8.);
     }
-    // The listing is filtered and sorted once a frame. A change to how it is shown takes
-    // effect on the next, which it asks for.
+    // The listing is filtered and sorted again only when it or how it is shown changes. Such
+    // a change made during this frame takes effect on the next, which it asks for.
     let shown = |f: &Browser| {
         let v = &f.view;
         (v.sort, v.descending, v.filter.clone(), v.show_hidden)
     };
     let before = shown(files);
-    let order = files.order();
-    let names: Vec<String> = order
-        .iter()
-        .map(|&i| files.entries[i].name.clone())
-        .collect();
+    let listing = files.listing();
+    let (order, names) = (&listing.order, &listing.names);
     if !covered && files.view.focused && ui.memory(|m| m.focused().is_none()) {
-        keys(ui, files, &names, actions);
+        keys(ui, files, names, actions);
     }
     toolbar(ui, files, key, actions);
     ui.add_space(8.);
@@ -232,8 +229,8 @@ fn browser(
         &mut top,
         files,
         key,
-        &order,
-        &names,
+        order,
+        names,
         listing.height(),
         actions,
     );
@@ -246,7 +243,7 @@ fn browser(
             ))
             .layout(Layout::top_down(Align::LEFT)),
     );
-    status_bar(&mut below, files, &names);
+    status_bar(&mut below, files, names);
     if !files.transfers.is_empty() {
         below.add_space(2.);
         // At most a third of the tab, so a long queue scrolls instead of crowding out the
