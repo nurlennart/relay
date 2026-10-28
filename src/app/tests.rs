@@ -406,6 +406,60 @@ fn split_view_pairs_two_tabs_and_follows_moves() {
 }
 
 #[test]
+fn split_divider_drags_and_returns_to_the_middle_on_double_click() {
+    let ctx = egui::Context::default();
+    let mut fraction = 0.3;
+    let mut time = 0.;
+    let mut frame = |fraction: &mut f32, events: Vec<egui::Event>| {
+        time += 0.05;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1000., 400.),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| split_divider(ui, ui.max_rect(), fraction));
+            },
+        );
+    };
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame(&mut fraction, vec![]);
+    // Dragging moves it, but never past a quarter of the width.
+    let on = egui::pos2(300., 200.);
+    frame(
+        &mut fraction,
+        vec![egui::Event::PointerMoved(on), button(on, true)],
+    );
+    for x in [250., 150., 100.] {
+        frame(
+            &mut fraction,
+            vec![egui::Event::PointerMoved(egui::pos2(x, 200.))],
+        );
+    }
+    frame(&mut fraction, vec![button(egui::pos2(100., 200.), false)]);
+    assert_eq!(fraction, 0.25);
+    // A double-click returns it to the middle.
+    let on = egui::pos2(250., 200.);
+    frame(&mut fraction, vec![egui::Event::PointerMoved(on)]);
+    for pressed in [true, false, true, false] {
+        frame(&mut fraction, vec![button(on, pressed)]);
+    }
+    assert_eq!(fraction, SPLIT_MIDDLE);
+}
+
+#[test]
 fn moving_tabs_keeps_every_index_consistent() {
     let items = ['a', 'b', 'c', 'd'];
     for from in 0..items.len() {

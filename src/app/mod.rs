@@ -317,7 +317,7 @@ impl App {
             detached: vec![],
             windows: vec![],
             split: None,
-            split_fraction: 0.5,
+            split_fraction: SPLIT_MIDDLE,
             palette: None,
             snippet_draft: None,
             pending_save: false,
@@ -1227,28 +1227,7 @@ impl eframe::App for App {
                     }
                     (Some(left), Some(right)) => {
                         let area = ui.available_rect_before_wrap();
-                        let gap = 16.;
-                        let x = area.left() + area.width() * self.split_fraction;
-                        let divider = egui::Rect::from_min_max(
-                            egui::pos2(x - gap / 2., area.top()),
-                            egui::pos2(x + gap / 2., area.bottom()),
-                        );
-                        let handle = ui
-                            .interact(divider, egui::Id::new("split-divider"), egui::Sense::drag())
-                            .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-                        if handle.dragged()
-                            && let Some(pointer) = handle.interact_pointer_pos()
-                        {
-                            self.split_fraction =
-                                ((pointer.x - area.left()) / area.width()).clamp(0.25, 0.75);
-                        }
-                        let line = if handle.hovered() || handle.dragged() {
-                            colors.accent
-                        } else {
-                            colors.line
-                        };
-                        ui.painter()
-                            .vline(x, area.y_range(), Stroke::new(1_f32, line));
+                        let divider = split_divider(ui, area, &mut self.split_fraction);
                         let sides = [
                             (
                                 left,
@@ -1400,6 +1379,44 @@ fn moved(index: usize, from: usize, to: usize) -> usize {
     } else {
         index
     }
+}
+
+/// Where split view's divider starts, and returns to on a double-click.
+const SPLIT_MIDDLE: f32 = 0.5;
+
+/// The divider between split view's two sides in `area`, dragged to resize them and
+/// double-clicked to return to the middle. Returns the room it takes between them.
+fn split_divider(ui: &mut egui::Ui, area: egui::Rect, fraction: &mut f32) -> egui::Rect {
+    let colors = theme::palette(ui.ctx());
+    let gap = 16.;
+    let x = area.left() + area.width() * *fraction;
+    let divider = egui::Rect::from_min_max(
+        egui::pos2(x - gap / 2., area.top()),
+        egui::pos2(x + gap / 2., area.bottom()),
+    );
+    let handle = ui
+        .interact(
+            divider,
+            egui::Id::new("split-divider"),
+            egui::Sense::click_and_drag(),
+        )
+        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
+        .on_hover_text("Drag to resize · Double-click to center");
+    if handle.double_clicked() {
+        *fraction = SPLIT_MIDDLE;
+    } else if handle.dragged()
+        && let Some(pointer) = handle.interact_pointer_pos()
+    {
+        *fraction = ((pointer.x - area.left()) / area.width()).clamp(0.25, 0.75);
+    }
+    let line = if handle.hovered() || handle.dragged() {
+        colors.accent
+    } else {
+        colors.line
+    };
+    ui.painter()
+        .vline(x, area.y_range(), Stroke::new(1_f32, line));
+    divider
 }
 
 /// egui's GPU setup, asking for memory in small blocks. By default wgpu reserves GPU memory
