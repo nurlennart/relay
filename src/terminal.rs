@@ -557,20 +557,8 @@ impl Terminal {
             .filter(|p| content.contains(*p));
         let over = response.contains_pointer() && pointer.is_some();
 
-        // Links in view underline under the pointer and open with Ctrl+click (Cmd+click).
-        let view_links: Vec<(String, Vec<(usize, u16)>)> = {
-            let lines = visible_lines(parser.screen(), rows, cols);
-            (lines.iter())
-                .flat_map(|line| {
-                    links::find(&line.text).into_iter().map(|range| {
-                        (
-                            line.text[range.clone()].iter().collect(),
-                            line.cells[range].to_vec(),
-                        )
-                    })
-                })
-                .collect()
-        };
+        // Links underline under the pointer and open with Ctrl+click (Cmd+click). They are
+        // looked for only there, so output streaming past an untouched terminal costs nothing.
         // A link a program made with OSC 8 comes first: its text need not be an address.
         let hovered_link = pointer.filter(|_| over).and_then(|pos| {
             let (row, col) = cell_at(pos);
@@ -580,9 +568,18 @@ impl Terminal {
                 (link.url.clone(), cells)
             });
             made.or_else(|| {
-                (view_links.iter())
-                    .find(|(_, cells)| cells.contains(&(row as usize, col)))
-                    .cloned()
+                // The line under the pointer, with the rows it wraps over.
+                let at = (row as usize, col);
+                let lines = visible_lines(screen, rows, cols);
+                let line = (lines.iter()).find(|l| l.cells.iter().any(|c| c.0 == at.0))?;
+                (links::find(&line.text).into_iter())
+                    .find(|range| line.cells[range.clone()].contains(&at))
+                    .map(|range| {
+                        (
+                            line.text[range.clone()].iter().collect(),
+                            line.cells[range].to_vec(),
+                        )
+                    })
             })
         });
         let mut opened_link = false;
@@ -2306,6 +2303,52 @@ mod tests {
             !commands
                 .iter()
                 .any(|c| matches!(c, egui::OutputCommand::OpenUrl(_)))
+        );
+    }
+
+    #[test]
+    fn ctrl_click_opens_a_link_that_wraps_from_its_second_row() {
+        let (mut terminal, _parser, ctx) = harness();
+        show_frame(&ctx, &mut terminal, vec![], egui::Modifiers::NONE);
+        let cols = terminal.parser.lock().unwrap().screen().size().1 as usize;
+        // The address starts ten columns before the end of the first row and goes on below,
+        // with another link further down.
+        let text = format!(
+            "{} https://example.com/a/long/path/that/wraps\r\n\r\nsee https://other.example/",
+            "x".repeat(cols - 11)
+        );
+        settle(&ctx, &mut terminal, text.as_bytes());
+        let command = egui::Modifiers::COMMAND;
+        let click = |terminal: &mut Terminal, row: f32, col: f32| {
+            let pos = cell_center(&ctx, row, col);
+            show_frame(
+                &ctx,
+                terminal,
+                vec![egui::Event::PointerMoved(pos)],
+                command,
+            );
+            let press = egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: command,
+            };
+            let output = show_frame(&ctx, terminal, vec![press], command);
+            (output.platform_output.commands.into_iter())
+                .filter_map(|c| match c {
+                    egui::OutputCommand::OpenUrl(url) => Some(url.url),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            click(&mut terminal, 1., 5.),
+            ["https://example.com/a/long/path/that/wraps"]
+        );
+        assert_eq!(click(&mut terminal, 3., 8.), ["https://other.example/"]);
+        assert!(
+            click(&mut terminal, 0., 2.).is_empty(),
+            "plain text opens nothing"
         );
     }
 
