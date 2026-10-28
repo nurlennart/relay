@@ -143,6 +143,23 @@ pub(crate) fn position(window: HWND, parent: HWND, rect: [i32; 4]) -> Result<(),
     Ok(())
 }
 
+/// The size in pixels of the monitor `window` is on.
+pub(crate) fn monitor_size(window: HWND) -> Option<(i32, i32)> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    };
+    unsafe {
+        let monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if monitor.is_null() || GetMonitorInfoW(monitor, &mut info) == 0 {
+            return None;
+        }
+        let r = info.rcMonitor;
+        Some((r.right - r.left, r.bottom - r.top))
+    }
+}
+
 /// Cuts `holes` out of a child window so Relay's own overlays drawn beneath it show through.
 /// Rectangles are `[x, y, width, height]` in the window's client coordinates; none restores
 /// the full window.
