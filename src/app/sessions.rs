@@ -104,6 +104,11 @@ impl App {
             });
             if close {
                 self.attach(key);
+            }
+            // Back in the tabs, by closing the window or with its button while it was drawn,
+            // the session is done with the window. Looking for it again would find it before it
+            // closes and move a remote desktop back in, to be destroyed along with it.
+            if !self.detached.contains(&key) {
                 continue;
             }
             // An embedded remote desktop moves into the window once it exists.
