@@ -87,7 +87,8 @@ impl App {
 
     /// Reloads a shared library every minute and when the window regains focus, so teammates'
     /// changes appear on their own. It is silent: nothing is announced, no control waits on it,
-    /// failures are dropped, and the list is replaced only when the library's revision changed.
+    /// failures are dropped, and the library is downloaded and its list replaced only when its
+    /// revision changed.
     pub(super) fn sync_library(&mut self, ctx: &egui::Context) {
         let focused = ctx.input(|i| i.focused);
         let regained = focused && !self.was_focused;
@@ -100,7 +101,8 @@ impl App {
             match rx.try_recv() {
                 Ok(result) => {
                     self.sync = None;
-                    if let Ok(snapshot) = result
+                    // Nothing comes back when the library is unchanged.
+                    if let Ok(Some(snapshot)) = result
                         && snapshot.revision != self.revision
                         && self.recovery.is_none()
                     {
@@ -125,10 +127,9 @@ impl App {
         let due = elapsed >= SYNC_INTERVAL || (regained && elapsed >= SYNC_FOCUS_MIN);
         if due && self.sync.is_none() && self.pending.is_none() {
             self.synced = Instant::now();
-            self.sync = Some(database::start(
+            self.sync = Some(database::changes(
                 self.location.clone(),
                 self.revision,
-                None,
                 self.ctx.clone(),
             ));
         }

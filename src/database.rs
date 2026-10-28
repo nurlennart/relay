@@ -79,40 +79,93 @@ pub struct Snapshot {
 const CONFLICT: &str = "Someone changed this library since your last refresh. \
     Your changes were not written. Export your unsaved changes, refresh, and apply them again.";
 
+/// What a library worker does.
+enum Op {
+    Read,
+    /// Reads the library only if its revision is no longer the one given.
+    ReadChanged,
+    /// Saves these connections over the revision given.
+    Write(Vec<Connection>),
+}
+
+/// Reads the library, or saves `next` over `revision`, on a worker thread.
 pub fn start(
     location: Location,
     revision: i64,
     next: Option<Vec<Connection>>,
     ctx: eframe::egui::Context,
 ) -> Receiver<Result<Snapshot, String>> {
+    let op = next.map_or(Op::Read, Op::Write);
+    spawn(location, revision, op, ctx, |result| {
+        // Reads and writes always answer with the library.
+        result.and_then(|snapshot| snapshot.ok_or_else(|| "The library did not answer.".into()))
+    })
+}
+
+/// Reads the library on a worker thread only if it changed since `revision`; `None` when it
+/// did not. An unchanged library is not downloaded, which spares the server the payload on
+/// each background reload.
+pub fn changes(
+    location: Location,
+    revision: i64,
+    ctx: eframe::egui::Context,
+) -> Receiver<Result<Option<Snapshot>, String>> {
+    spawn(location, revision, Op::ReadChanged, ctx, |result| result)
+}
+
+fn spawn<T: Send + 'static>(
+    location: Location,
+    revision: i64,
+    op: Op,
+    ctx: eframe::egui::Context,
+    answer: impl FnOnce(Result<Option<Snapshot>, String>) -> Result<T, String> + Send + 'static,
+) -> Receiver<Result<T, String>> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let result = match &location {
-            Location::Local(path) => match next {
-                Some(connections) => model::save(path, &connections).map(|_| Snapshot {
+            Location::Local(path) => match op {
+                Op::Write(connections) => model::save(path, &connections).map(|_| Snapshot {
                     connections,
                     revision: revision + 1,
                 }),
-                None => model::load(path).map(|connections| Snapshot {
+                Op::Read | Op::ReadChanged => model::load(path).map(|connections| Snapshot {
                     connections,
                     revision: 0,
                 }),
-            },
-            Location::Sqlite(path) => sqlite(path, revision, next),
-            Location::Mssql(server) => mssql(server, revision, next),
-            Location::Mysql(server) => mysql(server, revision, next),
+            }
+            .map(Some),
+            Location::Sqlite(path) => sqlite(path, revision, op),
+            Location::Mssql(server) => mssql(server, revision, op),
+            Location::Mysql(server) => mysql(server, revision, op),
         };
-        let _ = tx.send(result);
+        let _ = tx.send(answer(result));
         ctx.request_repaint();
     });
     rx
 }
 
-fn sqlite(
-    path: &std::path::Path,
-    revision: i64,
-    next: Option<Vec<Connection>>,
-) -> Result<Snapshot, String> {
+/// The revision a read compares against: the one given when only a change is wanted, and
+/// otherwise one no library has, so the payload always comes.
+fn known(op: &Op, revision: i64) -> i64 {
+    match op {
+        Op::ReadChanged => revision,
+        Op::Read | Op::Write(_) => -1,
+    }
+}
+
+/// The library from a revision and a payload, which a read leaves out when unchanged.
+fn snapshot(revision: i64, payload: Option<&str>) -> Result<Option<Snapshot>, String> {
+    payload
+        .map(|payload| {
+            Ok(Snapshot {
+                connections: model::decode(payload.as_bytes())?,
+                revision,
+            })
+        })
+        .transpose()
+}
+
+fn sqlite(path: &std::path::Path, revision: i64, op: Op) -> Result<Option<Snapshot>, String> {
     let connection = rusqlite::Connection::open(path).map_err(|e| e.to_string())?;
     connection
         .busy_timeout(Duration::from_secs(5))
@@ -130,7 +183,7 @@ fn sqlite(
              INSERT OR IGNORE INTO relay_library(id, revision, payload) VALUES(1, 0, '[]');",
         )
         .map_err(|e| e.to_string())?;
-    if let Some(connections) = next {
+    if let Op::Write(connections) = op {
         let json = serde_json::to_string(&connections).map_err(|e| e.to_string())?;
         let changed = connection
             .execute(
@@ -142,30 +195,24 @@ fn sqlite(
         if changed != 1 {
             return Err(CONFLICT.into());
         }
-        Ok(Snapshot {
+        Ok(Some(Snapshot {
             connections,
             revision: revision + 1,
-        })
+        }))
     } else {
-        let (revision, payload): (i64, String) = connection
+        let (revision, payload): (i64, Option<String>) = connection
             .query_row(
-                "SELECT revision, payload FROM relay_library WHERE id=1",
-                [],
+                "SELECT revision, CASE WHEN revision=?1 THEN NULL ELSE payload END \
+                 FROM relay_library WHERE id=1",
+                [known(&op, revision)],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(|e| e.to_string())?;
-        Ok(Snapshot {
-            connections: model::decode(payload.as_bytes())?,
-            revision,
-        })
+        snapshot(revision, payload.as_deref())
     }
 }
 
-fn mssql(
-    server: &Server,
-    revision: i64,
-    next: Option<Vec<Connection>>,
-) -> Result<Snapshot, String> {
+fn mssql(server: &Server, revision: i64, op: Op) -> Result<Option<Snapshot>, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -176,7 +223,7 @@ fn mssql(
         let mut client = tiberius::Client::connect(config, tcp.compat_write())
             .await
             .map_err(|e| mssql_failure(&e, server.tls))?;
-        if let Some(connections) = next {
+        if let Op::Write(connections) = op {
             let json = serde_json::to_string(&connections).map_err(|e| e.to_string())?;
             let result = client
                 .execute(
@@ -189,13 +236,17 @@ fn mssql(
             if result.total() != 1 {
                 return Err(CONFLICT.into());
             }
-            Ok(Snapshot {
+            Ok(Some(Snapshot {
                 connections,
                 revision: revision + 1,
-            })
+            }))
         } else {
             let row = client
-                .simple_query("SELECT Revision, Payload FROM dbo.RelayLibrary WHERE Id=1")
+                .query(
+                    "SELECT Revision, CASE WHEN Revision=@P1 THEN NULL ELSE Payload END \
+                     FROM dbo.RelayLibrary WHERE Id=1",
+                    &[&known(&op, revision)],
+                )
                 .await
                 .map_err(|e| {
                     format!(
@@ -210,14 +261,8 @@ fn mssql(
                 .try_get(0)
                 .map_err(|e| e.to_string())?
                 .ok_or("Missing library revision")?;
-            let payload: &str = row
-                .try_get(1)
-                .map_err(|e| e.to_string())?
-                .ok_or("Missing library data")?;
-            Ok(Snapshot {
-                connections: model::decode(payload.as_bytes())?,
-                revision,
-            })
+            let payload: Option<&str> = row.try_get(1).map_err(|e| e.to_string())?;
+            snapshot(revision, payload)
         }
     };
     runtime.block_on(async {
@@ -341,15 +386,11 @@ fn mysql_opts(server: &Server) -> Result<mysql::Opts, String> {
         .into())
 }
 
-fn mysql(
-    server: &Server,
-    revision: i64,
-    next: Option<Vec<Connection>>,
-) -> Result<Snapshot, String> {
+fn mysql(server: &Server, revision: i64, op: Op) -> Result<Option<Snapshot>, String> {
     use mysql::prelude::Queryable;
     let mut client = mysql::Conn::new(mysql_opts(server)?)
         .map_err(|e| format!("MySQL connection failed: {e}. The URL is not logged."))?;
-    if let Some(connections) = next {
+    if let Op::Write(connections) = op {
         let json = serde_json::to_string(&connections).map_err(|e| e.to_string())?;
         // The revision always changes, so a matched row is also a changed row.
         client
@@ -367,21 +408,22 @@ fn mysql(
         if client.affected_rows() != 1 {
             return Err(CONFLICT.into());
         }
-        Ok(Snapshot {
+        Ok(Some(Snapshot {
             connections,
             revision: revision + 1,
-        })
+        }))
     } else {
-        let (revision, payload): (i64, String) = client
-            .query_first("SELECT Revision, Payload FROM RelayLibrary WHERE Id=1")
+        let (revision, payload): (i64, Option<String>) = client
+            .exec_first(
+                "SELECT Revision, CASE WHEN Revision=? THEN NULL ELSE Payload END \
+                 FROM RelayLibrary WHERE Id=1",
+                (known(&op, revision),),
+            )
             .map_err(|e| {
                 format!("Cannot read RelayLibrary. Run sql/mysql.sql once in your database. {e}")
             })?
             .ok_or("The MySQL library row is missing. Run sql/mysql.sql.")?;
-        Ok(Snapshot {
-            connections: model::decode(payload.as_bytes())?,
-            revision,
-        })
+        snapshot(revision, payload.as_deref())
     }
 }
 
@@ -393,18 +435,22 @@ mod tests {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join(format!("team-test-{}.sqlite", std::process::id()));
-        let original = sqlite(&path, 0, None).unwrap();
+        let original = sqlite(&path, 0, Op::Read).unwrap().unwrap();
         assert_eq!(original.revision, 0);
         let mut c = Connection::new();
         c.id = 1;
         c.name = "Test".into();
         c.host = "localhost".into();
-        let first = sqlite(&path, 0, Some(vec![c])).unwrap();
+        let first = sqlite(&path, 0, Op::Write(vec![c])).unwrap().unwrap();
         assert_eq!(first.revision, 1);
-        assert!(sqlite(&path, 0, Some(vec![])).is_err());
-        let read = sqlite(&path, 0, None).unwrap();
+        assert!(sqlite(&path, 0, Op::Write(vec![])).is_err());
+        let read = sqlite(&path, 0, Op::Read).unwrap().unwrap();
         assert_eq!(read.connections.len(), 1);
         assert_eq!(read.revision, 1);
+        // A background reload downloads the library only when its revision moved on.
+        assert!(sqlite(&path, 1, Op::ReadChanged).unwrap().is_none());
+        let changed = sqlite(&path, 0, Op::ReadChanged).unwrap().unwrap();
+        assert_eq!((changed.revision, changed.connections.len()), (1, 1));
         std::fs::remove_file(path).unwrap();
     }
     #[test]
@@ -635,20 +681,33 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let original = mssql(&server, 0, None).unwrap();
+        let original = mssql(&server, 0, Op::Read).unwrap().unwrap();
         assert_eq!((original.revision, original.connections.len()), (0, 0));
         let mut c = Connection::new();
         c.id = 1;
         c.name = "Tëst".into();
         c.host = "localhost".into();
-        assert_eq!(mssql(&server, 0, Some(vec![c])).unwrap().revision, 1);
         assert_eq!(
-            mssql(&server, 0, Some(vec![])).err().as_deref(),
+            mssql(&server, 0, Op::Write(vec![c]))
+                .unwrap()
+                .unwrap()
+                .revision,
+            1
+        );
+        assert_eq!(
+            mssql(&server, 0, Op::Write(vec![])).err().as_deref(),
             Some(CONFLICT)
         );
-        let read = mssql(&server, 0, None).unwrap();
+        let read = mssql(&server, 0, Op::Read).unwrap().unwrap();
         assert_eq!(
             (read.revision, read.connections[0].name.as_str()),
+            (1, "Tëst")
+        );
+        // A background reload downloads the library only when its revision moved on.
+        assert!(mssql(&server, 1, Op::ReadChanged).unwrap().is_none());
+        let changed = mssql(&server, 0, Op::ReadChanged).unwrap().unwrap();
+        assert_eq!(
+            (changed.revision, changed.connections[0].name.as_str()),
             (1, "Tëst")
         );
     }
@@ -688,21 +747,28 @@ mod tests {
         {
             client.query_drop(statement).unwrap();
         }
-        let original = mysql(&server, 0, None).unwrap();
+        let original = mysql(&server, 0, Op::Read).unwrap().unwrap();
         assert_eq!((original.revision, original.connections.len()), (0, 0));
         let mut c = Connection::new();
         c.id = 1;
         c.name = "Tëst".into();
         c.host = "localhost".into();
-        let first = mysql(&server, 0, Some(vec![c])).unwrap();
+        let first = mysql(&server, 0, Op::Write(vec![c])).unwrap().unwrap();
         assert_eq!(first.revision, 1);
         assert_eq!(
-            mysql(&server, 0, Some(vec![])).err().as_deref(),
+            mysql(&server, 0, Op::Write(vec![])).err().as_deref(),
             Some(CONFLICT)
         );
-        let read = mysql(&server, 0, None).unwrap();
+        let read = mysql(&server, 0, Op::Read).unwrap().unwrap();
         assert_eq!(read.revision, 1);
         assert_eq!(read.connections[0].name, "Tëst");
+        // A background reload downloads the library only when its revision moved on.
+        assert!(mysql(&server, 1, Op::ReadChanged).unwrap().is_none());
+        let changed = mysql(&server, 0, Op::ReadChanged).unwrap().unwrap();
+        assert_eq!(
+            (changed.revision, changed.connections[0].name.as_str()),
+            (1, "Tëst")
+        );
         // The payload must stay valid JSON.
         assert!(
             client

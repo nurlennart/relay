@@ -162,7 +162,7 @@ struct App {
     pending_editor: Option<Connection>,
     /// A silent background reload of a shared library, separate from `pending` so it never
     /// blocks or announces anything.
-    sync: Option<std::sync::mpsc::Receiver<Result<database::Snapshot, String>>>,
+    sync: Option<std::sync::mpsc::Receiver<Result<Option<database::Snapshot>, String>>>,
     /// When the shared library was last reloaded in the background.
     synced: Instant,
     /// Whether the window had focus last frame, to reload when it returns.
