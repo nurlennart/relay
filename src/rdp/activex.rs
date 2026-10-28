@@ -18,9 +18,50 @@ use windows::{
     core::{BSTR, GUID, HRESULT, IUnknown, Interface, PCWSTR, implement},
 };
 use windows_sys::Win32::{
-    Foundation::HWND, System::LibraryLoader::*, UI::HiDpi::GetDpiForWindow,
+    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    System::LibraryLoader::*,
+    UI::HiDpi::GetDpiForWindow,
     UI::WindowsAndMessaging::*,
 };
+
+/// The window class of the viewport that holds the RDP control, registered once.
+fn viewport_class() -> *const u16 {
+    static CLASS: OnceLock<Vec<u16>> = OnceLock::new();
+    CLASS
+        .get_or_init(|| {
+            let name: Vec<u16> = "RelayRdpViewport\0".encode_utf16().collect();
+            unsafe {
+                let class = WNDCLASSW {
+                    lpfnWndProc: Some(viewport_proc),
+                    hInstance: GetModuleHandleW(std::ptr::null()),
+                    hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
+                    lpszClassName: name.as_ptr(),
+                    ..std::mem::zeroed()
+                };
+                RegisterClassW(&class);
+            }
+            name
+        })
+        .as_ptr()
+}
+
+/// Answers which cursor to show over the remote desktop. The control leaves that question to
+/// its parents, and Relay's window would answer with whatever egui showed last, such as split
+/// view's resize arrow; the remote computer's pointer changes the cursor from there.
+unsafe extern "system" fn viewport_proc(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        if message == WM_SETCURSOR && (lparam & 0xffff) as u32 == HTCLIENT {
+            SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_ARROW));
+            return 1;
+        }
+        DefWindowProcW(window, message, wparam, lparam)
+    }
+}
 
 struct Apartment;
 impl Apartment {
@@ -217,10 +258,9 @@ impl RdpClient {
             if init() == 0 {
                 return Err("Windows ATL control hosting could not be initialized.".into());
             }
-            let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
             let window = Window(CreateWindowExW(
                 0,
-                class.as_ptr(),
+                viewport_class(),
                 std::ptr::null(),
                 WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
                 0,
@@ -949,6 +989,34 @@ mod tests {
                 .unwrap();
             assert_eq!(u32::try_from(&value).unwrap(), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn the_viewport_shows_the_arrow_instead_of_asking_relay_for_its_cursor() {
+        let _turn = one_control_at_a_time();
+        let parent = parent();
+        let mut connection = Connection::new();
+        connection.host = "localhost".into();
+        let client = RdpClient::new(
+            NativeWindow::from_hwnd(parent.0),
+            &connection,
+            false,
+            egui::Context::default(),
+        )
+        .unwrap();
+        // What Windows sends up from the control as the pointer moves over the desktop.
+        let answered = unsafe {
+            SendMessageW(
+                client.window.0,
+                WM_SETCURSOR,
+                client.window.0 as WPARAM,
+                (HTCLIENT | (WM_MOUSEMOVE << 16)) as LPARAM,
+            )
+        };
+        assert_eq!(answered, 1, "the question went on to Relay's window");
+        assert_eq!(unsafe { GetCursor() }, unsafe {
+            LoadCursorW(std::ptr::null_mut(), IDC_ARROW)
+        });
     }
 
     #[test]
