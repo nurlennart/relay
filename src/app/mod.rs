@@ -209,6 +209,8 @@ struct App {
     browse_request: Option<Connection>,
     /// The search for installed fonts, started when Settings first shows them.
     font_scan: Option<crate::fonts::Scan>,
+    /// The Settings page shown when Settings opens.
+    settings_tab: settings::SettingsTab,
     /// Connections chosen together in the library with Ctrl+click, Shift+click or Ctrl+A.
     /// `selected` stays the one the keyboard is on, and where a Shift+click range starts.
     marked: std::collections::BTreeSet<u64>,
@@ -323,6 +325,7 @@ impl App {
             connect_admin: false,
             browse_request: None,
             font_scan: None,
+            settings_tab: Default::default(),
             marked: Default::default(),
             connect_many: vec![],
         }

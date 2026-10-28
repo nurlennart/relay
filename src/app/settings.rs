@@ -1,6 +1,6 @@
 //! Settings, themes, and SSH snippets.
 use super::*;
-use egui::{Align, Align2, FontId, Layout, Margin, Sense, UiBuilder};
+use egui::{Align, Align2, FontId, Layout, Margin, Rect, Sense, UiBuilder};
 
 impl App {
     pub(super) fn settings(&mut self, ctx: &egui::Context) {
@@ -11,10 +11,7 @@ impl App {
         let mut choice = theme::current(ctx);
         let before = choice;
         let mut close = false;
-        let mut manage = false;
-        let mut import = None;
-        let mut export = None;
-        let mut recovery = false;
+        let mut action = None;
         let mut copied_version = None;
         let mut shortcuts = false;
         dialog("settings", ctx).show(ctx, |ui| {
@@ -23,14 +20,15 @@ impl App {
                 ui.label(RichText::new("Settings").size(TITLE_SIZE).strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     close = icon_button(ui, Icon::Close, 26., "Close (Esc)").clicked();
-                    shortcuts = ui.button("Keyboard shortcuts").on_hover_text("F1").clicked();
+                    shortcuts = ui
+                        .button("Keyboard shortcuts")
+                        .on_hover_text("F1")
+                        .clicked();
                     let version = version();
                     if ui
                         .add(
-                            egui::Label::new(
-                                RichText::new(&version).size(12.).color(colors.muted),
-                            )
-                            .sense(Sense::click()),
+                            egui::Label::new(RichText::new(&version).size(12.).color(colors.muted))
+                                .sense(Sense::click()),
                         )
                         .on_hover_text("Click to copy")
                         .clicked()
@@ -40,170 +38,40 @@ impl App {
                     }
                 });
             });
+            ui.add_space(4.);
+            tab_bar(ui, &mut self.settings_tab);
+            let height = (ctx.content_rect().height() - 220.).clamp(200., 540.);
             egui::ScrollArea::vertical()
-                .id_salt("settings-body")
-                .min_scrolled_height((ctx.content_rect().height() - 180.).clamp(200., 900.))
-                .max_height((ctx.content_rect().height() - 180.).clamp(200., 900.))
+                .id_salt(("settings-body", self.settings_tab))
+                .auto_shrink([false, false])
+                .min_scrolled_height(height)
+                .max_height(height)
                 .show(ui, |ui| {
-                    ui.add_space(8.);
-                    section_label(ui, "APPEARANCE");
-                    ui.label(
-                        RichText::new("Choose a workspace theme. Saved on this computer.")
-                            .color(colors.muted),
-                    );
-                    ui.add_space(4.);
-                    for pair in theme::Theme::ALL.chunks(2) {
-                        ui.columns(2, |columns| {
-                            for (column, &candidate) in pair.iter().enumerate() {
-                                if theme_option(
-                                    &mut columns[column],
-                                    candidate,
-                                    choice == candidate,
+                    ui.add_space(12.);
+                    match self.settings_tab {
+                        SettingsTab::Appearance => theme_picker(ui, &mut choice),
+                        SettingsTab::Terminal => self.terminal_settings(ui),
+                        SettingsTab::Library => action = self.library_settings(ui),
+                        SettingsTab::Snippets => {
+                            ui.label(
+                                RichText::new(
+                                    "Saved commands for SSH sessions. Press Ctrl+Shift+P in a \
+                                     terminal.",
                                 )
-                                .clicked()
-                                {
-                                    choice = candidate;
-                                }
-                            }
-                        });
-                    }
-                    ui.add_space(14.);
-                    ui.separator();
-                    section_label(ui, "TERMINAL");
-                    self.terminal_settings(ui);
-                    ui.add_space(14.);
-                    ui.separator();
-                    section_label(ui, "SESSIONS");
-                    let mut reopen = !self.state.forget_tabs;
-                    if ui
-                        .checkbox(&mut reopen, "Reopen tabs at startup")
-                        .changed()
-                    {
-                        self.state.forget_tabs = !reopen;
-                        self.remember_tabs();
-                    }
-                    ui.label(
-                        RichText::new(
-                            "Tabs open when Relay closes come back, and each connects when you \
-                             first select it. Turned off, Relay starts with only the library \
-                             and keeps no list of your tabs.",
-                        )
-                        .size(12.)
-                        .color(colors.muted),
-                    );
-                    ui.add_space(14.);
-                    ui.separator();
-                    section_label(ui, "CONNECTION LIBRARY");
-                    ui.label(RichText::new("Your connections are stored in").color(colors.muted));
-                    ui.add_space(2.);
-                    let (detail, facts) = self.library_summary();
-                    // The button comes first so the row takes its height and centers the name.
-                    ui.horizontal(|ui| {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            manage = ui
-                                .add_enabled(
-                                    self.pending.is_none(),
-                                    egui::Button::new("Switch library…"),
-                                )
-                                .on_hover_text("Personal, a shared SQLite file, MSSQL, or MySQL")
-                                .clicked();
-                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                let (dot, _) =
-                                    ui.allocate_exact_size(Vec2::splat(8.), Sense::hover());
-                                ui.painter().circle_filled(dot.center(), 3.5, colors.accent);
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(self.location.label()).strong(),
-                                    )
-                                    .truncate(),
-                                );
-                            });
-                        });
-                    });
-                    if !detail.is_empty() {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(&detail).monospace().size(12.).color(colors.text),
-                            )
-                            .truncate(),
-                        )
-                        .on_hover_text(&detail);
-                    }
-                    ui.label(RichText::new(facts).size(12.).color(colors.muted));
-                    ui.add_space(14.);
-                    ui.separator();
-                    section_label(ui, "IMPORT & EXPORT");
-                    ui.label(
-                        RichText::new(
-                            "Bring in connections from CSV, your SSH config, .rdp files, or a Relay \
-                             JSON file. JSON keeps every setting; CSV suits other tools.",
-                        )
-                            .color(colors.muted),
-                    );
-                    ui.add_space(4.);
-                    let button_width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.;
-                    let idle = self.pending.is_none();
-                    ui.add_enabled_ui(idle, |ui| {
-                        ui.horizontal(|ui| {
-                            if outline_button(ui, "Import CSV", button_width).clicked() {
-                                import = Some(Source::Csv);
-                            }
-                            if outline_button(ui, "Import SSH config", button_width)
-                                .on_hover_text("Reads ~/.ssh/config")
-                                .clicked()
-                            {
-                                import = Some(Source::SshConfig);
-                            }
-                        });
-                    });
-                    ui.add_enabled_ui(idle, |ui| {
-                        ui.horizontal(|ui| {
-                            if outline_button(ui, "Import .rdp files", button_width).clicked() {
-                                import = Some(Source::RdpFiles);
-                            }
-                            if outline_button(ui, "Import JSON", button_width)
-                                .on_hover_text("A Relay JSON export, or a connections.json library")
-                                .clicked()
-                            {
-                                import = Some(Source::Json);
-                            }
-                        });
-                    });
-                    ui.horizontal(|ui| {
-                        if outline_button(ui, "Export JSON", button_width)
-                            .on_hover_text("Every setting, including SSH and remote desktop options")
-                            .clicked()
-                        {
-                            export = Some(file_dialog::Kind::ExportJson);
+                                .color(colors.muted),
+                            );
+                            ui.add_space(4.);
+                            self.snippet_settings(ui);
                         }
-                        if outline_button(ui, "Export CSV", button_width)
-                            .on_hover_text("Without SSH and remote desktop options")
-                            .clicked()
-                        {
-                            export = Some(file_dialog::Kind::ExportCsv);
-                        }
-                    });
-                    if self.recovery.is_some() {
-                        recovery = ui.button("Export unsaved changes").clicked();
-                    }
-                    ui.add_space(14.);
-                    ui.separator();
-                    section_label(ui, "SNIPPETS");
-                    ui.label(
-                        RichText::new(
-                            "Saved commands for SSH sessions. Press Ctrl+Shift+P in a terminal.",
-                        )
-                        .color(colors.muted),
-                    );
-                    ui.add_space(4.);
-                    self.snippet_settings(ui);
-                    if let Some(error) = &self.error {
-                        ui.colored_label(ui.visuals().error_fg_color, error);
-                    }
-                    if let Some((notice, _)) = &self.notice {
-                        ui.colored_label(colors.accent, notice);
                     }
                 });
+            // Below the tabs' content, so a message shows whichever tab is open.
+            if let Some(error) = &self.error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            if let Some((notice, _)) = &self.notice {
+                ui.colored_label(colors.accent, notice);
+            }
         });
         if choice != before {
             choice.apply(ctx);
@@ -230,26 +98,130 @@ impl App {
         if close || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             self.modal = Modal::None;
         }
-        if manage {
-            self.modal = Modal::Library;
-        }
         if shortcuts {
             self.modal = Modal::Shortcuts;
         }
-        // Each import replaces settings with its preview once read.
-        match import {
-            Some(Source::Csv) => self.import_csv(),
-            Some(Source::SshConfig) => self.import_ssh_config(),
-            Some(Source::RdpFiles) => self.import_rdp_files(),
-            Some(Source::Json) => self.import_json(),
+        match action {
+            Some(LibraryAction::Switch) => self.modal = Modal::Library,
+            // Each import replaces settings with its preview once read.
+            Some(LibraryAction::Import(Source::Csv)) => self.import_csv(),
+            Some(LibraryAction::Import(Source::SshConfig)) => self.import_ssh_config(),
+            Some(LibraryAction::Import(Source::RdpFiles)) => self.import_rdp_files(),
+            Some(LibraryAction::Import(Source::Json)) => self.import_json(),
+            Some(LibraryAction::Export(kind)) => self.export(kind, false),
+            Some(LibraryAction::Recover) => self.export(file_dialog::Kind::ExportJson, true),
             None => {}
         }
-        if let Some(kind) = export {
-            self.export(kind, false);
+    }
+
+    /// Where connections are stored, and importing and exporting them.
+    fn library_settings(&mut self, ui: &mut egui::Ui) -> Option<LibraryAction> {
+        let colors = theme::palette(ui.ctx());
+        let mut action = None;
+        section_label(ui, "CONNECTION LIBRARY");
+        ui.label(RichText::new("Your connections are stored in").color(colors.muted));
+        ui.add_space(2.);
+        let (detail, facts) = self.library_summary();
+        // The button comes first so the row takes its height and centers the name.
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add_enabled(self.pending.is_none(), egui::Button::new("Switch library…"))
+                    .on_hover_text("Personal, a shared SQLite file, MSSQL, or MySQL")
+                    .clicked()
+                {
+                    action = Some(LibraryAction::Switch);
+                }
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    let (dot, _) = ui.allocate_exact_size(Vec2::splat(8.), Sense::hover());
+                    ui.painter().circle_filled(dot.center(), 3.5, colors.accent);
+                    ui.add(
+                        egui::Label::new(RichText::new(self.location.label()).strong()).truncate(),
+                    );
+                });
+            });
+        });
+        if !detail.is_empty() {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(&detail)
+                        .monospace()
+                        .size(12.)
+                        .color(colors.text),
+                )
+                .truncate(),
+            )
+            .on_hover_text(&detail);
         }
-        if recovery {
-            self.export(file_dialog::Kind::ExportJson, true);
+        ui.label(RichText::new(facts).size(12.).color(colors.muted));
+        ui.add_space(14.);
+        ui.separator();
+        section_label(ui, "IMPORT & EXPORT");
+        ui.label(
+            RichText::new(
+                "Bring in connections from CSV, your SSH config, .rdp files, or a Relay JSON \
+                 file. JSON keeps every setting; CSV suits other tools.",
+            )
+            .color(colors.muted),
+        );
+        ui.add_space(4.);
+        let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.;
+        let rows: [[(&str, &str, LibraryAction); 2]; 3] = [
+            [
+                ("Import CSV", "", LibraryAction::Import(Source::Csv)),
+                (
+                    "Import SSH config",
+                    "Reads ~/.ssh/config",
+                    LibraryAction::Import(Source::SshConfig),
+                ),
+            ],
+            [
+                (
+                    "Import .rdp files",
+                    "",
+                    LibraryAction::Import(Source::RdpFiles),
+                ),
+                (
+                    "Import JSON",
+                    "A Relay JSON export, or a connections.json library",
+                    LibraryAction::Import(Source::Json),
+                ),
+            ],
+            [
+                (
+                    "Export JSON",
+                    "Every setting, including SSH and remote desktop options",
+                    LibraryAction::Export(file_dialog::Kind::ExportJson),
+                ),
+                (
+                    "Export CSV",
+                    "Without SSH and remote desktop options",
+                    LibraryAction::Export(file_dialog::Kind::ExportCsv),
+                ),
+            ],
+        ];
+        for row in rows {
+            ui.horizontal(|ui| {
+                for (label, hint, choice) in row {
+                    // Imports wait for a library switch in progress; exports do not.
+                    let enabled =
+                        self.pending.is_none() || matches!(choice, LibraryAction::Export(_));
+                    let mut button = ui
+                        .add_enabled_ui(enabled, |ui| outline_button(ui, label, width))
+                        .inner;
+                    if !hint.is_empty() {
+                        button = button.on_hover_text(hint);
+                    }
+                    if button.clicked() {
+                        action = Some(choice);
+                    }
+                }
+            });
         }
+        if self.recovery.is_some() && ui.button("Export unsaved changes").clicked() {
+            action = Some(LibraryAction::Recover);
+        }
+        action
     }
 
     /// Where the open library is, and what to know about it: who shares it, whether it is
@@ -280,9 +252,16 @@ impl App {
             .clone();
         let settings = self.state.terminal.clone();
         let mut next = settings.clone();
-        let label_width = 92.;
+        // Row names at the left edge, in the same muted color as "Colors" below them.
+        let row_label = |ui: &mut egui::Ui, text: &str| {
+            let size = Vec2::new(64., ui.spacing().interact_size.y);
+            ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
+                ui.set_min_size(size);
+                ui.label(RichText::new(text).color(colors.muted));
+            });
+        };
         ui.horizontal(|ui| {
-            ui.add_sized([label_width, 20.], egui::Label::new("Font"));
+            row_label(ui, "Font");
             let current = match &settings.font {
                 None => "System monospace".to_string(),
                 Some(path) => (scan.fonts().unwrap_or_default().iter())
@@ -331,7 +310,7 @@ impl App {
             }
         });
         ui.horizontal(|ui| {
-            ui.add_sized([label_width, 20.], egui::Label::new("Size"));
+            row_label(ui, "Size");
             ui.add(
                 egui::Slider::new(&mut next.font_size, crate::terminal::FONT_SIZES)
                     .step_by(1.)
@@ -389,6 +368,23 @@ impl App {
             self.state.terminal = next;
             self.save_state();
         }
+        ui.add_space(14.);
+        ui.separator();
+        section_label(ui, "SESSIONS");
+        let mut reopen = !self.state.forget_tabs;
+        if ui.checkbox(&mut reopen, "Reopen tabs at startup").changed() {
+            self.state.forget_tabs = !reopen;
+            self.remember_tabs();
+        }
+        ui.label(
+            RichText::new(
+                "Tabs open when Relay closes come back, and each connects when you first select \
+                 it. Turned off, Relay starts with only the library and keeps no list of your \
+                 tabs.",
+            )
+            .size(12.)
+            .color(colors.muted),
+        );
     }
 
     /// Lists, adds, edits, and deletes snippets inside Settings.
@@ -610,6 +606,7 @@ impl App {
             return;
         }
         if manage {
+            self.settings_tab = SettingsTab::Snippets;
             self.modal = Modal::Settings;
             return;
         }
@@ -623,6 +620,107 @@ pub(super) enum Source {
     SshConfig,
     RdpFiles,
     Json,
+}
+
+/// The pages of Settings. The one last shown opens again until Relay closes.
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq)]
+pub(super) enum SettingsTab {
+    #[default]
+    Appearance,
+    Terminal,
+    Library,
+    Snippets,
+}
+
+impl SettingsTab {
+    const ALL: [Self; 4] = [
+        Self::Appearance,
+        Self::Terminal,
+        Self::Library,
+        Self::Snippets,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Appearance => "Appearance",
+            Self::Terminal => "Terminal",
+            Self::Library => "Library",
+            Self::Snippets => "Snippets",
+        }
+    }
+}
+
+/// What the Library tab asks for, done once Settings is drawn.
+enum LibraryAction {
+    Switch,
+    Import(Source),
+    Export(file_dialog::Kind),
+    /// Export edits that could not be saved to the library.
+    Recover,
+}
+
+/// The row of page names across the top of Settings, underlining the open one.
+pub(super) fn tab_bar(ui: &mut egui::Ui, current: &mut SettingsTab) {
+    let colors = theme::palette(ui.ctx());
+    let font = FontId::proportional(13.);
+    let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.), Sense::hover());
+    let mut left = bar.left();
+    for tab in SettingsTab::ALL {
+        let galley =
+            ui.painter()
+                .layout_no_wrap(tab.label().into(), font.clone(), Color32::PLACEHOLDER);
+        let text = Rect::from_min_size(
+            egui::pos2(left, bar.center().y - galley.size().y / 2.),
+            galley.size(),
+        );
+        // The gap between names belongs to the name before it, so it still takes the click.
+        let rect = Rect::from_x_y_ranges(left..=text.right() + 20., bar.y_range());
+        let response = ui.interact(rect, egui::Id::new(("settings-tab", tab)), Sense::click());
+        let open = *current == tab;
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, open, tab.label())
+        });
+        if response.clicked() {
+            *current = tab;
+        }
+        let color = if open || response.hovered() || response.has_focus() {
+            colors.text
+        } else {
+            colors.muted
+        };
+        ui.painter().galley(text.min, galley, color);
+        if open {
+            ui.painter().rect_filled(
+                Rect::from_x_y_ranges(text.x_range(), bar.bottom() - 2.0..=bar.bottom()),
+                1.,
+                colors.accent,
+            );
+        }
+        left = rect.right();
+    }
+    ui.painter().hline(
+        bar.x_range(),
+        bar.bottom() + 0.5,
+        Stroke::new(1_f32, colors.line),
+    );
+}
+
+/// The workspace themes, two to a row.
+fn theme_picker(ui: &mut egui::Ui, choice: &mut theme::Theme) {
+    let colors = theme::palette(ui.ctx());
+    ui.label(
+        RichText::new("Choose a workspace theme. Saved on this computer.").color(colors.muted),
+    );
+    ui.add_space(4.);
+    for pair in theme::Theme::ALL.chunks(2) {
+        ui.columns(2, |columns| {
+            for (column, &candidate) in pair.iter().enumerate() {
+                if theme_option(&mut columns[column], candidate, *choice == candidate).clicked() {
+                    *choice = candidate;
+                }
+            }
+        });
+    }
 }
 
 /// Relay's version, with the commit it was built from when that is known, such as

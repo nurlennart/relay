@@ -55,8 +55,14 @@ pub fn seed(app: &mut App) {
         }
         _ => {}
     }
-    if std::env::var_os("RELAY_UI_SETTINGS").is_some() {
+    if let Ok(tab) = std::env::var("RELAY_UI_SETTINGS") {
         app.modal = Modal::Settings;
+        app.settings_tab = match tab.as_str() {
+            "terminal" => settings::SettingsTab::Terminal,
+            "library" => settings::SettingsTab::Library,
+            "snippets" => settings::SettingsTab::Snippets,
+            _ => settings::SettingsTab::Appearance,
+        };
     }
     match std::env::var("RELAY_UI_FILTER").as_deref() {
         Ok("favorites") => app.filter = Filter::Favorites,

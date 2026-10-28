@@ -549,6 +549,54 @@ fn navigation_and_theme_clicks_include_label_and_both_edges() {
     }
 }
 
+#[test]
+fn settings_tabs_switch_on_click_including_the_gap_after_a_name() {
+    let ctx = egui::Context::default();
+    let mut tab = settings::SettingsTab::Appearance;
+    let mut frame = |events| {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(500., 80.))),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| settings::tab_bar(ui, &mut tab));
+            },
+        );
+        tab
+    };
+    let rect = |tab| {
+        ctx.read_response(egui::Id::new(("settings-tab", tab)))
+            .unwrap()
+            .rect
+    };
+    frame(vec![]);
+    for (target, pos) in [
+        (
+            settings::SettingsTab::Library,
+            rect(settings::SettingsTab::Library).center(),
+        ),
+        (
+            settings::SettingsTab::Terminal,
+            rect(settings::SettingsTab::Terminal).right_center() - Vec2::new(2., 0.),
+        ),
+    ] {
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+        assert_eq!(frame(vec![]), target);
+    }
+}
+
 /// An app with one file browser tab showing `/srv`.
 fn files_app(ctx: &egui::Context) -> App {
     let mut app = test_app(ctx);
