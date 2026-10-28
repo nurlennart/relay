@@ -1025,7 +1025,7 @@ mod tests {
             "the hole is cut"
         );
         // The menu's choice moves the session to its own window in the same frame.
-        client.set_parent(NativeWindow::from_hwnd(second.0));
+        client.set_parent(NativeWindow::from_hwnd(second.0).unwrap());
         assert_eq!(
             unsafe { GetWindowRgn(client.window.0, region) },
             0,
