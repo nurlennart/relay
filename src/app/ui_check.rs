@@ -132,6 +132,126 @@ pub fn seed(app: &mut App) {
         ssh: Default::default(),
     })
     .collect();
+    // A fuller library for the README screenshots.
+    if std::env::var_os("RELAY_UI_SHOWCASE").is_some() {
+        let notes = [
+            "Color grading, 2× RTX",
+            "Nightly builds and release archives",
+            "",
+            "Smoke tests before each release",
+        ];
+        for (c, note) in app.connections.iter_mut().zip(notes) {
+            c.notes = note.into();
+        }
+        let more = [
+            (
+                "Web frontend 1",
+                "web1.example.com",
+                "deploy",
+                "Production",
+                Protocol::Ssh,
+                "nginx, behind the load balancer",
+                true,
+            ),
+            (
+                "Web frontend 2",
+                "web2.example.com",
+                "deploy",
+                "Production",
+                Protocol::Ssh,
+                "",
+                false,
+            ),
+            (
+                "Database primary",
+                "db1.example.com",
+                "ops",
+                "Production",
+                Protocol::Ssh,
+                "PostgreSQL 17, maintenance Sundays 02:00",
+                true,
+            ),
+            (
+                "Monitoring",
+                "grafana.example.com",
+                "ops",
+                "Infrastructure",
+                Protocol::Ssh,
+                "",
+                false,
+            ),
+            (
+                "Domain controller",
+                "dc01.corp.example.com",
+                "CORP\\admin",
+                "Office",
+                Protocol::Rdp,
+                "",
+                false,
+            ),
+            (
+                "File server",
+                "files.corp.example.com",
+                "CORP\\admin",
+                "Office",
+                Protocol::Rdp,
+                "Shares and backups",
+                false,
+            ),
+            (
+                "Reception PC",
+                "192.0.2.51",
+                "frontdesk",
+                "Office",
+                Protocol::Rdp,
+                "",
+                false,
+            ),
+            (
+                "Render node",
+                "192.0.2.60",
+                "studio\\alex",
+                "Studio",
+                Protocol::Rdp,
+                "",
+                false,
+            ),
+            (
+                "Home NAS",
+                "nas.home.arpa",
+                "admin",
+                "Home lab",
+                Protocol::Ssh,
+                "",
+                false,
+            ),
+            (
+                "Raspberry Pi",
+                "pi.home.arpa",
+                "pi",
+                "Home lab",
+                Protocol::Ssh,
+                "Pi-hole and Home Assistant",
+                false,
+            ),
+        ];
+        for (name, host, username, group, protocol, notes, favorite) in more {
+            app.connections.push(Connection {
+                id: app.connections.len() as u64 + 1,
+                name: name.into(),
+                host: host.into(),
+                username: username.into(),
+                group: group.into(),
+                protocol,
+                port: protocol.port(),
+                favorite,
+                notes: notes.into(),
+                metadata: Default::default(),
+                rdp: Default::default(),
+                ssh: Default::default(),
+            });
+        }
+    }
     if std::env::var_os("RELAY_UI_NO_FAVORITES").is_some() {
         for c in &mut app.connections {
             c.favorite = false;
@@ -188,7 +308,7 @@ git pull && ./deploy.sh",
         let mut terminal = if std::env::var_os("RELAY_UI_STREAM").is_some() {
             crate::terminal::Terminal::demo_stream(app.ctx.clone())
         } else {
-            crate::terminal::Terminal::demo(TRANSCRIPT)
+            crate::terminal::Terminal::demo(transcript())
         };
         if std::env::var_os("RELAY_UI_SELECTION").is_some() {
             terminal.select((13, 0), (15, 40));
@@ -209,7 +329,7 @@ git pull && ./deploy.sh",
         if std::env::var_os("RELAY_UI_SPLIT").is_some() {
             let mut connection = app.connections[3].clone();
             connection.host = "staging.example.com".into();
-            let terminal = crate::terminal::Terminal::demo(TRANSCRIPT);
+            let terminal = crate::terminal::Terminal::demo(transcript());
             app.sessions.push(session::Session::demo(
                 connection,
                 terminal,
@@ -348,6 +468,43 @@ pub fn capture(ctx: &egui::Context) {
     ctx.request_repaint();
 }
 
+/// The README screenshots' session, with lines short enough for split view.
+fn transcript() -> &'static [u8] {
+    if std::env::var_os("RELAY_UI_SHOWCASE").is_some() {
+        SHOWCASE_TRANSCRIPT
+    } else {
+        TRANSCRIPT
+    }
+}
+
+const SHOWCASE_TRANSCRIPT: &[u8] = b"\x1b[2J\x1b[H\
+Last login: Wed Oct 28 09:14:02 2026 from 192.0.2.10\r\n\
+\x1b[1;32mdeploy@build\x1b[0m:\x1b[1;34m~\x1b[0m$ df -h /srv\r\n\
+Filesystem      Size  Used Avail Use% Mounted on\r\n\
+/dev/nvme0n1p2  468G  187G  258G  42% /srv\r\n\
+\x1b[1;32mdeploy@build\x1b[0m:\x1b[1;34m~\x1b[0m$ systemctl is-active nginx relay-ci\r\n\
+active\r\n\
+active\r\n\
+\x1b[1;32mdeploy@build\x1b[0m:\x1b[1;34m~\x1b[0m$ ls apps\r\n\
+\x1b[1;36mcurrent\x1b[0m  \x1b[1;34mrelay-0.4.0\x1b[0m  \x1b[1;34mrelay-0.5.0\x1b[0m  \x1b[1;34mrelay-0.5.1\x1b[0m\r\n\
+\x1b[1;32mdeploy@build\x1b[0m:\x1b[1;34m~\x1b[0m$ git -C apps/current log --oneline -4\r\n\
+\x1b[33m5fac73a\x1b[0m (\x1b[1;36mHEAD -> \x1b[1;32mmain\x1b[0m) Add quick open\r\n\
+\x1b[33m4938270\x1b[0m Reconnect SSH after network drops\r\n\
+\x1b[33mf52e8fb\x1b[0m Browse files over SFTP\r\n\
+\x1b[33m0c1d9a4\x1b[0m Share a library through MySQL\r\n\
+\x1b[1;32mdeploy@build\x1b[0m:\x1b[1;34m~\x1b[0m$ ./deploy.sh staging\r\n\
+\x1b[1;34m==>\x1b[0m \x1b[1mBuilding release\x1b[0m\r\n    \
+\x1b[1;32mFinished\x1b[0m `release` profile in 41.2s\r\n\
+\x1b[1;34m==>\x1b[0m \x1b[1mUploading relay-0.5.1.tar.gz (18 MB)\x1b[0m\r\n\
+\x1b[1;34m==>\x1b[0m \x1b[1mRestarting relay-ci on staging\x1b[0m\r\n\
+\x1b[32m\xe2\x9c\x93\x1b[0m Deployed 5fac73a to staging in 58s\r\n\
+\x1b[1;32mdeploy@build\x1b[0m:\x1b[1;34m~\x1b[0m$ ls -lhG releases\r\n\
+total 54M\r\n\
+-rw-r--r-- 1 deploy 18M Oct 12 16:44 \x1b[1;31mrelay-0.4.0.tar.gz\x1b[0m\r\n\
+-rw-r--r-- 1 deploy 18M Oct 20 11:02 \x1b[1;31mrelay-0.5.0.tar.gz\x1b[0m\r\n\
+-rw-r--r-- 1 deploy 18M Oct 28 09:21 \x1b[1;31mrelay-0.5.1.tar.gz\x1b[0m\r\n\
+\x1b[1;32mdeploy@build\x1b[0m:\x1b[1;34m~\x1b[0m$ \x1b[7m \x1b[0m";
+
 /// A typical SSH session for the terminal rendering check.
 const TRANSCRIPT: &[u8] = b"\x1b[2J\x1b[H\
 Welcome to Ubuntu 24.04.1 LTS (GNU/Linux 6.8.0-45-generic x86_64)\r\n\r\n \
@@ -445,7 +602,7 @@ fn files(app: &mut App) {
     }
     let connection = app.connections[1].clone();
     if std::env::var_os("RELAY_UI_SPLIT").is_some() {
-        let terminal = crate::terminal::Terminal::demo(TRANSCRIPT);
+        let terminal = crate::terminal::Terminal::demo(transcript());
         app.sessions.push(session::Session::demo(
             connection.clone(),
             terminal,
