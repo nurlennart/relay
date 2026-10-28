@@ -69,7 +69,9 @@ impl App {
                                     {
                                         close = Some(index);
                                     }
-                                    session.inner.0.context_menu(|ui| {
+                                    let menu = egui::Popup::context_menu(&session.inner.0);
+                                    menu_popup(menu).show(|ui| {
+                                        ui.set_min_width(MENU_WIDTH);
                                         // A session can look open after its network went away,
                                         // so reconnecting is offered whenever it has connected.
                                         if s.tab_state() != session::TabState::Waiting

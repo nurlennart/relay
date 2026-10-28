@@ -64,6 +64,8 @@ pub(super) fn menu_popup(popup: egui::Popup<'_>) -> egui::Popup<'_> {
         style.spacing.menu_margin = egui::Margin::same(5);
         style.spacing.button_padding = Vec2::new(10., 4.);
         style.spacing.item_spacing.y = 1.;
+        // A long item widens the menu instead of breaking onto a second line.
+        style.wrap_mode = Some(egui::TextWrapMode::Extend);
         style.visuals.menu_corner_radius = egui::CornerRadius::same(RADIUS_LARGE);
         style.visuals.window_fill = colors.panel;
         style.visuals.window_stroke = Stroke::new(1_f32, colors.line);
