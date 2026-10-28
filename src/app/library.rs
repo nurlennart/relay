@@ -39,7 +39,11 @@ impl App {
         // Connections chosen together stay chosen while they are shown, so actions on them
         // never reach rows a search or filter hid.
         let shown: Vec<u64> = order.iter().map(|&i| self.connections[i].id).collect();
-        self.marked.retain(|id| shown.contains(id));
+        // A set to look the chosen ones up in, so choosing thousands stays quick.
+        if !self.marked.is_empty() {
+            let visible: std::collections::HashSet<u64> = shown.iter().copied().collect();
+            self.marked.retain(|id| visible.contains(id));
+        }
         if focused.is_none() {
             let (all, clear) = ui.input_mut(|i| {
                 (
