@@ -472,6 +472,9 @@ impl App {
                     [header.left_bottom(), header.right_bottom()],
                     Stroke::new(1_f32, colors.line),
                 );
+                // Rows scrolled under the header stop at its line; egui otherwise draws them a few
+                // points past the list's edge.
+                ui.visuals_mut().clip_rect_margin = 0.;
                 let height = (ui.available_height() - 2.).max(ROW * 3.);
                 let mut area = egui::ScrollArea::vertical()
                     .id_salt("connection-list")

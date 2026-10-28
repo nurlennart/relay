@@ -597,6 +597,46 @@ fn settings_tabs_switch_on_click_including_the_gap_after_a_name() {
     }
 }
 
+#[test]
+fn library_rows_never_draw_over_the_table_header() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let order: Vec<usize> = (0..app.connections.len()).collect();
+    let output = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(900., 600.))),
+            ..Default::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.connection_table(ui, &order));
+        },
+    );
+    let line = theme::palette(&ctx).line;
+    let header = output
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::LineSegment { points, stroke }
+                if stroke.color == line && points[0].y == points[1].y =>
+            {
+                Some(points[0].y)
+            }
+            _ => None,
+        })
+        .expect("the header's line");
+    // Everything below the header is clipped at its line, not a few points above it.
+    for clipped in &output.shapes {
+        let clip = clipped.clip_rect;
+        if clip.min.y > 0. {
+            assert!(
+                clip.min.y >= header,
+                "clipped at {} above {header}",
+                clip.min.y
+            );
+        }
+    }
+}
+
 /// An app with one file browser tab showing `/srv`.
 fn files_app(ctx: &egui::Context) -> App {
     let mut app = test_app(ctx);

@@ -789,6 +789,9 @@ fn table(
                 );
                 return;
             }
+            // Rows scrolled under the header stop at its line; egui otherwise draws them a few
+            // points past the list's edge.
+            ui.visuals_mut().clip_rect_margin = 0.;
             let mut area = egui::ScrollArea::vertical()
                 .id_salt(("files-list", key))
                 .max_height(rows)
