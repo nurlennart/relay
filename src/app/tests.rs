@@ -545,6 +545,54 @@ fn reconnecting_never_takes_settings_from_another_database_of_the_same_kind() {
 }
 
 #[test]
+fn closing_the_tab_in_front_shows_another_tab_rather_than_the_library() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    for c in app.connections.clone() {
+        app.sessions
+            .push(session::Session::restored(c, false, ctx.clone()));
+    }
+    let name = |app: &App| app.active.map(|i| app.sessions[i].connection.name.clone());
+    // From Alpha, a new connection opens beside it; closing that returns to Alpha.
+    app.active = Some(0);
+    app.note_tab();
+    let mut delta = app.connections[1].clone();
+    delta.name = "Delta".into();
+    app.add_session(session::Session::restored(delta, false, ctx.clone()));
+    app.note_tab();
+    app.close_tab(3);
+    assert_eq!(
+        name(&app).as_deref(),
+        Some("Alpha"),
+        "back to where it was opened"
+    );
+    // With the tab it came from gone, the left neighbour.
+    app.note_tab();
+    app.active = Some(2);
+    app.note_tab();
+    app.close_tab(0);
+    app.close_tab(1);
+    assert_eq!(name(&app).as_deref(), Some("Bravo"), "the tab to the left");
+    // In split view, the other side takes the front.
+    let mut charlie = app.connections[2].clone();
+    charlie.name = "Charlie".into();
+    app.add_session(session::Session::restored(charlie, false, ctx.clone()));
+    app.note_tab();
+    app.split = Some(0);
+    app.close_tab(1);
+    assert_eq!((name(&app).as_deref(), app.split), (Some("Bravo"), None));
+    // The first tab closing shows the one now first, and the last the library.
+    let mut echo = app.connections[0].clone();
+    echo.name = "Echo".into();
+    app.add_session(session::Session::restored(echo, false, ctx.clone()));
+    app.active = Some(0);
+    app.close_tab(0);
+    assert_eq!(name(&app).as_deref(), Some("Echo"));
+    app.close_tab(0);
+    assert_eq!(app.active, None, "no tabs left");
+}
+
+#[test]
 fn split_view_pairs_two_tabs_and_follows_moves() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);

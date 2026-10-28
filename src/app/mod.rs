@@ -189,6 +189,9 @@ struct App {
     state_path: Option<PathBuf>,
     /// The tab shown last frame, to focus a terminal when its tab opens.
     shown: Option<usize>,
+    /// The session tab shown now and the one shown before it, by key, so closing a tab returns
+    /// to the one it was opened from.
+    tab_trail: (Option<u64>, Option<u64>),
     /// Sessions shown in their own windows, by session key.
     detached: Vec<u64>,
     /// Native windows found for detached sessions, which remote desktops are moved into.
@@ -317,6 +320,7 @@ impl App {
             state,
             state_path: None,
             shown: None,
+            tab_trail: (None, None),
             detached: vec![],
             windows: vec![],
             split: None,
@@ -788,6 +792,7 @@ impl App {
         if index >= self.sessions.len() {
             return;
         }
+        let was_active = self.active == Some(index);
         self.sessions.remove(index);
         let shift = |tab: Option<usize>| match tab {
             Some(a) if a == index => None,
@@ -796,7 +801,30 @@ impl App {
         };
         self.active = shift(self.active);
         self.split = shift(self.split);
+        // Closing the tab in front shows another rather than the library: the one beside it in
+        // split view, the one it was opened from, or its left neighbour.
+        if was_active {
+            let previous =
+                (self.tab_trail.1).and_then(|key| self.sessions.iter().position(|s| s.key == key));
+            self.active = self
+                .split
+                .take()
+                .or(previous)
+                .or_else(|| (!self.sessions.is_empty()).then(|| index.saturating_sub(1)));
+        }
         self.remember_tabs();
+    }
+
+    /// Notes which session tab is shown, keeping the one before it to return to.
+    fn note_tab(&mut self) {
+        let current = self
+            .active
+            .and_then(|i| self.sessions.get(i))
+            .map(|s| s.key);
+        // The library is a place to pass through, not a tab to return to.
+        if current.is_some() && current != self.tab_trail.0 {
+            self.tab_trail = (current, self.tab_trail.0);
+        }
     }
 
     /// Deletes the saved connections `ids`. When they were all the search found, the search
@@ -1180,6 +1208,7 @@ impl eframe::App for App {
                 self.error = Some(e);
             }
         }
+        self.note_tab();
         if self.shown != self.active {
             self.shown = self.active;
             if let Some(session) = self.active.and_then(|i| self.sessions.get_mut(i)) {
