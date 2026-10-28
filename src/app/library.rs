@@ -36,6 +36,25 @@ impl App {
         let total = self.connections.len();
         let search_id = egui::Id::new("library-search");
         let focused = ui.memory(|m| m.focused());
+        // Connections chosen together stay chosen while they are shown, so actions on them
+        // never reach rows a search or filter hid.
+        let shown: Vec<u64> = order.iter().map(|&i| self.connections[i].id).collect();
+        self.marked.retain(|id| shown.contains(id));
+        if focused.is_none() {
+            let (all, clear) = ui.input_mut(|i| {
+                (
+                    i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
+                    !self.marked.is_empty()
+                        && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+                )
+            });
+            if all && shown.len() > 1 {
+                self.marked = shown.iter().copied().collect();
+            }
+            if clear {
+                self.marked.clear();
+            }
+        }
         let mut index = self
             .selected
             .and_then(|id| order.iter().position(|&i| self.connections[i].id == id));
@@ -62,6 +81,7 @@ impl App {
                 index = Some(next);
                 self.selected = Some(self.connections[order[next]].id);
                 self.scroll_to = true;
+                self.marked.clear();
             }
         }
         // Shift+Enter browses an SSH connection's files instead of opening its terminal.
@@ -169,6 +189,10 @@ impl App {
             }
             return;
         }
+        if enter_idle && self.marked.len() > 1 {
+            self.connect_marked(&shown);
+            return;
+        }
         if (submitted || enter_idle)
             && let Some(&i) = order.get(index.unwrap_or(0))
         {
@@ -236,7 +260,145 @@ impl App {
             });
             return;
         }
+        if self.marked.len() > 1 {
+            self.selection_bar(ui, &shown);
+            ui.add_space(8.);
+        }
         self.connection_table(ui, &order);
+    }
+
+    /// The marked connections, in the order shown.
+    fn marked_in_order(&self, shown: &[u64]) -> Vec<u64> {
+        (shown.iter())
+            .filter(|id| self.marked.contains(id))
+            .copied()
+            .collect()
+    }
+
+    /// Opens each marked connection in a tab of its own.
+    pub(super) fn connect_marked(&mut self, shown: &[u64]) {
+        let ids = self.marked_in_order(shown);
+        self.connect_many = (ids.iter())
+            .filter_map(|id| self.connections.iter().find(|c| c.id == *id).cloned())
+            .collect();
+        self.ctx.request_repaint();
+    }
+
+    /// Favorites every marked connection, or, when they all are already, none of them.
+    pub(super) fn favorite_marked(&mut self, shown: &[u64]) {
+        let ids = self.marked_in_order(shown);
+        let favorite = !self.all_marked_favorite();
+        self.change_connections(&ids, |c| c.favorite = favorite);
+    }
+
+    fn all_marked_favorite(&self) -> bool {
+        (self.connections.iter())
+            .filter(|c| self.marked.contains(&c.id))
+            .all(|c| c.favorite)
+    }
+
+    /// Actions on the connections chosen together, above the table.
+    fn selection_bar(&mut self, ui: &mut egui::Ui, shown: &[u64]) {
+        let colors = theme::palette(ui.ctx());
+        let count = self.marked.len();
+        egui::Frame::new()
+            .fill(colors.selected)
+            .corner_radius(RADIUS_LARGE)
+            .inner_margin(Margin::symmetric(12, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(CONTROL_HEIGHT - 6.);
+                    ui.label(RichText::new(format!("{count} selected")).strong());
+                    ui.add_space(8.);
+                    if ui
+                        .button(format!("Connect {count}"))
+                        .on_hover_text("Opens each in a tab of its own (Enter)")
+                        .clicked()
+                    {
+                        self.connect_marked(shown);
+                    }
+                    let favorite = if self.all_marked_favorite() {
+                        "Remove from favorites"
+                    } else {
+                        "Add to favorites"
+                    };
+                    if ui.button(favorite).clicked() {
+                        self.favorite_marked(shown);
+                    }
+                    if ui.button("Move to group…").clicked() {
+                        self.modal = Modal::MoveToGroup(self.marked_in_order(shown), String::new());
+                    }
+                    if ui.button("Delete…").clicked() {
+                        self.modal = Modal::DeleteMany(self.marked_in_order(shown));
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("Clear").on_hover_text("Esc").clicked() {
+                            self.marked.clear();
+                        }
+                        ui.label(
+                            RichText::new(format!(
+                                "{CLICK_KEY}+click adds or removes · Shift+click selects a range"
+                            ))
+                            .size(11.)
+                            .color(colors.muted),
+                        );
+                    });
+                });
+            });
+    }
+
+    /// The right-click menu of a row among several chosen together, acting on all of them.
+    fn selection_menu(&mut self, ui: &mut egui::Ui, shown: &[u64]) {
+        ui.set_min_width(MENU_WIDTH);
+        let count = self.marked.len();
+        if ui.button(format!("Connect {count}")).clicked() {
+            self.connect_marked(shown);
+            ui.close();
+        }
+        menu_separator(ui);
+        let favorite = if self.all_marked_favorite() {
+            "Remove from favorites"
+        } else {
+            "Add to favorites"
+        };
+        if ui.button(favorite).clicked() {
+            self.favorite_marked(shown);
+            ui.close();
+        }
+        if ui.button("Move to group…").clicked() {
+            self.modal = Modal::MoveToGroup(self.marked_in_order(shown), String::new());
+            ui.close();
+        }
+        menu_separator(ui);
+        if ui.button(format!("Delete {count} connections…")).clicked() {
+            self.modal = Modal::DeleteMany(self.marked_in_order(shown));
+            ui.close();
+        }
+    }
+
+    /// A click on a row: alone it selects the row, with Ctrl (Cmd on macOS) it adds the row to
+    /// those chosen or takes it out, and with Shift it chooses the rows from the selected one.
+    pub(super) fn click_row(&mut self, id: u64, modifiers: egui::Modifiers, shown: &[u64]) {
+        let at = |id: u64| shown.iter().position(|x| *x == id);
+        if modifiers.shift
+            && let (Some(from), Some(to)) = (self.selected.and_then(at), at(id))
+        {
+            self.marked = shown[from.min(to)..=from.max(to)].iter().copied().collect();
+            return;
+        }
+        if modifiers.command {
+            if self.marked.is_empty()
+                && let Some(current) = self.selected
+            {
+                self.marked.insert(current);
+            }
+            if !self.marked.remove(&id) {
+                self.marked.insert(id);
+            }
+        } else {
+            self.marked.clear();
+        }
+        self.selected = Some(id);
     }
 
     pub(super) fn empty_library(&mut self, ui: &mut egui::Ui) {
@@ -330,12 +492,13 @@ impl App {
                         area = area.vertical_scroll_offset(top + ROW - visible);
                     }
                 }
+                let shown: Vec<u64> = order.iter().map(|&i| self.connections[i].id).collect();
                 let output = area.show_rows(ui, ROW, order.len(), |ui, range| {
                     // Only the rows on screen are drawn, and copied to draw them.
                     for index in range {
                         let divider = index + 1 < order.len();
                         let c = self.connections[order[index]].clone();
-                        self.connection_row(ui, &c, &columns, divider);
+                        self.connection_row(ui, &c, &columns, divider, &shown);
                     }
                 });
                 self.list_view = (output.state.offset.y, output.inner_rect.height());
@@ -348,6 +511,7 @@ impl App {
         c: &Connection,
         columns: &[(Column, f32)],
         divider: bool,
+        shown: &[u64],
     ) {
         let (height, gap) = (ROW, GAP);
         let colors = theme::palette(ui.ctx());
@@ -359,7 +523,13 @@ impl App {
                 Stroke::new(1_f32, colors.divider),
             );
         }
-        let selected = self.selected == Some(c.id);
+        // Rows chosen together are highlighted; otherwise the selected one is.
+        let selected = if self.marked.is_empty() {
+            self.selected == Some(c.id)
+        } else {
+            self.marked.contains(&c.id)
+        };
+        let modifiers = ui.input(|i| i.modifiers);
         // The star, name and buttons take the hover from the row itself, so use the pointer.
         let hovered = ui.rect_contains_pointer(rect);
         if selected || hovered {
@@ -372,12 +542,20 @@ impl App {
             ui.painter().rect_filled(band, RADIUS, fill);
         }
         if response.clicked() {
-            self.selected = Some(c.id);
+            self.click_row(c.id, modifiers, shown);
         }
-        if response.double_clicked() {
+        if response.double_clicked() && !modifiers.command && !modifiers.shift {
             self.request_connect(c.clone());
         }
-        menu_popup(egui::Popup::context_menu(&response)).show(|ui| self.connection_menu(ui, c));
+        // A right-click on a row among those chosen acts on all of them.
+        let together = self.marked.len() > 1 && self.marked.contains(&c.id);
+        menu_popup(egui::Popup::context_menu(&response)).show(|ui| {
+            if together {
+                self.selection_menu(ui, shown)
+            } else {
+                self.connection_menu(ui, c)
+            }
+        });
         // The first line of the notes sits under the name; hovering it shows them all.
         let description = c.notes.lines().map(str::trim).find(|l| !l.is_empty());
         let line = |ui: &egui::Ui, font: FontId| ui.fonts_mut(|f| f.row_height(&font));
@@ -445,9 +623,9 @@ impl App {
                             .sense(Sense::click()),
                     );
                     if name.clicked() {
-                        self.selected = Some(c.id);
+                        self.click_row(c.id, modifiers, shown);
                     }
-                    if name.double_clicked() {
+                    if name.double_clicked() && !modifiers.command && !modifiers.shift {
                         self.request_connect(c.clone());
                     }
                     name.on_hover_text(&c.name);
@@ -505,7 +683,8 @@ impl App {
                     menu_popup(egui::Popup::menu(&more)).show(|ui| self.connection_menu(ui, c));
                     // Connect appears where the pointer or keyboard is; double-click and
                     // Enter connect any row.
-                    if selected || hovered {
+                    // Rows chosen together connect from the bar above the table.
+                    if (selected && self.marked.is_empty()) || hovered {
                         let connect = egui::Button::new(RichText::new("Connect").size(12.))
                             .fill(colors.surface)
                             .stroke(Stroke::new(1_f32, colors.line))
@@ -647,6 +826,13 @@ fn title_line(ui: &mut egui::Ui, title: &str, count: &str) {
         ui.painter().galley(count_pos, count, colors.muted);
     }
 }
+
+/// The key held to add a row to those chosen.
+const CLICK_KEY: &str = if cfg!(target_os = "macos") {
+    "Cmd"
+} else {
+    "Ctrl"
+};
 
 pub(super) const ROW: f32 = 40.;
 

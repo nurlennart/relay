@@ -83,42 +83,7 @@ impl App {
                     });
                     let user_hint = if rdp { "DOMAIN\\username" } else { "username" };
                     field(ui, "Username (optional)", &mut c.username, user_hint);
-                    labeled(ui, "Group", |ui| {
-                        ui.horizontal(|ui| {
-                            let button = CONTROL_HEIGHT;
-                            ui.add_sized(
-                                [
-                                    ui.available_width() - button - ui.spacing().item_spacing.x,
-                                    CONTROL_HEIGHT,
-                                ],
-                                input(&mut c.group, "Personal"),
-                            );
-                            let choose = ui
-                                .add_enabled(
-                                    !groups.is_empty(),
-                                    egui::Button::new("").min_size(Vec2::splat(button)),
-                                )
-                                .on_hover_text("Choose an existing group");
-                            icons::paint_sized(
-                                ui.painter(),
-                                Icon::ChevronDown,
-                                choose.rect.center(),
-                                14.,
-                                if choose.enabled() {
-                                    colors.text
-                                } else {
-                                    colors.muted
-                                },
-                            );
-                            egui::Popup::menu(&choose).show(|ui| {
-                                for group in &groups {
-                                    if ui.button(group).clicked() {
-                                        c.group = group.clone();
-                                    }
-                                }
-                            });
-                        });
-                    });
+                    labeled(ui, "Group", |ui| group_input(ui, &mut c.group, &groups));
                     labeled(ui, "Notes (optional)", |ui| {
                         let notes = egui::TextEdit::multiline(&mut c.notes)
                             .id(NOTES_ID.into())

@@ -37,8 +37,7 @@ impl App {
                                     let session = session_tab(
                                         ui,
                                         &s.connection,
-                                        s.browsing,
-                                        s.admin,
+                                        Kind::of(s),
                                         s.tab_state(),
                                         self.active == Some(index) || self.split == Some(index),
                                     );
@@ -153,12 +152,22 @@ impl App {
                                     } else {
                                         session::TabState::Ended
                                     };
-                                    session_tab(ui, c, false, false, state, false);
+                                    session_tab(ui, c, Kind::Session, state, false);
                                 }
                             }
                             if icon_button(ui, Icon::Plus, 26., "New connection (Ctrl+N)").clicked()
                             {
                                 self.new_connection();
+                            }
+                            if icon_button(
+                                ui,
+                                Icon::Terminal,
+                                26.,
+                                &format!("Local shell on this computer ({LOCAL_SHELL_KEYS})"),
+                            )
+                            .clicked()
+                            {
+                                self.open_local_shell();
                             }
                         });
                     });
@@ -221,16 +230,45 @@ pub(super) fn library_tab(ui: &mut egui::Ui, selected: bool) -> egui::Response {
     response
 }
 
+/// What a tab holds, beyond its connection's protocol.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Kind {
+    Session,
+    Files,
+    Admin,
+    Local,
+}
+
+impl Kind {
+    fn of(s: &Session) -> Self {
+        if s.local {
+            Self::Local
+        } else if s.browsing {
+            Self::Files
+        } else if s.admin {
+            Self::Admin
+        } else {
+            Self::Session
+        }
+    }
+}
+
+pub(super) const LOCAL_SHELL_KEYS: &str = if cfg!(target_os = "macos") {
+    "Cmd+Shift+T"
+} else {
+    "Ctrl+Shift+T"
+};
+
 pub(super) fn session_tab(
     ui: &mut egui::Ui,
     connection: &Connection,
-    browsing: bool,
-    admin: bool,
+    kind: Kind,
     state: session::TabState,
     selected: bool,
 ) -> egui::InnerResponse<(egui::Response, egui::Response)> {
     let colors = theme::palette(ui.ctx());
     let text = if selected { colors.text } else { colors.muted };
+    let (browsing, admin) = (kind == Kind::Files, kind == Kind::Admin);
     let label = if admin {
         format!("{} (admin)", connection.name)
     } else {
@@ -273,18 +311,21 @@ pub(super) fn session_tab(
     let select = ui
         .interact(select_rect, response.id.with("select"), Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(format!(
-            "{} · {} · {}",
-            if browsing {
-                "SFTP"
-            } else if admin {
-                "RDP admin session"
-            } else {
-                connection.protocol.label()
-            },
-            connection.address(),
-            state
-        ));
+        .on_hover_text(match kind {
+            Kind::Local => format!("Local shell · {state}"),
+            _ => format!(
+                "{} · {} · {}",
+                if browsing {
+                    "SFTP"
+                } else if admin {
+                    "RDP admin session"
+                } else {
+                    connection.protocol.label()
+                },
+                connection.address(),
+                state
+            ),
+        });
     select.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label)
     });

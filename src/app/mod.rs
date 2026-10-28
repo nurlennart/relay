@@ -79,6 +79,10 @@ enum Modal {
     None,
     Editor(Connection),
     Delete(u64),
+    /// Several connections chosen in the library, to delete together.
+    DeleteMany(Vec<u64>),
+    /// Several connections to move into the group typed.
+    MoveToGroup(Vec<u64>, String),
     Close(usize),
     Settings,
     Shortcuts,
@@ -202,6 +206,13 @@ struct App {
     connect_admin: bool,
     /// A connection whose files to open at the start of the next frame.
     browse_request: Option<Connection>,
+    /// The search for installed fonts, started when Settings first shows them.
+    font_scan: Option<crate::fonts::Scan>,
+    /// Connections chosen together in the library with Ctrl+click, Shift+click or Ctrl+A.
+    /// `selected` stays the one the keyboard is on, and where a Shift+click range starts.
+    marked: std::collections::BTreeSet<u64>,
+    /// Connections to open in new tabs at the start of the next frame.
+    connect_many: Vec<Connection>,
 }
 
 const NOTICE_SECONDS: u64 = 4;
@@ -217,24 +228,9 @@ struct Palette {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
-        let mut fonts = egui::FontDefinitions::default();
-        // Prefer the system's own fonts; a real terminal font matters for SSH sessions.
-        for (family, monospace) in [
-            (egui::FontFamily::Proportional, false),
-            (egui::FontFamily::Monospace, true),
-        ] {
-            if let Some((path, bytes)) = platform::fonts(monospace)
-                .iter()
-                .find_map(|path| Some((path, std::fs::read(path).ok()?)))
-            {
-                let name = path.to_string();
-                fonts
-                    .font_data
-                    .insert(name.clone(), egui::FontData::from_owned(bytes).into());
-                fonts.families.entry(family).or_default().insert(0, name);
-            }
-        }
-        cc.egui_ctx.set_fonts(fonts);
+        let state_path = state::path();
+        let saved = state::load(&state_path);
+        let font_error = set_fonts(&cc.egui_ctx, saved.terminal.font.as_deref()).err();
         theme::load(&theme::path()).apply(&cc.egui_ctx);
         apply_style(&cc.egui_ctx);
         let path = model::data_path();
@@ -244,7 +240,6 @@ impl App {
             parent.set_theme(theme::current(&cc.egui_ctx));
             platform::install_shortcuts(parent, cc.egui_ctx.clone());
         }
-        let state_path = state::path();
         let mut app = Self::with(
             cc.egui_ctx.clone(),
             path,
@@ -252,9 +247,12 @@ impl App {
             secret::load(secret::Account::Mssql),
             secret::load(secret::Account::Mysql),
             parent,
-            state::load(&state_path),
+            saved,
         );
         app.state_path = Some(state_path);
+        if let Some(error) = font_error {
+            app.error = Some(error);
+        }
         app.reopen_library();
         app.restore_tabs();
         app
@@ -323,6 +321,9 @@ impl App {
             connect_request: None,
             connect_admin: false,
             browse_request: None,
+            font_scan: None,
+            marked: Default::default(),
+            connect_many: vec![],
         }
     }
 
@@ -355,7 +356,11 @@ impl App {
         }
         for (index, connection) in self.state.open.clone().into_iter().enumerate() {
             let browsing = self.state.file_tabs.contains(&index);
-            let mut session = Session::restored(connection, browsing, self.ctx.clone());
+            let mut session = if self.state.local_tabs.contains(&index) {
+                Session::restored_local(self.ctx.clone())
+            } else {
+                Session::restored(connection, browsing, self.ctx.clone())
+            };
             session.admin = self.state.admin_tabs.contains(&index);
             session.library = (self.state.tab_libraries.get(index))
                 .unwrap_or(&self.state.library)
@@ -371,6 +376,7 @@ impl App {
             self.state.open.clear();
             self.state.file_tabs.clear();
             self.state.admin_tabs.clear();
+            self.state.local_tabs.clear();
             self.state.tab_libraries.clear();
             self.state.active_tab = None;
             self.save_state();
@@ -382,6 +388,9 @@ impl App {
             .collect();
         self.state.admin_tabs = (0..self.sessions.len())
             .filter(|i| self.sessions[*i].admin)
+            .collect();
+        self.state.local_tabs = (0..self.sessions.len())
+            .filter(|i| self.sessions[*i].local)
             .collect();
         self.state.tab_libraries = self.sessions.iter().map(|s| s.library.clone()).collect();
         self.state.active_tab = self.active;
@@ -474,6 +483,9 @@ impl App {
             use platform::Command;
             if shortcut(ctrl, egui::Key::Backslash) {
                 self.toggle_split();
+            }
+            if shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::T) {
+                self.open_local_shell();
             }
             let ssh = self
                 .active
@@ -645,18 +657,48 @@ impl App {
             Ok(mut session) => {
                 session.library = library;
                 session.admin = admin;
-                for s in &mut self.sessions {
-                    s.place(None);
-                }
-                self.sessions.push(session);
-                self.active = Some(self.sessions.len() - 1);
-                self.remember_tabs();
+                self.add_session(session);
                 if id != 0 && current {
                     self.state.note_recent(&self.location, id);
                     self.save_state();
                 }
             }
             Err(e) => self.error = Some(e),
+        }
+    }
+
+    /// Opens a shell on this computer in a new tab.
+    fn open_local_shell(&mut self) {
+        match Session::local(self.ctx.clone()) {
+            Ok(session) => self.add_session(session),
+            Err(e) => self.error = Some(e),
+        }
+    }
+
+    /// Adds `session` as the last tab and selects it.
+    fn add_session(&mut self, session: Session) {
+        for s in &mut self.sessions {
+            s.place(None);
+        }
+        self.sessions.push(session);
+        self.active = Some(self.sessions.len() - 1);
+        self.remember_tabs();
+    }
+
+    /// How terminals look now: the saved font size, in the chosen scheme.
+    fn terminal_look(&self, ctx: &egui::Context) -> crate::terminal::Look {
+        let settings = &self.state.terminal;
+        crate::terminal::Look {
+            font_size: settings.font_size,
+            colors: settings.scheme.colors(theme::current(ctx).is_light()),
+        }
+    }
+
+    /// Keeps a font size a terminal zoomed to.
+    fn zoomed(&mut self, font_size: f32) {
+        if font_size != self.state.terminal.font_size {
+            self.state.terminal.font_size = font_size;
+            self.save_state();
         }
     }
 
@@ -721,15 +763,13 @@ impl App {
         self.remember_tabs();
     }
 
-    /// Deletes saved connection `id`. When it was the last one the search found, the search
+    /// Deletes the saved connections `ids`. When they were all the search found, the search
     /// clears, rather than offering to quick-connect to what was typed.
-    fn delete_connection(&mut self, id: u64) -> bool {
+    fn delete_connections(&mut self, ids: &[u64]) -> bool {
         let last_match = !self.query.is_empty()
-            && (self.filtered().iter()).all(|&i| self.connections[i].id == id);
-        let next = self
-            .connections
-            .iter()
-            .filter(|c| c.id != id)
+            && (self.filtered().iter()).all(|&i| ids.contains(&self.connections[i].id));
+        let next = (self.connections.iter())
+            .filter(|c| !ids.contains(&c.id))
             .cloned()
             .collect();
         if !self.persist(next) {
@@ -738,10 +778,20 @@ impl App {
         if last_match {
             self.query.clear();
         }
-        if self.selected == Some(id) {
+        if self.selected.is_some_and(|id| ids.contains(&id)) {
             self.selected = None;
         }
+        self.marked.retain(|id| !ids.contains(id));
         true
+    }
+
+    /// Applies `change` to each saved connection in `ids`, saving them all at once.
+    fn change_connections(&mut self, ids: &[u64], change: impl Fn(&mut Connection)) -> bool {
+        let mut next = self.connections.clone();
+        for c in next.iter_mut().filter(|c| ids.contains(&c.id)) {
+            change(c);
+        }
+        self.persist(next)
     }
 
     /// Detaches open sessions from connections that left the open library, so a connection
@@ -885,8 +935,70 @@ impl App {
             });
             return;
         }
-        if escape && matches!(self.modal, Modal::Delete(_) | Modal::Close(_)) {
+        if escape
+            && matches!(
+                self.modal,
+                Modal::Delete(_) | Modal::Close(_) | Modal::DeleteMany(_) | Modal::MoveToGroup(..)
+            )
+        {
             self.modal = Modal::None;
+        }
+        match &mut self.modal {
+            Modal::DeleteMany(ids) => {
+                let ids = ids.clone();
+                dialog("delete-many", ctx).show(ctx, |ui| {
+                    ui.set_width(380.);
+                    ui.heading(format!("Delete {} connections?", ids.len()));
+                    let names: Vec<_> = (self.connections.iter())
+                        .filter(|c| ids.contains(&c.id))
+                        .map(|c| c.name.as_str())
+                        .collect();
+                    ui.label(
+                        RichText::new(summary_of_names(&names)).color(theme::palette(ctx).muted),
+                    );
+                    ui.label("This removes the saved entries. Open sessions stay open.");
+                    ui.horizontal(|ui| {
+                        let delete = format!("Delete {} connections", ids.len());
+                        if ui.button(delete).clicked() && self.delete_connections(&ids) {
+                            self.modal = Modal::None;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.modal = Modal::None;
+                        }
+                    });
+                });
+                return;
+            }
+            Modal::MoveToGroup(ids, group) => {
+                let groups: std::collections::BTreeSet<_> =
+                    self.connections.iter().map(|c| c.group.clone()).collect();
+                let (mut apply, mut cancel) = (false, false);
+                dialog("move-to-group", ctx).show(ctx, |ui| {
+                    ui.set_width(380.);
+                    ui.heading(format!("Move {} connections to a group", ids.len()));
+                    labeled(ui, "Group", |ui| group_input(ui, group, &groups));
+                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.horizontal(|ui| {
+                        apply = ui
+                            .add_enabled(!group.trim().is_empty(), egui::Button::new("Move"))
+                            .clicked()
+                            || (enter && !group.trim().is_empty());
+                        cancel = ui.button("Cancel").clicked();
+                    });
+                });
+                if apply {
+                    let (ids, group) = (ids.clone(), group.trim().to_string());
+                    let count = ids.len();
+                    if self.change_connections(&ids, |c| c.group = group.clone()) {
+                        self.modal = Modal::None;
+                        self.notify(format!("Moved {count} connections to {group}"));
+                    }
+                } else if cancel {
+                    self.modal = Modal::None;
+                }
+                return;
+            }
+            _ => {}
         }
         match self.modal {
             Modal::Delete(id) => {
@@ -900,7 +1012,9 @@ impl App {
                     ui.heading(format!("Delete {name}?"));
                     ui.label("This removes the saved entry. Any open session stays open.");
                     ui.horizontal(|ui| {
-                        if ui.button("Delete connection").clicked() && self.delete_connection(id) {
+                        if ui.button("Delete connection").clicked()
+                            && self.delete_connections(&[id])
+                        {
                             self.modal = Modal::None;
                         }
                         if ui.button("Cancel").clicked() {
@@ -972,6 +1086,9 @@ impl eframe::App for App {
         if let Some(connection) = self.connect_request.take() {
             let admin = std::mem::take(&mut self.connect_admin);
             self.connect(connection, admin);
+        }
+        for connection in std::mem::take(&mut self.connect_many) {
+            self.connect(connection, false);
         }
         if let Some(connection) = self.browse_request.take() {
             self.open_session(connection, true, false, state::Library::of(&self.location));
@@ -1186,6 +1303,60 @@ impl eframe::App for App {
             s.place_around(rect.map(pixels), &rect.map(holes).unwrap_or_default());
         }
     }
+}
+
+/// A few of `names`, and how many more there are, for a confirmation.
+fn summary_of_names(names: &[&str]) -> String {
+    const SHOWN: usize = 4;
+    let mut text = names
+        .iter()
+        .take(SHOWN)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > SHOWN {
+        text.push_str(&format!(" and {} more", names.len() - SHOWN));
+    }
+    text
+}
+
+/// Uses the system's own fonts, and `terminal_font` for terminals if given. A terminal font
+/// that cannot be read leaves the system's monospace font in place and says why.
+fn set_fonts(ctx: &egui::Context, terminal_font: Option<&std::path::Path>) -> Result<(), String> {
+    let mut fonts = egui::FontDefinitions::default();
+    // Prefer the system's own fonts; a real terminal font matters for SSH sessions.
+    for (family, monospace) in [
+        (egui::FontFamily::Proportional, false),
+        (egui::FontFamily::Monospace, true),
+    ] {
+        if let Some((path, bytes)) = platform::fonts(monospace)
+            .iter()
+            .find_map(|path| Some((path, std::fs::read(path).ok()?)))
+        {
+            let name = path.to_string();
+            fonts
+                .font_data
+                .insert(name.clone(), egui::FontData::from_owned(bytes).into());
+            fonts.families.entry(family).or_default().insert(0, name);
+        }
+    }
+    let mut result = Ok(());
+    if let Some(path) = terminal_font {
+        match crate::fonts::read(path) {
+            Ok(bytes) => {
+                let name = format!("terminal:{}", path.display());
+                fonts
+                    .font_data
+                    .insert(name.clone(), egui::FontData::from_owned(bytes).into());
+                (fonts.families.entry(egui::FontFamily::Monospace))
+                    .or_default()
+                    .insert(0, name);
+            }
+            Err(e) => result = Err(e),
+        }
+    }
+    ctx.set_fonts(fonts);
+    result
 }
 
 /// Where item `index` ends up after the item at `from` moves to `to`.

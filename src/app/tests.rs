@@ -2,7 +2,7 @@ use super::{
     library::{Column, GAP, table_columns},
     sessions::Pane,
     settings::theme_option,
-    tabs::{drop_index, session_tab},
+    tabs::{Kind, drop_index, session_tab},
     *,
 };
 use egui::{Rect, Vec2};
@@ -444,8 +444,7 @@ fn tab_close_is_inside_tab_and_does_not_select_it() {
                             let session = session_tab(
                                 ui,
                                 &first,
-                                false,
-                                false,
+                                Kind::Session,
                                 session::TabState::Open,
                                 true,
                             );
@@ -454,8 +453,7 @@ fn tab_close_is_inside_tab_and_does_not_select_it() {
                             let next = session_tab(
                                 ui,
                                 &second,
-                                true,
-                                false,
+                                Kind::Files,
                                 session::TabState::Waiting,
                                 false,
                             );
@@ -832,13 +830,13 @@ fn deleting_the_last_search_match_clears_the_search() {
     let mut app = test_app(&ctx);
     app.query = "charlie".into();
     app.selected = Some(3);
-    assert!(app.delete_connection(3));
+    assert!(app.delete_connections(&[3]));
     assert!(app.query.is_empty(), "the search would offer quick connect");
     assert_eq!(app.selected, None);
     // Other matches keep the search.
     let mut app = test_app(&ctx);
     app.query = "a".into();
-    assert!(app.delete_connection(1));
+    assert!(app.delete_connections(&[1]));
     assert_eq!(app.query, "a");
 }
 
@@ -1140,5 +1138,113 @@ fn saving_an_edit_keeps_changes_made_meanwhile() {
         app.connections
             .iter()
             .any(|c| c.name == "Bravo" && c.notes == "Keep")
+    );
+}
+
+/// Waits for the library operation started last, as a save, to finish.
+fn finish_saving(app: &mut App) {
+    while app.pending.is_some() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        app.poll_storage();
+    }
+}
+
+#[test]
+fn several_connections_are_chosen_and_changed_together() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let shown = [1, 2, 3];
+    let ctrl = egui::Modifiers::COMMAND;
+    let marked = |app: &App| app.marked.iter().copied().collect::<Vec<_>>();
+    // Ctrl+click adds the row the keyboard was on and the clicked one, and takes one out.
+    app.click_row(1, egui::Modifiers::NONE, &shown);
+    app.click_row(3, ctrl, &shown);
+    assert_eq!(marked(&app), [1, 3]);
+    app.click_row(3, ctrl, &shown);
+    assert_eq!(marked(&app), [1]);
+    // Shift+click chooses the range from the selected row; a plain click starts over.
+    app.click_row(1, egui::Modifiers::NONE, &shown);
+    app.click_row(3, egui::Modifiers::SHIFT, &shown);
+    assert_eq!(marked(&app), [1, 2, 3]);
+    assert_eq!(app.selected, Some(1), "the range starts where it was");
+    app.click_row(2, egui::Modifiers::NONE, &shown);
+    assert!(app.marked.is_empty());
+
+    // Ctrl+A chooses everything shown, a search narrows it, and Esc clears it.
+    library_frame(&mut app, &ctx, vec![key(egui::Key::A, ctrl)]);
+    assert_eq!(marked(&app), [1, 2, 3]);
+    app.query = "ha".into();
+    library_frame(&mut app, &ctx, vec![]);
+    assert_eq!(marked(&app), [1, 3], "Bravo is hidden");
+    library_frame(&mut app, &ctx, vec![press(egui::Key::Escape)]);
+    assert!(app.marked.is_empty());
+    app.query.clear();
+
+    // Favorites, groups and deletion apply to all of them in one save.
+    app.marked = [1, 3].into();
+    app.favorite_marked(&shown);
+    finish_saving(&mut app);
+    let favorites: Vec<_> = app.connections.iter().map(|c| c.favorite).collect();
+    assert_eq!(favorites, [true, false, true]);
+    app.favorite_marked(&shown);
+    finish_saving(&mut app);
+    assert!(
+        app.connections.iter().all(|c| !c.favorite),
+        "all were favorites"
+    );
+    app.modal = Modal::MoveToGroup(vec![1, 3], "Datacenter".into());
+    let _ = ctx.run(
+        egui::RawInput {
+            events: vec![press(egui::Key::Enter)],
+            ..Default::default()
+        },
+        |ctx| app.confirmations(ctx),
+    );
+    finish_saving(&mut app);
+    assert!(matches!(app.modal, Modal::None));
+    let groups: Vec<_> = app.connections.iter().map(|c| c.group.as_str()).collect();
+    assert_eq!(groups, ["Datacenter", "Personal", "Datacenter"]);
+    assert!(app.delete_connections(&[1, 3]));
+    finish_saving(&mut app);
+    let names: Vec<_> = app.connections.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["Bravo"]);
+    assert!(app.marked.is_empty());
+
+    // Enter with several chosen opens a tab for each.
+    let mut app = test_app(&ctx);
+    app.marked = [2, 3].into();
+    app.connect_marked(&shown);
+    let opening: Vec<_> = app.connect_many.iter().map(|c| c.id).collect();
+    assert_eq!(opening, [2, 3]);
+}
+
+#[test]
+fn local_shells_are_remembered_as_local_shells() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let mut c = app.connections[0].clone();
+    c.protocol = Protocol::Ssh;
+    app.sessions
+        .push(session::Session::restored(c, false, ctx.clone()));
+    app.sessions
+        .push(session::Session::restored_local(ctx.clone()));
+    app.remember_tabs();
+    assert_eq!(app.state.local_tabs, [1]);
+    let mut restored = App::with(
+        ctx.clone(),
+        PathBuf::from("unused.json"),
+        Ok(vec![]),
+        None,
+        None,
+        None,
+        app.state.clone(),
+    );
+    restored.restore_tabs();
+    let local: Vec<_> = restored.sessions.iter().map(|s| s.local).collect();
+    assert_eq!(local, [false, true]);
+    assert_eq!(
+        restored.sessions[1].tab_state(),
+        session::TabState::Waiting,
+        "it starts when first shown, like other tabs"
     );
 }

@@ -1,6 +1,9 @@
+mod colors;
 mod links;
 mod mouse;
 mod search;
+
+pub use colors::{Colors, Scheme};
 
 use crate::model::Connection;
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
@@ -19,6 +22,26 @@ const TAIL: usize = 4096;
 /// Where the pseudo-terminal does not report the end of the output (as on Windows), the
 /// output of an exited process is complete once none has arrived for this long.
 const QUIET: Duration = Duration::from_millis(250);
+
+/// The font size terminals start with, and the sizes zooming moves between.
+pub const FONT_SIZE: f32 = 14.;
+pub const FONT_SIZES: std::ops::RangeInclusive<f32> = 8.0..=32.0;
+
+/// How terminals look. Settings keep one for all of them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Look {
+    pub font_size: f32,
+    pub colors: Colors,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Self {
+            font_size: FONT_SIZE,
+            colors: Scheme::default().colors(false),
+        }
+    }
+}
 
 pub struct Terminal {
     pub parser: Arc<Mutex<vt100::Parser<Replies>>>,
@@ -53,6 +76,10 @@ pub struct Terminal {
     mouse_cell: Option<(u16, u16)>,
     /// Wheel movement not yet sent as whole lines.
     wheel: f32,
+    /// Ctrl+wheel movement not yet applied as whole font sizes.
+    zoom_wheel: f32,
+    /// What runs in the terminal, for its title bar: SSH or a local shell.
+    kind: &'static str,
     /// Everything sent to the process, for tests to check.
     #[cfg(test)]
     sent: Vec<u8>,
@@ -95,6 +122,20 @@ impl Terminal {
                  optional feature): {e}"
             )
         })
+    }
+
+    /// The user's own shell on this computer, starting in their home folder.
+    pub fn local(ctx: egui::Context) -> Result<Self, String> {
+        let (program, args) = local_shell();
+        let mut command = CommandBuilder::new(&program);
+        command.args(args);
+        if let Some(home) = dirs::home_dir() {
+            command.cwd(home);
+        }
+        let mut terminal = Self::spawn(command, Some(ctx))
+            .map_err(|e| format!("Cannot start {}: {e}", program.display()))?;
+        terminal.kind = "Local shell";
+        Ok(terminal)
     }
 
     /// A quiet process whose screen shows `transcript`, for rendering checks.
@@ -245,6 +286,8 @@ impl Terminal {
             mouse_held: None,
             mouse_cell: None,
             wheel: 0.,
+            zoom_wheel: 0.,
+            kind: "SSH",
             #[cfg(test)]
             sent: vec![],
         })
@@ -328,13 +371,17 @@ impl Terminal {
         self.focus_requested = true;
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) {
-        let font = FontId::monospace(14.);
+    /// Shows the terminal in the rest of `ui`, painted as `look` says. Zooming in or out with
+    /// the keyboard or Ctrl and the wheel changes `look`'s font size.
+    pub fn show(&mut self, ui: &mut egui::Ui, look: &mut Look) {
+        let pal = look.colors;
+        look.font_size = self.zoom(ui, look.font_size);
+        let font = FontId::monospace(look.font_size);
         let cell = ui.fonts_mut(|f| Vec2::new(f.glyph_width(&font, 'M'), f.row_height(&font)));
         let (frame, response) =
             ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         let painter = ui.painter_at(frame);
-        painter.rect_filled(frame, 8., TERMINAL_BG);
+        painter.rect_filled(frame, 8., pal.background);
         let bar = Rect::from_min_size(frame.min, Vec2::new(frame.width(), TITLE_HEIGHT));
         painter.rect_filled(
             bar,
@@ -344,16 +391,16 @@ impl Terminal {
                 sw: 0,
                 se: 0,
             },
-            TITLE_BG,
+            pal.title,
         );
         painter.line_segment(
             [bar.left_bottom(), bar.right_bottom()],
-            Stroke::new(1_f32, BORDER),
+            Stroke::new(1_f32, pal.border),
         );
         painter.rect_stroke(
             frame,
             8.,
-            Stroke::new(1_f32, BORDER),
+            Stroke::new(1_f32, pal.border),
             egui::StrokeKind::Inside,
         );
         let content = Rect::from_min_max(
@@ -413,7 +460,7 @@ impl Terminal {
         }
         let mut step = None;
         if let Some(search) = &mut self.search {
-            match search_bar(ui, bar, response.id.with("search"), search) {
+            match search_bar(ui, bar, response.id.with("search"), search, &pal) {
                 Some(SearchAction::Step(older)) => step = Some(older),
                 Some(SearchAction::Close) => {
                     self.search = None;
@@ -550,7 +597,7 @@ impl Terminal {
                         unit,
                         delta,
                         modifiers,
-                    } if over => {
+                    } if over && !modifiers.command => {
                         self.wheel += wheel_lines(*unit, delta.y, cell.y, rows);
                         let at = pointer.map_or((0, 0), cell_at);
                         while self.wheel.abs() >= 1. {
@@ -589,7 +636,8 @@ impl Terminal {
             {
                 selection.1 = cell_at(pos);
             }
-            if response.hovered() {
+            // Ctrl with the wheel zooms instead.
+            if response.hovered() && !modifiers.command {
                 let delta = ui.input(|i| i.raw_scroll_delta.y);
                 if parser.screen().alternate_screen() {
                     // Full-screen programs such as less have no history here; the wheel moves
@@ -597,7 +645,11 @@ impl Terminal {
                     self.wheel += ui.input(|i| {
                         (i.events.iter())
                             .map(|event| match event {
-                                egui::Event::MouseWheel { unit, delta, .. } => {
+                                egui::Event::MouseWheel {
+                                    unit,
+                                    delta,
+                                    modifiers,
+                                } if !modifiers.command => {
                                     wheel_lines(*unit, delta.y, cell.y, rows)
                                 }
                                 _ => 0.,
@@ -659,10 +711,10 @@ impl Terminal {
         let (state, dot) = if self.ended {
             (
                 self.error.clone().unwrap_or_else(|| "Session ended".into()),
-                ui.visuals().error_fg_color,
+                pal.ended,
             )
         } else {
-            (format!("SSH · {cols}×{rows}"), RUNNING)
+            (format!("{} · {cols}×{rows}", self.kind), pal.running)
         };
         painter.circle_filled(Pos2::new(bar.min.x + 16., text_y), 4., dot);
         painter.text(
@@ -670,24 +722,24 @@ impl Terminal {
             egui::Align2::LEFT_CENTER,
             state,
             FontId::proportional(12.),
-            TITLE_TEXT,
+            pal.title_text,
         );
         // The hint needs room beside the state; narrow panes, such as split view, drop it. The
         // search bar takes its place.
         let room = bar.width() > 640.;
         let (hint, hint_color) = if self.search.is_some() {
-            (String::new(), TITLE_MUTED)
+            (String::new(), pal.title_muted)
         } else if scrolled > 0 {
             (
                 format!("↑ {scrolled} lines back · scroll down or type to return"),
-                SCROLLED,
+                pal.scrolled,
             )
         } else if room && mouse_mode != vt100::MouseProtocolMode::None {
             (
                 format!(
                     "The program uses the mouse · Shift+drag to select · {FIND_SHORTCUT} finds"
                 ),
-                TITLE_MUTED,
+                pal.title_muted,
             )
         } else if room {
             (
@@ -695,10 +747,10 @@ impl Terminal {
                     "Drag to select · Right-click copies or pastes · {COPY_SHORTCUT} · \
                      {FIND_SHORTCUT} finds"
                 ),
-                TITLE_MUTED,
+                pal.title_muted,
             )
         } else {
-            (String::new(), TITLE_MUTED)
+            (String::new(), pal.title_muted)
         };
         painter.text(
             Pos2::new(bar.max.x - 14., text_y),
@@ -740,22 +792,22 @@ impl Terminal {
                 if c.is_wide_continuation() {
                     continue;
                 }
-                let (mut fg, mut bg) = cell_colors(c);
+                let (mut fg, mut bg) = cell_colors(c, &pal);
                 let block_cursor =
                     focused && cursor_visible && (row, col) == (cursor_row, cursor_col);
                 if block_cursor {
-                    (fg, bg) = (TERMINAL_BG, CURSOR);
+                    (fg, bg) = (pal.background, pal.cursor);
                 } else if selected(row, col) {
-                    bg = SELECTION;
+                    bg = pal.selection;
                 } else if let Some(current) = highlights.get(&(row, col)) {
                     (fg, bg) = if *current {
-                        (TERMINAL_BG, CURRENT_MATCH)
+                        (pal.current_match_text, pal.current_match)
                     } else {
-                        (FOREGROUND, MATCH)
+                        (pal.foreground, pal.matched)
                     };
                 }
                 let width = if c.is_wide() { cell.x * 2. } else { cell.x };
-                if bg != TERMINAL_BG {
+                if bg != pal.background {
                     let pos = content.min + Vec2::new(col as f32 * cell.x, row as f32 * cell.y);
                     painter.rect_filled(Rect::from_min_size(pos, Vec2::new(width, cell.y)), 0., bg);
                 }
@@ -789,7 +841,7 @@ impl Terminal {
                 let y = pos.y + cell.y - 1.;
                 painter.line_segment(
                     [Pos2::new(pos.x, y), Pos2::new(pos.x + cell.x, y)],
-                    Stroke::new(1_f32, LINK),
+                    Stroke::new(1_f32, pal.link),
                 );
             }
         }
@@ -799,7 +851,7 @@ impl Terminal {
             painter.rect_stroke(
                 Rect::from_min_size(pos, cell),
                 0.,
-                Stroke::new(1_f32, CURSOR.gamma_multiply(0.7)),
+                Stroke::new(1_f32, pal.cursor.gamma_multiply(0.7)),
                 egui::StrokeKind::Inside,
             );
         }
@@ -818,7 +870,11 @@ impl Terminal {
                     Pos2::new(track.max.x, bottom),
                 ),
                 2.,
-                if scrolled > 0 { SCROLLED } else { BORDER },
+                if scrolled > 0 {
+                    pal.scrolled
+                } else {
+                    pal.border
+                },
             );
             // Ticks beside the scrollbar mark where matches are in the history.
             if let Some(search) = &self.search {
@@ -832,7 +888,11 @@ impl Terminal {
                             Pos2::new(track.min.x - 3., y - 1.),
                             Vec2::new(6., 2.),
                         );
-                        let color = if current { CURRENT_MATCH } else { MATCH_TICK };
+                        let color = if current {
+                            pal.current_match
+                        } else {
+                            pal.match_tick
+                        };
                         painter.rect_filled(tick, 0., color);
                     }
                 }
@@ -880,6 +940,47 @@ impl Terminal {
     }
 }
 
+impl Terminal {
+    /// The font size after this frame's zooming: Ctrl+Plus, Ctrl+Minus and Ctrl+0 (Cmd on
+    /// macOS) while the terminal has the keyboard, and Ctrl with the wheel over it. Sizes are
+    /// whole points, as each size takes room in the font atlas.
+    fn zoom(&mut self, ui: &egui::Ui, size: f32) -> f32 {
+        let mut size = size;
+        if self.focused {
+            ui.input_mut(|i| {
+                use egui::gui_zoom::kb_shortcuts::*;
+                if i.consume_shortcut(&ZOOM_RESET) {
+                    size = FONT_SIZE;
+                }
+                // Each press counts, also several in one frame.
+                for (shortcut, step) in [(ZOOM_IN, 1.), (ZOOM_IN_SECONDARY, 1.), (ZOOM_OUT, -1.)] {
+                    while i.consume_shortcut(&shortcut) {
+                        size += step;
+                    }
+                }
+            });
+        }
+        if ui.rect_contains_pointer(ui.available_rect_before_wrap()) {
+            self.zoom_wheel += ui.input(|i| {
+                (i.events.iter())
+                    .map(|event| match event {
+                        egui::Event::MouseWheel {
+                            unit,
+                            delta,
+                            modifiers,
+                        } if modifiers.command => wheel_lines(*unit, delta.y, 50., 1),
+                        _ => 0.,
+                    })
+                    .sum::<f32>()
+            });
+            let steps = self.zoom_wheel.trunc();
+            self.zoom_wheel -= steps;
+            size += steps;
+        }
+        size.round().clamp(*FONT_SIZES.start(), *FONT_SIZES.end())
+    }
+}
+
 enum SearchAction {
     /// Select the older match, or the newer one.
     Step(bool),
@@ -892,6 +993,7 @@ fn search_bar(
     bar: Rect,
     id: egui::Id,
     search: &mut search::Search,
+    pal: &Colors,
 ) -> Option<SearchAction> {
     let area = Rect::from_min_max(
         Pos2::new((bar.max.x - 380.).max(bar.min.x + 150.), bar.min.y + 3.),
@@ -902,19 +1004,23 @@ fn search_bar(
             .max_rect(area)
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
-    // The terminal keeps its dark colors in every app theme, and so does its search bar.
-    *ui.visuals_mut() = egui::Visuals::dark();
-    ui.visuals_mut().extreme_bg_color = TERMINAL_BG;
-    ui.visuals_mut().widgets.inactive.weak_bg_fill = TITLE_BG;
+    // The search bar takes the terminal's colors, whatever the app theme.
+    *ui.visuals_mut() = if pal.light {
+        egui::Visuals::light()
+    } else {
+        egui::Visuals::dark()
+    };
+    ui.visuals_mut().extreme_bg_color = pal.background;
+    ui.visuals_mut().widgets.inactive.weak_bg_fill = pal.title;
     ui.spacing_mut().item_spacing.x = 2.;
     let mut action = None;
     // Drawn with lines, as the interface font has no arrows.
     let button = |ui: &mut egui::Ui, points: &[[f32; 2]], hint: &str| {
         let (rect, response) = ui.allocate_exact_size(Vec2::splat(22.), Sense::click());
         if response.hovered() {
-            ui.painter().rect_filled(rect, 4., BORDER);
+            ui.painter().rect_filled(rect, 4., pal.border);
         }
-        let stroke = Stroke::new(1.5_f32, TITLE_TEXT);
+        let stroke = Stroke::new(1.5_f32, pal.title_text);
         let point = |[x, y]: [f32; 2]| rect.center() + Vec2::new(x, y);
         for pair in points.chunks(2) {
             ui.painter()
@@ -938,14 +1044,14 @@ fn search_bar(
     ui.label(
         egui::RichText::new(search.summary())
             .size(11.)
-            .color(TITLE_MUTED),
+            .color(pal.title_muted),
     );
     ui.add_space(4.);
     let field = ui.add(
         egui::TextEdit::singleline(&mut search.query)
             .id(id)
-            .hint_text(egui::RichText::new("Find in output").color(TITLE_MUTED))
-            .text_color(TITLE_TEXT)
+            .hint_text(egui::RichText::new("Find in output").color(pal.title_muted))
+            .text_color(pal.title_text)
             .desired_width(ui.available_width().min(200.))
             .margin(egui::Margin::symmetric(6, 2)),
     );
@@ -1123,6 +1229,33 @@ impl Terminal {
     }
 }
 
+/// The shell a local terminal runs, with its arguments: the login shell from `SHELL` on macOS
+/// and Linux (as a login shell on macOS, as Terminal does there), and on Windows PowerShell 7
+/// if installed, then Windows PowerShell, then the command prompt.
+pub fn local_shell() -> (std::path::PathBuf, Vec<&'static str>) {
+    if cfg!(windows) {
+        for program in ["pwsh.exe", "powershell.exe"] {
+            if let Some(path) = crate::platform::find_program(program) {
+                return (path, vec!["-NoLogo"]);
+            }
+        }
+        let cmd =
+            std::env::var_os("ComSpec").unwrap_or_else(|| r"C:\Windows\System32\cmd.exe".into());
+        return (cmd.into(), vec![]);
+    }
+    let shell = std::env::var_os("SHELL")
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| "/bin/sh".into());
+    let args = if cfg!(target_os = "macos") {
+        vec!["-l"]
+    } else {
+        vec![]
+    };
+    (shell, args)
+}
+
 /// Runs `script` with the system shell, for tests and rendering checks.
 #[cfg(any(test, feature = "ui-check"))]
 fn shell(script: &str) -> CommandBuilder {
@@ -1165,33 +1298,22 @@ const OPEN_LINK: &str = if cfg!(target_os = "macos") {
     "Ctrl+click to open"
 };
 
-// The terminal keeps its own dark palette in every app theme.
-const TERMINAL_BG: Color32 = Color32::from_rgb(14, 17, 22);
-const TITLE_BG: Color32 = Color32::from_rgb(22, 26, 33);
-const TITLE_TEXT: Color32 = Color32::from_rgb(200, 207, 218);
-const TITLE_MUTED: Color32 = Color32::from_rgb(122, 132, 148);
-const BORDER: Color32 = Color32::from_rgb(42, 48, 58);
-const FOREGROUND: Color32 = Color32::from_rgb(215, 222, 232);
-const CURSOR: Color32 = Color32::from_rgb(230, 235, 242);
-const SELECTION: Color32 = Color32::from_rgb(52, 70, 98);
-const RUNNING: Color32 = Color32::from_rgb(137, 222, 173);
-const SCROLLED: Color32 = Color32::from_rgb(229, 192, 123);
-const MATCH: Color32 = Color32::from_rgb(92, 76, 38);
-const MATCH_TICK: Color32 = Color32::from_rgb(160, 132, 70);
-const CURRENT_MATCH: Color32 = Color32::from_rgb(229, 192, 123);
-const LINK: Color32 = Color32::from_rgb(120, 170, 240);
 const TITLE_HEIGHT: f32 = 30.;
 const PADDING: f32 = 10.;
 
-/// A cell's colors after bold, dim, and inverse attributes.
-fn cell_colors(c: &vt100::Cell) -> (Color32, Color32) {
+/// A cell's colors in `pal` after bold, dim, and inverse attributes.
+fn cell_colors(c: &vt100::Cell, pal: &Colors) -> (Color32, Color32) {
     let fg = match c.fgcolor() {
         // Bold brightens the eight basic colors, as most terminals do.
-        vt100::Color::Idx(i) if c.bold() && i < 8 => color(vt100::Color::Idx(i + 8), FOREGROUND),
-        vt100::Color::Default if c.bold() => color(vt100::Color::Idx(15), FOREGROUND),
-        other => color(other, FOREGROUND),
+        vt100::Color::Idx(i) if pal.bold_brightens && c.bold() && i < 8 => {
+            color(vt100::Color::Idx(i + 8), pal.foreground, pal)
+        }
+        vt100::Color::Default if pal.bold_brightens && c.bold() && !pal.light => {
+            color(vt100::Color::Idx(15), pal.foreground, pal)
+        }
+        other => color(other, pal.foreground, pal),
     };
-    let mut bg = color(c.bgcolor(), TERMINAL_BG);
+    let mut bg = color(c.bgcolor(), pal.background, pal);
     let mut fg = if c.dim() { mix(fg, bg, 0.45) } else { fg };
     if c.inverse() {
         std::mem::swap(&mut fg, &mut bg);
@@ -1358,32 +1480,11 @@ fn key_bytes(key: egui::Key, modifiers: egui::Modifiers, application_cursor: boo
     bytes.to_vec()
 }
 
-fn color(color: vt100::Color, default: Color32) -> Color32 {
+fn color(color: vt100::Color, default: Color32, pal: &Colors) -> Color32 {
     match color {
         vt100::Color::Default => default,
         vt100::Color::Rgb(r, g, b) => Color32::from_rgb(r, g, b),
-        vt100::Color::Idx(i) if i < 16 => {
-            let palette = [
-                [24, 29, 35],
-                [225, 108, 117],
-                [137, 222, 173],
-                [229, 192, 123],
-                [123, 170, 237],
-                [198, 151, 226],
-                [112, 202, 215],
-                [215, 222, 232],
-                [107, 116, 132],
-                [246, 140, 150],
-                [170, 238, 195],
-                [245, 214, 156],
-                [162, 198, 248],
-                [220, 180, 244],
-                [153, 225, 233],
-                [246, 248, 252],
-            ];
-            let [r, g, b] = palette[i as usize];
-            Color32::from_rgb(r, g, b)
-        }
+        vt100::Color::Idx(i) if i < 16 => pal.ansi[i as usize],
         vt100::Color::Idx(i) if i < 232 => {
             let n = i - 16;
             let c = |v| if v == 0 { 0 } else { 55 + 40 * v };
@@ -1593,7 +1694,7 @@ mod tests {
                 |ctx| {
                     egui::CentralPanel::default()
                         .frame(egui::Frame::NONE)
-                        .show(ctx, |ui| terminal.show(ui));
+                        .show(ctx, |ui| terminal.show(ui, &mut Look::default()));
                 },
             )
         };
@@ -1681,7 +1782,7 @@ mod tests {
             |ctx| {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
-                    .show(ctx, |ui| terminal.show(ui));
+                    .show(ctx, |ui| terminal.show(ui, &mut Look::default()));
             },
         )
     }
@@ -1902,6 +2003,77 @@ mod tests {
         // Narrower, the line is cut before the match, with no output to say so.
         show_sized(&ctx, &mut terminal, Vec2::new(400., 400.), vec![], none);
         assert_eq!(terminal.search.as_ref().unwrap().summary(), "No results");
+    }
+
+    #[test]
+    fn zooming_changes_the_font_size_and_not_the_view() {
+        let (mut terminal, parser, ctx) = harness();
+        let lines: String = (1..=100).map(|i| format!("line {i}\r\n")).collect();
+        settle(&ctx, &mut terminal, lines.as_bytes());
+        let command = egui::Modifiers::COMMAND;
+        let mut look = Look::default();
+        let frame = |terminal: &mut Terminal, look: &mut Look, events, modifiers| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800., 400.))),
+                    events,
+                    modifiers,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default()
+                        .frame(egui::Frame::NONE)
+                        .show(ctx, |ui| terminal.show(ui, look));
+                },
+            );
+        };
+        // The first frame focuses the terminal, which then takes the zoom keys.
+        frame(&mut terminal, &mut look, vec![], egui::Modifiers::NONE);
+        let keys = vec![
+            key(egui::Key::Plus, command),
+            key(egui::Key::Equals, command),
+        ];
+        frame(&mut terminal, &mut look, keys, command);
+        assert_eq!(look.font_size, FONT_SIZE + 2.);
+        frame(
+            &mut terminal,
+            &mut look,
+            vec![key(egui::Key::Minus, command)],
+            command,
+        );
+        assert_eq!(look.font_size, FONT_SIZE + 1.);
+        frame(
+            &mut terminal,
+            &mut look,
+            vec![key(egui::Key::Num0, command)],
+            command,
+        );
+        assert_eq!(look.font_size, FONT_SIZE);
+        assert!(terminal.sent.is_empty(), "zoom keys reach no program");
+        // Ctrl with the wheel zooms by a size a notch, and leaves the history where it is.
+        let pos = Pos2::new(400., 200.);
+        let wheel = |lines: f32| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: Vec2::new(0., lines),
+            modifiers: command,
+        };
+        frame(
+            &mut terminal,
+            &mut look,
+            vec![egui::Event::PointerMoved(pos), wheel(1.), wheel(1.)],
+            command,
+        );
+        assert_eq!(look.font_size, FONT_SIZE + 2.);
+        assert_eq!(parser.lock().unwrap().screen().scrollback(), 0);
+        // Sizes stay in range.
+        look.font_size = *FONT_SIZES.end();
+        frame(
+            &mut terminal,
+            &mut look,
+            vec![key(egui::Key::Plus, command)],
+            command,
+        );
+        assert_eq!(look.font_size, *FONT_SIZES.end());
     }
 
     #[test]

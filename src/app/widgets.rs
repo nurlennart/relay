@@ -109,6 +109,49 @@ pub(super) const TITLE_SIZE: f32 = 17.;
 pub(super) const BAR_HEIGHT: f32 = 40.;
 
 /// A dialog width that leaves a margin in narrow windows.
+/// A group name to type, with a button listing the existing `groups` to choose from.
+pub(super) fn group_input(
+    ui: &mut egui::Ui,
+    group: &mut String,
+    groups: &std::collections::BTreeSet<String>,
+) {
+    let colors = theme::palette(ui.ctx());
+    ui.horizontal(|ui| {
+        let button = CONTROL_HEIGHT;
+        ui.add_sized(
+            [
+                ui.available_width() - button - ui.spacing().item_spacing.x,
+                CONTROL_HEIGHT,
+            ],
+            input(group, "Personal"),
+        );
+        let choose = ui
+            .add_enabled(
+                !groups.is_empty(),
+                egui::Button::new("").min_size(Vec2::splat(button)),
+            )
+            .on_hover_text("Choose an existing group");
+        icons::paint_sized(
+            ui.painter(),
+            Icon::ChevronDown,
+            choose.rect.center(),
+            14.,
+            if choose.enabled() {
+                colors.text
+            } else {
+                colors.muted
+            },
+        );
+        egui::Popup::menu(&choose).show(|ui| {
+            for name in groups {
+                if ui.button(name).clicked() {
+                    *group = name.clone();
+                }
+            }
+        });
+    });
+}
+
 pub(super) fn dialog_width(ctx: &egui::Context, preferred: f32) -> f32 {
     preferred.min(ctx.content_rect().width() - 96.)
 }

@@ -146,6 +146,27 @@ git pull && ./deploy.sh",
             ),
         ];
     }
+    // Terminal look: a scheme by its position in Settings, and a font size.
+    if let Some(scheme) = std::env::var("RELAY_UI_SCHEME")
+        .ok()
+        .and_then(|i| i.parse::<usize>().ok())
+        .and_then(|i| crate::terminal::Scheme::ALL.get(i).copied())
+    {
+        app.state.terminal.scheme = scheme;
+    }
+    if let Some(size) = std::env::var("RELAY_UI_FONT_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        app.state.terminal.font_size = size;
+    }
+    // Connections chosen together, by ID.
+    if let Ok(ids) = std::env::var("RELAY_UI_MARKED") {
+        app.marked = ids.split(',').filter_map(|id| id.parse().ok()).collect();
+    }
+    if std::env::var_os("RELAY_UI_LOCAL").is_some() {
+        app.open_local_shell();
+    }
     if std::env::var_os("RELAY_UI_TERMINAL").is_some() {
         let mut connection = app.connections[1].clone();
         connection.host = "build.example.com".into();

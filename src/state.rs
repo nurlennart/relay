@@ -51,6 +51,29 @@ pub struct State {
     pub tab_libraries: Vec<Library>,
     /// The folder downloads from the file browser went to last.
     pub download_folder: Option<PathBuf>,
+    /// Which of `open` are local shells, kept apart like `file_tabs`.
+    pub local_tabs: Vec<usize>,
+    pub terminal: TerminalSettings,
+}
+
+/// How terminals look and whether they keep logs, the same for every tab.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalSettings {
+    pub font_size: f32,
+    /// A font file to use instead of the system's monospace font.
+    pub font: Option<PathBuf>,
+    pub scheme: crate::terminal::Scheme,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        Self {
+            font_size: crate::terminal::FONT_SIZE,
+            font: None,
+            scheme: Default::default(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

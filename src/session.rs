@@ -40,6 +40,8 @@ pub struct Session {
     retry: Option<Instant>,
     /// Automatic reconnection attempts since the session was last up.
     attempts: u32,
+    /// A shell on this computer rather than a connection.
+    pub local: bool,
     /// Identifies the session while tabs move, for its detached window.
     pub key: u64,
     /// The window a detached remote desktop lives in, instead of Relay's main window.
@@ -100,6 +102,7 @@ impl Session {
             waiting: false,
             retry: None,
             attempts: 0,
+            local: false,
             key: {
                 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -111,6 +114,21 @@ impl Session {
         connection.validate()?;
         let terminal = terminal_for(&connection, &ctx)?;
         Ok(Self::new(connection, terminal, ctx))
+    }
+    /// A shell on this computer, in a tab of its own.
+    pub fn local(ctx: eframe::egui::Context) -> Result<Self, String> {
+        let terminal = Terminal::local(ctx.clone())?;
+        Ok(Self {
+            local: true,
+            ..Self::new(local_connection(), Some(terminal), ctx)
+        })
+    }
+    /// A local shell tab from the last run, which starts when it is first shown.
+    pub fn restored_local(ctx: eframe::egui::Context) -> Self {
+        Self {
+            local: true,
+            ..Self::restored(local_connection(), false, ctx)
+        }
     }
     /// Browses an SSH connection's files over SFTP.
     pub fn browse(mut connection: Connection, ctx: eframe::egui::Context) -> Result<Self, String> {
@@ -184,7 +202,8 @@ impl Session {
                 if terminal.uptime() > Duration::from_secs(30) {
                     self.attempts = 0;
                 }
-                let failed = sign_in_failed(&terminal.last_lines(2));
+                // A local shell ends when it is told to; there is nothing to reconnect.
+                let failed = self.local || sign_in_failed(&terminal.last_lines(2));
                 if let Some(delay) =
                     retry_delay(terminal.exit_code, terminal.uptime(), self.attempts, failed)
                 {
@@ -267,6 +286,13 @@ impl Session {
         self.restart(connection)
     }
     fn restart(&mut self, mut connection: Connection) -> Result<(), String> {
+        if self.local {
+            self.terminal = Some(Terminal::local(self.ctx.clone())?);
+            self.error = None;
+            self.ended = false;
+            self.started = Instant::now();
+            return Ok(());
+        }
         connection.validate()?;
         if self.browsing {
             // A reconnected browser returns to the folder it showed.
@@ -349,6 +375,16 @@ impl Session {
             TabState::Open
         }
     }
+}
+
+/// What a local shell tab shows as its connection: the shell's name and this computer.
+fn local_connection() -> Connection {
+    let mut connection = Connection::new();
+    connection.name = "Local shell".into();
+    connection.host = "localhost".into();
+    connection.protocol = Protocol::Ssh;
+    connection.port = 22;
+    connection
 }
 
 /// The terminal a connection runs in: ssh for SSH, none for remote desktops.
@@ -474,6 +510,33 @@ mod tests {
         ] {
             assert!(!sign_in_failed(&lines(dropped)), "{dropped}");
         }
+    }
+
+    #[test]
+    fn a_local_shell_runs_and_ends_without_reconnecting() {
+        let ctx = eframe::egui::Context::default();
+        let mut session = Session::local(ctx.clone()).unwrap();
+        assert!(session.local && session.is_running());
+        assert_eq!(session.connection.protocol, Protocol::Ssh);
+        // Give the shell a moment to start, then leave it as anyone would.
+        std::thread::sleep(Duration::from_millis(500));
+        session
+            .terminal
+            .as_mut()
+            .unwrap()
+            .send_text("exit 255", true);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while session.is_running() {
+            assert!(Instant::now() < deadline, "the shell did not exit");
+            std::thread::sleep(Duration::from_millis(20));
+            session.poll(None);
+        }
+        // Even the exit code a dropped ssh connection has: a shell is not reconnected.
+        assert_eq!(session.retry, None);
+        assert_eq!(session.tab_state(), TabState::Ended);
+        // Starting it again needs no connection details.
+        session.reconnect(session.connection.clone()).unwrap();
+        assert!(session.is_running());
     }
 
     #[test]

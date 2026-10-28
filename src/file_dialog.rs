@@ -18,6 +18,8 @@ pub enum Kind {
     RdpFiles,
     /// An SSH private key.
     Key,
+    /// A font for terminals.
+    Font,
 }
 
 impl Kind {
@@ -29,6 +31,7 @@ impl Kind {
                 Some(("SQLite database", &["sqlite", "db", "sqlite3"]))
             }
             Self::RdpFiles => Some(("Remote Desktop file", &["rdp"])),
+            Self::Font => Some(("Font", &["ttf", "otf", "ttc"])),
             Self::Key => None,
         }
     }
@@ -60,7 +63,7 @@ pub fn choose(parent: Option<Window>, kind: Kind) -> Vec<PathBuf> {
             .save_file()
             .into_iter()
             .collect(),
-        Kind::ImportCsv | Kind::ImportJson | Kind::Database | Kind::Key => {
+        Kind::ImportCsv | Kind::ImportJson | Kind::Database | Kind::Key | Kind::Font => {
             dialog.pick_file().into_iter().collect()
         }
     }

@@ -6,6 +6,7 @@ mod askpass;
 mod csv_io;
 mod database;
 mod file_dialog;
+mod fonts;
 mod import;
 mod json_io;
 mod model;

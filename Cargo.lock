@@ -4786,6 +4786,7 @@ dependencies = [
  "tiberius",
  "tokio",
  "tokio-util",
+ "ttf-parser",
  "vt100",
  "wgpu",
  "windows 0.61.3",

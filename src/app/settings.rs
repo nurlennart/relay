@@ -69,6 +69,10 @@ impl App {
                     }
                     ui.add_space(14.);
                     ui.separator();
+                    section_label(ui, "TERMINAL");
+                    self.terminal_settings(ui);
+                    ui.add_space(14.);
+                    ui.separator();
                     section_label(ui, "SESSIONS");
                     let mut reopen = !self.state.forget_tabs;
                     if ui
@@ -266,6 +270,117 @@ impl App {
             }
         };
         (detail, facts)
+    }
+
+    /// The terminal font, its size, and the color scheme, with a sample of how they look.
+    fn terminal_settings(&mut self, ui: &mut egui::Ui) {
+        let colors = theme::palette(ui.ctx());
+        let scan = (self.font_scan)
+            .get_or_insert_with(|| crate::fonts::Scan::start(ui.ctx().clone()))
+            .clone();
+        let settings = self.state.terminal.clone();
+        let mut next = settings.clone();
+        let label_width = 92.;
+        ui.horizontal(|ui| {
+            ui.add_sized([label_width, 20.], egui::Label::new("Font"));
+            let current = match &settings.font {
+                None => "System monospace".to_string(),
+                Some(path) => (scan.fonts().unwrap_or_default().iter())
+                    .find(|f| &f.path == path)
+                    .map(|f| f.family.clone())
+                    .unwrap_or_else(|| {
+                        path.file_name().map_or_else(
+                            || path.display().to_string(),
+                            |n| n.to_string_lossy().into_owned(),
+                        )
+                    }),
+            };
+            egui::ComboBox::from_id_salt("terminal-font")
+                .selected_text(current)
+                .width(220.)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut next.font, None, "System monospace");
+                    match scan.fonts() {
+                        None => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(RichText::new("Looking for fonts…").color(colors.muted));
+                            });
+                        }
+                        Some(fonts) => {
+                            for font in fonts {
+                                ui.selectable_value(
+                                    &mut next.font,
+                                    Some(font.path.clone()),
+                                    &font.family,
+                                )
+                                .on_hover_text(font.path.display().to_string());
+                            }
+                        }
+                    }
+                });
+            if ui
+                .button("Choose file…")
+                .on_hover_text("A TrueType or OpenType font file")
+                .clicked()
+                && let Some(path) = file_dialog::choose(self.parent, file_dialog::Kind::Font)
+                    .into_iter()
+                    .next()
+            {
+                next.font = Some(path);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_sized([label_width, 20.], egui::Label::new("Size"));
+            ui.add(
+                egui::Slider::new(&mut next.font_size, crate::terminal::FONT_SIZES)
+                    .step_by(1.)
+                    .fixed_decimals(0)
+                    .suffix(" pt"),
+            );
+            if next.font_size != crate::terminal::FONT_SIZE && ui.button("Reset").clicked() {
+                next.font_size = crate::terminal::FONT_SIZE;
+            }
+        });
+        ui.label(
+            RichText::new(format!(
+                "In a terminal, {ZOOM_KEYS} change the size, and {ZOOM_RESET_KEY} resets it."
+            ))
+            .size(12.)
+            .color(colors.muted),
+        );
+        ui.add_space(6.);
+        ui.label(RichText::new("Colors").color(colors.muted));
+        ui.add_space(2.);
+        let light = theme::current(ui.ctx()).is_light();
+        let schemes = crate::terminal::Scheme::ALL;
+        for pair in schemes.chunks(2) {
+            ui.columns(2, |columns| {
+                for (column, &scheme) in pair.iter().enumerate() {
+                    if scheme_option(&mut columns[column], scheme, light, next.scheme == scheme)
+                        .clicked()
+                    {
+                        next.scheme = scheme;
+                    }
+                }
+            });
+        }
+        ui.add_space(6.);
+        terminal_sample(ui, next.font_size, &next.scheme.colors(light));
+        if next.font != settings.font {
+            match set_fonts(ui.ctx(), next.font.as_deref()) {
+                Ok(()) => self.error = None,
+                Err(e) => {
+                    self.error = Some(e);
+                    next.font = settings.font.clone();
+                    let _ = set_fonts(ui.ctx(), next.font.as_deref());
+                }
+            }
+        }
+        if next != settings {
+            self.state.terminal = next;
+            self.save_state();
+        }
     }
 
     /// Lists, adds, edits, and deletes snippets inside Settings.
@@ -509,6 +624,128 @@ pub(super) fn version() -> String {
         Some(commit) => format!("Relay {} · {commit}", env!("CARGO_PKG_VERSION")),
         None => format!("Relay {}", env!("CARGO_PKG_VERSION")),
     }
+}
+
+/// The keys that zoom a terminal, as Settings names them.
+const ZOOM_KEYS: &str = if cfg!(target_os = "macos") {
+    "Cmd+Plus and Cmd+Minus (or Cmd with the scroll wheel)"
+} else {
+    "Ctrl+Plus and Ctrl+Minus (or Ctrl with the scroll wheel)"
+};
+const ZOOM_RESET_KEY: &str = if cfg!(target_os = "macos") {
+    "Cmd+0"
+} else {
+    "Ctrl+0"
+};
+
+/// A terminal color scheme to choose, with its background and a few of its colors.
+fn scheme_option(
+    ui: &mut egui::Ui,
+    scheme: crate::terminal::Scheme,
+    light_workspace: bool,
+    selected: bool,
+) -> egui::Response {
+    let colors = theme::palette(ui.ctx());
+    let pal = scheme.colors(light_workspace);
+    let response = ui.add_sized(
+        [ui.available_width(), 34.],
+        egui::Button::new("").selected(selected),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), scheme.name())
+    });
+    let center = response.rect.center();
+    let swatch = egui::Rect::from_center_size(
+        egui::pos2(response.rect.left() + 26., center.y),
+        Vec2::new(36., 20.),
+    );
+    ui.painter().rect(
+        swatch,
+        4.,
+        pal.background,
+        Stroke::new(1_f32, colors.line),
+        egui::StrokeKind::Inside,
+    );
+    for (i, color) in [pal.foreground, pal.ansi[1], pal.ansi[2], pal.ansi[4]]
+        .into_iter()
+        .enumerate()
+    {
+        ui.painter().circle_filled(
+            egui::pos2(swatch.left() + 7. + i as f32 * 7.3, center.y),
+            2.6,
+            color,
+        );
+    }
+    ui.painter().text(
+        egui::pos2(swatch.right() + 10., center.y),
+        Align2::LEFT_CENTER,
+        scheme.name(),
+        FontId::proportional(13.),
+        colors.text,
+    );
+    if selected {
+        ui.painter().text(
+            egui::pos2(response.rect.right() - 12., center.y),
+            Align2::RIGHT_CENTER,
+            "Selected",
+            FontId::proportional(11.),
+            colors.accent,
+        );
+    }
+    response
+}
+
+/// A few lines of shell output in the terminal font, size and colors `pal`.
+fn terminal_sample(ui: &mut egui::Ui, size: f32, pal: &crate::terminal::Colors) {
+    let font = FontId::monospace(size);
+    let lines: [&[(&str, Color32)]; 3] = [
+        &[
+            ("deploy@build", pal.ansi[2]),
+            (":", pal.foreground),
+            ("~", pal.ansi[4]),
+            ("$ ls -l", pal.foreground),
+        ],
+        &[
+            ("drwxr-xr-x  ", pal.foreground),
+            ("releases", pal.ansi[4]),
+            ("  ", pal.foreground),
+            ("run.sh", pal.ansi[2]),
+            ("  ", pal.foreground),
+            ("error.log", pal.ansi[1]),
+        ],
+        &[("$ ", pal.foreground), (" ", pal.cursor)],
+    ];
+    egui::Frame::new()
+        .fill(pal.background)
+        .stroke(Stroke::new(1_f32, pal.border))
+        .corner_radius(RADIUS)
+        .inner_margin(Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.;
+            for (row, line) in lines.iter().enumerate() {
+                let mut job = egui::text::LayoutJob::default();
+                for (i, (text, color)) in line.iter().enumerate() {
+                    // The last line ends with the cursor, a block in its color.
+                    let cursor = row == 2 && i == 1;
+                    job.append(
+                        text,
+                        0.,
+                        egui::TextFormat {
+                            font_id: font.clone(),
+                            color: if cursor { pal.background } else { *color },
+                            background: if cursor {
+                                pal.cursor
+                            } else {
+                                Color32::TRANSPARENT
+                            },
+                            ..Default::default()
+                        },
+                    );
+                }
+                ui.add(egui::Label::new(job).wrap_mode(egui::TextWrapMode::Truncate));
+            }
+        });
 }
 
 pub(super) fn theme_option(

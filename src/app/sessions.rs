@@ -168,6 +168,7 @@ impl App {
             let desktop = s.has_desktop();
             // Quick connections are not in the library until saved.
             let unsaved = s.connection.id == 0
+                && !s.local
                 && !self
                     .connections
                     .iter()
@@ -200,7 +201,8 @@ impl App {
                         .button("Terminal")
                         .on_hover_text("Open a terminal on this server beside the files")
                         .clicked();
-                } else if s.connection.protocol == Protocol::Ssh && s.terminal.is_some() {
+                } else if s.connection.protocol == Protocol::Ssh && s.terminal.is_some() && !s.local
+                {
                     companion = ui
                         .button("Files")
                         .on_hover_text("Browse this server's files over SFTP beside the terminal")
@@ -251,16 +253,22 @@ impl App {
                     ui.add(
                         egui::Label::new(RichText::new(s.title()).size(14.).strong()).truncate(),
                     );
+                    // A local shell names the program it runs.
+                    let address = if s.local {
+                        crate::terminal::local_shell().0.display().to_string()
+                    } else {
+                        s.connection.address()
+                    };
                     ui.add(
                         egui::Label::new(
-                            RichText::new(s.connection.address())
+                            RichText::new(&address)
                                 .monospace()
                                 .size(12.)
                                 .color(colors.muted),
                         )
                         .truncate(),
                     )
-                    .on_hover_text(s.connection.address());
+                    .on_hover_text(&address);
                 });
             });
         });
@@ -302,10 +310,20 @@ impl App {
                 } else if stop {
                     self.sessions[index].stop_retrying();
                 }
-            } else if !s.is_running() && ui.button("Reconnect").clicked() {
+            } else if !s.is_running()
+                && ui
+                    .button(if s.local { "Start again" } else { "Reconnect" })
+                    .clicked()
+            {
                 self.reconnect(index);
             }
-            self.sessions[index].terminal.as_mut().unwrap().show(ui);
+            let mut look = self.terminal_look(ui.ctx());
+            self.sessions[index]
+                .terminal
+                .as_mut()
+                .unwrap()
+                .show(ui, &mut look);
+            self.zoomed(look.font_size);
         } else if let Some(error) = &s.error {
             let error = error.clone();
             ui.add_space(40.);
