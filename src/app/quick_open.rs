@@ -55,13 +55,7 @@ impl App {
             return;
         };
         let colors = theme::palette(ctx);
-        let found = self.quick_matches(&open.query);
-        let typed = Connection::quick(&open.query);
-        let browses = model::browses(&open.query);
-        let mut rows: Vec<Choice> = found.iter().map(|&i| Choice::Saved(i)).collect();
-        if typed.is_some() {
-            rows.push(Choice::Typed);
-        }
+        // Keys first, so neither the search field nor the views behind see them.
         let (down, up, enter, escape) = ctx.input_mut(|i| {
             // Enter with any modifier is quick open's, never the list or tab behind it. Its
             // modifiers choose what it does.
@@ -91,21 +85,9 @@ impl App {
             )
         });
         let modifiers = enter.unwrap_or_default();
-        let last = rows.len().saturating_sub(1);
-        open.selected = if down {
-            (open.selected + 1).min(last)
-        } else if up {
-            open.selected.saturating_sub(1)
-        } else {
-            open.selected.min(last)
-        };
-        // Alt+Enter connects to what was typed even when something in the library matches, as
-        // in the library's search.
-        let mut chosen = match enter {
-            Some(m) if m.alt => typed.as_ref().map(|_| Choice::Typed),
-            Some(_) => rows.get(open.selected).copied(),
-            None => None,
-        };
+        let mut typed = None;
+        let mut browses = false;
+        let mut chosen = None;
         let width = dialog_width(ctx, 540.);
         let search_id = egui::Id::new("quick-open-search");
         let area = egui::Area::new(egui::Id::new("quick-open"))
@@ -132,6 +114,35 @@ impl App {
                             search.request_focus();
                             open.focused = true;
                         }
+                        // Results come from the query as this frame's typing or paste left it,
+                        // so Enter in the same frame acts on what is shown.
+                        typed = Connection::quick(&open.query);
+                        browses = model::browses(&open.query);
+                        let mut rows: Vec<Choice> = (self.quick_matches(&open.query))
+                            .into_iter()
+                            .map(Choice::Saved)
+                            .collect();
+                        if typed.is_some() {
+                            rows.push(Choice::Typed);
+                        }
+                        let last = rows.len().saturating_sub(1);
+                        open.selected = if down {
+                            (open.selected + 1).min(last)
+                        } else if up {
+                            open.selected.saturating_sub(1)
+                        } else {
+                            open.selected.min(last)
+                        };
+                        // Alt+Enter connects to what was typed even when something in the
+                        // library matches, as in the library's search.
+                        chosen = match enter {
+                            Some(m) if m.alt => typed.as_ref().map(|_| Choice::Typed),
+                            Some(_) => rows.get(open.selected).copied(),
+                            None => None,
+                        };
+                        // The pointer selects a row only when it moves, so one resting over
+                        // the list does not undo the arrow keys.
+                        let moved = ui.input(|i| i.pointer.delta() != Vec2::ZERO);
                         if rows.is_empty() {
                             let text = if self.connections.is_empty() {
                                 "Type a host to connect, or add connections in the library."
@@ -144,7 +155,7 @@ impl App {
                         for (row, &choice) in rows.iter().enumerate() {
                             let (rect, response) =
                                 ui.allocate_exact_size(Vec2::new(width, 32.), Sense::click());
-                            if response.hovered() {
+                            if response.hovered() && moved {
                                 open.selected = row;
                             }
                             if response.clicked() {

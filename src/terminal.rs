@@ -1251,6 +1251,11 @@ impl Terminal {
         Self::spawn(shell(script), ctx).unwrap()
     }
 
+    /// The text on screen.
+    pub fn screen_text(&self) -> String {
+        self.parser.lock().unwrap().screen().contents()
+    }
+
     /// Whether the waiting thread has seen the process end, before anything polled it.
     pub fn exit_seen(&self) -> bool {
         self.exit.lock().unwrap().is_some()

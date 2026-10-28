@@ -86,6 +86,13 @@ pub fn retry_delay(
 }
 
 impl Session {
+    /// A session for `connection` whose terminal runs `script` on this computer.
+    #[cfg(test)]
+    pub fn scripted(connection: Connection, script: &str, ctx: eframe::egui::Context) -> Self {
+        let terminal = Terminal::script(script, Some(ctx.clone()));
+        Self::new(connection, Some(terminal), ctx)
+    }
+
     fn new(connection: Connection, terminal: Option<Terminal>, ctx: eframe::egui::Context) -> Self {
         Self {
             connection,

@@ -277,6 +277,108 @@ fn quick_open_connects_with_enter_and_keeps_it_from_the_library() {
 }
 
 #[test]
+fn quick_open_acts_on_text_typed_or_pasted_in_the_same_frame_as_enter() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    app.open_quick();
+    quick_frame(&mut app, &ctx, vec![]);
+    // The list before the text starts with Alpha; Enter must act on what the text leaves.
+    quick_frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::Text("bravo".into()), press(egui::Key::Enter)],
+    );
+    assert_eq!(app.connect_request.take().unwrap().name, "Bravo");
+    app.open_quick();
+    quick_frame(&mut app, &ctx, vec![]);
+    quick_frame(
+        &mut app,
+        &ctx,
+        vec![
+            egui::Event::Paste("deploy@10.0.0.9".into()),
+            press(egui::Key::Enter),
+        ],
+    );
+    let typed = app.connect_request.take().unwrap();
+    assert_eq!(
+        (typed.username.as_str(), typed.host.as_str()),
+        ("deploy", "10.0.0.9")
+    );
+}
+
+#[test]
+fn quick_open_keeps_the_arrow_keys_choice_under_a_resting_pointer() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    app.open_quick();
+    quick_frame(&mut app, &ctx, vec![]);
+    // Point at the second row, then leave the pointer there.
+    let second = (0..800)
+        .map(|y| egui::pos2(600., y as f32))
+        .find(|&pos| {
+            quick_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(pos)]);
+            app.quick_open.as_ref().unwrap().selected == 1
+        })
+        .expect("the second row");
+    quick_frame(&mut app, &ctx, vec![]);
+    quick_frame(&mut app, &ctx, vec![press(egui::Key::ArrowDown)]);
+    quick_frame(&mut app, &ctx, vec![]);
+    assert_eq!(app.quick_open.as_ref().unwrap().selected, 2);
+    // Moving it again chooses the row under it.
+    quick_frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::PointerMoved(second + Vec2::new(5., 0.))],
+    );
+    assert_eq!(app.quick_open.as_ref().unwrap().selected, 1);
+}
+
+#[test]
+fn snippets_send_what_text_typed_in_the_same_frame_as_enter_selects() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    for (name, command) in [("Alpha", "echo-alpha"), ("Beta", "echo-beta")] {
+        app.state.snippets.push(state::Snippet {
+            name: name.into(),
+            command: command.into(),
+            run: true,
+        });
+    }
+    let mut ssh = app.connections[0].clone();
+    ssh.protocol = Protocol::Ssh;
+    // cat shows what the snippet types.
+    app.sessions
+        .push(session::Session::scripted(ssh, "cat", ctx.clone()));
+    app.active = Some(0);
+    app.palette = Some(Palette::default());
+    let frame = |app: &mut App, events| {
+        let _ = ctx.run(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ctx| app.snippet_palette(ctx),
+        );
+    };
+    frame(&mut app, vec![]);
+    frame(
+        &mut app,
+        vec![egui::Event::Text("beta".into()), press(egui::Key::Enter)],
+    );
+    assert!(app.palette.is_none(), "Enter sent a snippet");
+    let terminal = app.sessions[0].terminal.as_ref().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !terminal.screen_text().contains("echo-beta") {
+        assert!(
+            !terminal.screen_text().contains("echo-alpha"),
+            "sent the snippet chosen before the text"
+        );
+        assert!(Instant::now() < deadline, "nothing arrived");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
 fn arrows_move_selection_and_escape_clears_search() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);

@@ -486,7 +486,7 @@ impl App {
             return;
         };
         let colors = theme::palette(ctx);
-        let matches = state::matching(&self.state.snippets, &palette.query);
+        // Keys first, so the search field does not see them.
         let (down, up, enter, escape) = ctx.input_mut(|i| {
             (
                 i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
@@ -495,19 +495,7 @@ impl App {
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
             )
         });
-        let last = matches.len().saturating_sub(1);
-        palette.selected = if down {
-            (palette.selected + 1).min(last)
-        } else if up {
-            palette.selected.saturating_sub(1)
-        } else {
-            palette.selected.min(last)
-        };
-        let mut chosen = if enter {
-            matches.get(palette.selected).copied()
-        } else {
-            None
-        };
+        let mut chosen = None;
         let mut manage = false;
         let width = dialog_width(ctx, 540.);
         let search_id = egui::Id::new("snippet-search");
@@ -535,6 +523,24 @@ impl App {
                             search.request_focus();
                             palette.focused = true;
                         }
+                        // Matches come from the query as this frame's typing or paste left it,
+                        // so Enter in the same frame sends what is shown. Only shown ones count.
+                        let mut matches = state::matching(&self.state.snippets, &palette.query);
+                        matches.truncate(8);
+                        let last = matches.len().saturating_sub(1);
+                        palette.selected = if down {
+                            (palette.selected + 1).min(last)
+                        } else if up {
+                            palette.selected.saturating_sub(1)
+                        } else {
+                            palette.selected.min(last)
+                        };
+                        if enter {
+                            chosen = matches.get(palette.selected).copied();
+                        }
+                        // The pointer selects a row only when it moves, so one resting over
+                        // the list does not undo the arrow keys.
+                        let moved = ui.input(|i| i.pointer.delta() != Vec2::ZERO);
                         if self.state.snippets.is_empty() {
                             ui.label(
                                 RichText::new("No snippets yet. Add your first one in Settings.")
@@ -544,11 +550,11 @@ impl App {
                             ui.label(RichText::new("No snippets match.").color(colors.muted));
                         }
                         ui.spacing_mut().item_spacing.y = 2.;
-                        for (row, &i) in matches.iter().enumerate().take(8) {
+                        for (row, &i) in matches.iter().enumerate() {
                             let snippet = &self.state.snippets[i];
                             let (rect, response) =
                                 ui.allocate_exact_size(Vec2::new(width, 42.), Sense::click());
-                            if response.hovered() {
+                            if response.hovered() && moved {
                                 palette.selected = row;
                             }
                             if response.clicked() {
