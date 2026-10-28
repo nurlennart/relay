@@ -51,6 +51,7 @@ pub fn run() -> eframe::Result {
                 .with_maximized(saved.maximized)
                 .with_min_inner_size([720., 560.])
                 .with_icon(app_icon()),
+            wgpu_options: gpu_options(),
             ..Default::default()
         },
         Box::new(|cc| {
@@ -1395,6 +1396,23 @@ fn moved(index: usize, from: usize, to: usize) -> usize {
         index + 1
     } else {
         index
+    }
+}
+
+/// egui's GPU setup, asking for memory in small blocks. By default wgpu reserves GPU memory
+/// 256 MB at a time, which Relay's few textures never fill; on an integrated GPU, such as
+/// most laptops', that memory comes out of the computer's RAM.
+fn gpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
+    use eframe::{egui_wgpu, wgpu};
+    let mut setup = egui_wgpu::WgpuSetupCreateNew::default();
+    let device = setup.device_descriptor.clone();
+    setup.device_descriptor = std::sync::Arc::new(move |adapter| wgpu::DeviceDescriptor {
+        memory_hints: wgpu::MemoryHints::MemoryUsage,
+        ..device(adapter)
+    });
+    egui_wgpu::WgpuConfiguration {
+        wgpu_setup: egui_wgpu::WgpuSetup::CreateNew(setup),
+        ..Default::default()
     }
 }
 
