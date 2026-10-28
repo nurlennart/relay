@@ -573,6 +573,8 @@ impl RdpClient {
                     self.display_warning = Some(format!(
                         "The remote host could not update its display size: {e}"
                     ));
+                } else {
+                    self.ctx.request_repaint_after(RETRY);
                 }
             }
         }
@@ -960,9 +962,22 @@ mod tests {
         let wakes = Arc::new(Mutex::new(vec![]));
         let seen = wakes.clone();
         ctx.set_request_repaint_callback(move |info| seen.lock().unwrap().push(info.delay));
+        // egui reports a wake-up only when it is sooner than one already due, so a few frames
+        // pass first, as they do in Relay, and clear what is due.
+        let frames = || {
+            for _ in 0..3 {
+                let _ = ctx.run(egui::RawInput::default(), |_| {});
+            }
+            wakes.lock().unwrap().clear();
+        };
         let last_wake = || wakes.lock().unwrap().pop().expect("a scheduled wake-up");
-        let mut client =
-            RdpClient::new(NativeWindow::from_hwnd(parent.0), &connection, false, ctx).unwrap();
+        let mut client = RdpClient::new(
+            NativeWindow::from_hwnd(parent.0),
+            &connection,
+            false,
+            ctx.clone(),
+        )
+        .unwrap();
         client.layout([0, 0, 1000, 600]).unwrap();
         client.resized = Instant::now() - Duration::from_secs(1);
         // Pretend the session connected with this size at 100%, without contacting a host.
@@ -978,13 +993,21 @@ mod tests {
         // has not finished logging in; failures retry without a warning at first.
         for attempt in 1..8 {
             client.retry_at = Instant::now();
+            frames();
             client.sync_display(150, true, 1);
             assert_eq!(client.failures, attempt);
             assert!(
                 client.display_warning.is_none(),
                 "warned on attempt {attempt}"
             );
+            // The failed attempt itself wakes the window for the next one.
+            let wake = last_wake();
+            assert!(
+                wake > Duration::from_millis(900) && wake <= Duration::from_secs(1),
+                "attempt {attempt}: {wake:?}"
+            );
         }
+        frames();
         client.sync_display(150, true, 1);
         assert_eq!(client.failures, 7, "retries wait for the retry delay");
         let wake = last_wake();
@@ -1001,6 +1024,7 @@ mod tests {
         // A new size waits until it has settled, then wakes the window to send it.
         client.retry_at = Instant::now();
         client.layout([0, 0, 1200, 700]).unwrap();
+        frames();
         client.sync_display(100, true, 2);
         assert_eq!(client.failures, 0, "no update while the size settles");
         let wake = last_wake();

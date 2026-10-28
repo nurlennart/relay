@@ -342,6 +342,40 @@ fn tabs_take_saved_settings_only_from_their_own_library() {
 }
 
 #[test]
+fn reconnecting_never_takes_settings_from_another_database_of_the_same_kind() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let database = |name: &str| {
+        database::Location::Mssql(database::Server {
+            connection: format!("Server=sql01;Database={name}"),
+            tls: true,
+        })
+    };
+    // A tab for connection 1 of database A, opened while A was the library.
+    let mut from_a = app.connections[0].clone();
+    from_a.host = "a.example".into();
+    app.location = database("A");
+    app.state.open = vec![from_a.clone(), from_a];
+    app.state.tab_libraries = vec![
+        state::Library::of(&app.location),
+        // One saved before Relay recorded which server a tab came from.
+        state::Library::Mssql(None),
+    ];
+    app.restore_tabs();
+    // Database B has a different connection 1.
+    app.location = database("B");
+    app.connections[0].host = "b.example".into();
+    assert_eq!(app.current_settings(0).host, "a.example");
+    assert_eq!(app.current_settings(1).host, "a.example");
+    app.forget_removed();
+    assert_eq!(app.sessions[0].connection.id, 1, "B's IDs are not A's");
+    // Back in A, the tab follows A's saved settings again.
+    app.location = database("A");
+    app.connections[0].host = "a2.example".into();
+    assert_eq!(app.current_settings(0).host, "a2.example");
+}
+
+#[test]
 fn split_view_pairs_two_tabs_and_follows_moves() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);
