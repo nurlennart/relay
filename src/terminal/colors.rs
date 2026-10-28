@@ -11,15 +11,17 @@ pub enum Scheme {
     Light,
     SolarizedDark,
     SolarizedLight,
+    Monokai,
 }
 
 impl Scheme {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Workspace,
         Self::Dark,
         Self::Light,
         Self::SolarizedDark,
         Self::SolarizedLight,
+        Self::Monokai,
     ];
 
     pub fn name(self) -> &'static str {
@@ -29,6 +31,7 @@ impl Scheme {
             Self::Light => "Light",
             Self::SolarizedDark => "Solarized Dark",
             Self::SolarizedLight => "Solarized Light",
+            Self::Monokai => "Monokai",
         }
     }
 
@@ -40,6 +43,7 @@ impl Scheme {
             Self::Light => LIGHT,
             Self::SolarizedDark => SOLARIZED_DARK,
             Self::SolarizedLight => SOLARIZED_LIGHT,
+            Self::Monokai => MONOKAI,
         }
     }
 }
@@ -228,6 +232,55 @@ const SOLARIZED_LIGHT: Colors = Colors {
     link: rgb(0x268bd2),
     bold_brightens: false,
     ansi: SOLARIZED,
+};
+
+// Wimer Hazenberg's Monokai. It has no blue of its own, so its cyan stands in, and its
+// bright colors are the same as the normal ones, as in most terminal ports.
+const MONOKAI_RED: Color32 = rgb(0xf92672);
+const MONOKAI_GREEN: Color32 = rgb(0xa6e22e);
+const MONOKAI_YELLOW: Color32 = rgb(0xe6db74);
+const MONOKAI_BLUE: Color32 = rgb(0x66d9ef);
+const MONOKAI_PURPLE: Color32 = rgb(0xae81ff);
+const MONOKAI_CYAN: Color32 = rgb(0xa1efe4);
+const MONOKAI_WHITE: Color32 = rgb(0xf8f8f2);
+
+const MONOKAI: Colors = Colors {
+    light: false,
+    background: rgb(0x272822),
+    title: rgb(0x1e1f1c),
+    title_text: MONOKAI_WHITE,
+    title_muted: rgb(0x8f8a73),
+    border: rgb(0x3e3d32),
+    foreground: MONOKAI_WHITE,
+    cursor: MONOKAI_WHITE,
+    selection: rgb(0x49483e),
+    running: MONOKAI_GREEN,
+    ended: MONOKAI_RED,
+    scrolled: MONOKAI_YELLOW,
+    matched: rgb(0x5b5631),
+    match_tick: rgb(0xa59f52),
+    current_match: MONOKAI_YELLOW,
+    current_match_text: rgb(0x272822),
+    link: MONOKAI_BLUE,
+    bold_brightens: false,
+    ansi: [
+        rgb(0x3e3d32),
+        MONOKAI_RED,
+        MONOKAI_GREEN,
+        MONOKAI_YELLOW,
+        MONOKAI_BLUE,
+        MONOKAI_PURPLE,
+        MONOKAI_CYAN,
+        MONOKAI_WHITE,
+        rgb(0x8f8a73),
+        MONOKAI_RED,
+        MONOKAI_GREEN,
+        MONOKAI_YELLOW,
+        MONOKAI_BLUE,
+        MONOKAI_PURPLE,
+        MONOKAI_CYAN,
+        rgb(0xf9f8f5),
+    ],
 };
 
 #[cfg(test)]
