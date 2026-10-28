@@ -447,10 +447,11 @@ mod tests {
             assert!(Instant::now() < deadline, "the process did not end");
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(
-            wakes.lock().unwrap().contains(&Duration::ZERO),
-            "the exit woke nothing"
-        );
+        // The thread stores the exit before it wakes the window, so the wake can trail slightly.
+        while !wakes.lock().unwrap().contains(&Duration::ZERO) {
+            assert!(Instant::now() < deadline, "the exit woke nothing");
+            std::thread::sleep(Duration::from_millis(5));
+        }
         while session.retry.is_none() {
             assert!(Instant::now() < deadline, "no reconnection was scheduled");
             std::thread::sleep(Duration::from_millis(20));
