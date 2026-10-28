@@ -64,6 +64,15 @@ pub fn seed(app: &mut App) {
             _ => settings::SettingsTab::Appearance,
         };
     }
+    if std::env::var_os("RELAY_UI_SHORTCUTS").is_some() {
+        app.modal = Modal::Shortcuts;
+    }
+    if let Ok(query) = std::env::var("RELAY_UI_QUICK") {
+        app.quick_open = Some(Palette {
+            query,
+            ..Default::default()
+        });
+    }
     match std::env::var("RELAY_UI_FILTER").as_deref() {
         Ok("favorites") => app.filter = Filter::Favorites,
         Ok("recent") => app.filter = Filter::Recent,

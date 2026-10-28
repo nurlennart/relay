@@ -157,9 +157,10 @@ impl App {
                                     session_tab(ui, c, Kind::Session, state, false);
                                 }
                             }
-                            if icon_button(ui, Icon::Plus, 26., "New connection (Ctrl+N)").clicked()
+                            if icon_button(ui, Icon::Plus, 26., "Open a connection (Ctrl+T)")
+                                .clicked()
                             {
-                                self.new_connection();
+                                self.open_quick();
                             }
                             if icon_button(
                                 ui,

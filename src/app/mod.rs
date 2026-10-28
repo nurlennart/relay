@@ -3,6 +3,7 @@ mod editor;
 mod files;
 mod icons;
 mod library;
+mod quick_open;
 mod sessions;
 mod settings;
 mod shortcuts;
@@ -198,6 +199,8 @@ struct App {
     split_fraction: f32,
     /// The open snippet palette, over the active SSH tab.
     palette: Option<Palette>,
+    /// Quick open, from the tab bar's +: a library search that also connects to typed hosts.
+    quick_open: Option<Palette>,
     /// A snippet being added (no index) or edited in Settings.
     snippet_draft: Option<(Option<usize>, state::Snippet)>,
     pending_save: bool,
@@ -319,6 +322,7 @@ impl App {
             split: None,
             split_fraction: SPLIT_MIDDLE,
             palette: None,
+            quick_open: None,
             snippet_draft: None,
             pending_save: false,
             connect_request: None,
@@ -554,6 +558,9 @@ impl App {
                 self.search_focus = true;
                 self.active = None;
             }
+            if shortcut(ctrl, egui::Key::T) {
+                self.open_quick();
+            }
             if shortcut(ctrl, egui::Key::B) {
                 self.set_sidebar_collapsed(!self.sidebar_collapsed(ctx));
             }
@@ -581,7 +588,7 @@ impl App {
     /// Whether a dialog covers the workspace. Native RDP windows sit above GPU content, so
     /// they are hidden while this is true.
     fn covered(&self) -> bool {
-        self.quitting || !matches!(self.modal, Modal::None)
+        self.quitting || !matches!(self.modal, Modal::None) || self.quick_open.is_some()
     }
 
     fn persist(&mut self, next: Vec<Connection>) -> bool {
@@ -1143,6 +1150,8 @@ impl eframe::App for App {
             self.quitting = true;
         }
         let terminal_focused = self.workspace_shortcuts(ctx);
+        // Before the views behind it, so its keys never reach them.
+        self.quick_open(ctx);
         // A click on Relay's own interface takes the keyboard back from a remote desktop, whose
         // native window gets its clicks directly.
         if ctx.input(|i| i.pointer.any_pressed())

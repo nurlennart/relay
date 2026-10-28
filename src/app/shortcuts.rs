@@ -33,6 +33,9 @@ impl App {
                 ("WORKSPACE & TABS", &[
                     ("F1", "Open keyboard shortcuts"),
                     ("Mod+K", "Open library search"),
+                    ("Mod+T", "Open a connection: search or type a host"),
+                    ("Enter in quick open", "Connect; Shift+Enter browses SSH files"),
+                    ("Alt+Enter in quick open", "Connect to the typed address"),
                     ("Mod+N", "New connection"),
                     ("Mod+B", "Toggle sidebar"),
                     ("Mod+W", "Close current session tab"),

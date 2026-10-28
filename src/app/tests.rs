@@ -209,6 +209,73 @@ fn enter_quick_connects_when_nothing_matches() {
     );
 }
 
+/// A frame with quick open in front of the library, as Relay draws them.
+fn quick_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
+    let _ = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(1200., 800.),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ctx| {
+            app.quick_open(ctx);
+            egui::CentralPanel::default().show(ctx, |ui| app.workspace(ui));
+        },
+    );
+}
+
+#[test]
+fn quick_open_lists_recent_connections_first_then_by_name() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let names = |app: &App, query: &str| -> Vec<String> {
+        (app.quick_matches(query).into_iter())
+            .map(|i| app.connections[i].name.clone())
+            .collect()
+    };
+    assert_eq!(names(&app, ""), ["Alpha", "Bravo", "Charlie"]);
+    app.state.note_recent(&app.location, 3);
+    assert_eq!(names(&app, ""), ["Charlie", "Alpha", "Bravo"]);
+    assert_eq!(names(&app, " BRAV "), ["Bravo"]);
+    assert!(names(&app, "nothing").is_empty());
+}
+
+#[test]
+fn quick_open_connects_with_enter_and_keeps_it_from_the_library() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    // The library behind it has Alpha selected, which its own Enter would connect.
+    app.selected = Some(1);
+    app.open_quick();
+    quick_frame(&mut app, &ctx, vec![]);
+    quick_frame(&mut app, &ctx, vec![egui::Event::Text("bravo".into())]);
+    quick_frame(&mut app, &ctx, vec![press(egui::Key::Enter)]);
+    assert_eq!(app.connect_request.take().unwrap().name, "Bravo");
+    assert!(app.quick_open.is_none(), "choosing closes quick open");
+    // Alt+Enter connects to what was typed even when the library has a match.
+    app.open_quick();
+    quick_frame(&mut app, &ctx, vec![]);
+    quick_frame(&mut app, &ctx, vec![egui::Event::Text("alpha".into())]);
+    let alt_enter = egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::ALT,
+    };
+    quick_frame(&mut app, &ctx, vec![alt_enter]);
+    let typed = app.connect_request.take().unwrap();
+    assert_eq!((typed.id, typed.host.as_str()), (0, "alpha"));
+    // Esc closes it without connecting.
+    app.open_quick();
+    quick_frame(&mut app, &ctx, vec![]);
+    quick_frame(&mut app, &ctx, vec![press(egui::Key::Escape)]);
+    assert!(app.quick_open.is_none() && app.connect_request.is_none());
+}
+
 #[test]
 fn arrows_move_selection_and_escape_clears_search() {
     let ctx = egui::Context::default();
