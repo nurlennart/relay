@@ -221,6 +221,8 @@ pub struct RdpClient {
     /// Overlay rectangles currently cut out of the viewport.
     holes: Vec<[i32; 4]>,
     display_warning: Option<String>,
+    /// Whether the control was in full screen when last placed, to notice it leaving.
+    full_screen: bool,
     /// Wakes the window when a display update is due.
     ctx: egui::Context,
     _apartment: Apartment,
@@ -326,6 +328,7 @@ impl RdpClient {
             resized: Instant::now(),
             holes: vec![],
             display_warning: None,
+            full_screen: false,
             ctx: ctx.clone(),
             _apartment: apartment,
         };
@@ -566,6 +569,13 @@ impl RdpClient {
         let (connected, generation, full_screen) =
             (state.connected, state.generation, state.full_screen);
         drop(state);
+        // Leaving full screen closes the control's own window, which was the active one, and
+        // Windows activates none in its place: the desktop then refuses clicks with a beep
+        // until Relay's window is clicked. Activate the window it is back in.
+        if self.full_screen && !full_screen {
+            platform::windows::activate(self.parent);
+        }
+        self.full_screen = full_screen;
         self.sync_display(scale, connected, generation, full_screen);
         Ok(())
     }

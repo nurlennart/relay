@@ -143,6 +143,16 @@ pub(crate) fn position(window: HWND, parent: HWND, rect: [i32; 4]) -> Result<(),
     Ok(())
 }
 
+/// Brings the top-level window holding `window` to the front and makes it the active one.
+pub(crate) fn activate(window: HWND) {
+    unsafe {
+        let top = GetAncestor(window, GA_ROOT);
+        if !top.is_null() {
+            SetForegroundWindow(top);
+        }
+    }
+}
+
 /// The size in pixels of the monitor `window` is on.
 pub(crate) fn monitor_size(window: HWND) -> Option<(i32, i32)> {
     use windows_sys::Win32::Graphics::Gdi::{
