@@ -96,9 +96,11 @@ pub(super) fn paint_sized(
             painter.add(egui::Shape::closed_line(points, stroke));
         }
         Icon::Desktop => {
-            outline(rect(-7., -6., 7., 3.5), 1.5);
-            line(&[(0., 3.5), (0., 6.5)]);
-            line(&[(-3.5, 6.5), (3.5, 6.5)]);
+            // The screen, not screen and stand together, sits on the centre line, so it lines
+            // up with text beside it as the other icons' boxes do.
+            outline(rect(-7., -5., 7., 4.5), 1.5);
+            line(&[(0., 4.5), (0., 7.5)]);
+            line(&[(-3.5, 7.5), (3.5, 7.5)]);
         }
         Icon::Terminal => {
             outline(rect(-7., -6., 7., 6.), 2.);
