@@ -521,6 +521,16 @@ impl RdpClient {
         }
         Ok(())
     }
+    /// The resolution to ask of the remote computer: the tab's size, or in full screen the
+    /// monitor's, so a desktop from a split view fills the screen sharply and gets the split
+    /// size back when it leaves.
+    fn wanted_size(&self, full_screen: bool) -> Option<(i32, i32)> {
+        match platform::windows::monitor_size(self.parent).filter(|_| full_screen) {
+            Some((width, height)) => Some((width.clamp(200, 8192), height.clamp(200, 8192))),
+            None => self.size,
+        }
+    }
+
     pub fn place(&mut self, rect: Option<[i32; 4]>, holes: &[[i32; 4]]) -> Result<(), String> {
         let Some(rect) = rect else {
             // Typing goes to Relay, such as a dialog that covers the desktop, not the hidden control.
@@ -553,14 +563,15 @@ impl RdpClient {
             self.initial = self.size.map(|size| (size, initial_scale));
         }
         let state = self.state.lock().unwrap();
-        let (connected, generation) = (state.connected, state.generation);
+        let (connected, generation, full_screen) =
+            (state.connected, state.generation, state.full_screen);
         drop(state);
-        self.sync_display(scale, connected, generation);
+        self.sync_display(scale, connected, generation, full_screen);
         Ok(())
     }
 
     /// Asks the session to match the tab's size and scale once it can.
-    fn sync_display(&mut self, scale: u32, connected: bool, generation: u64) {
+    fn sync_display(&mut self, scale: u32, connected: bool, generation: u64, full_screen: bool) {
         /// Failed updates retry this often; the session rejects them until login completes.
         const RETRY: Duration = Duration::from_secs(1);
         /// After this many failures in a row, the warning is shown.
@@ -573,7 +584,7 @@ impl RdpClient {
             self.current = self.initial;
             self.failures = 0;
         }
-        let Some(size) = self.size else {
+        let Some(size) = self.wanted_size(full_screen) else {
             return;
         };
         let wanted = (size, scale);
@@ -1094,7 +1105,7 @@ mod tests {
         // Pretend the session connected with this size at 100%, without contacting a host.
         client.started = true;
         client.initial = Some(((1000, 600), 100));
-        client.sync_display(100, true, 1);
+        client.sync_display(100, true, 1, false);
         assert_eq!(
             client.failures, 0,
             "no update is needed at the connect-time size"
@@ -1105,7 +1116,7 @@ mod tests {
         for attempt in 1..8 {
             client.retry_at = Instant::now();
             frames();
-            client.sync_display(150, true, 1);
+            client.sync_display(150, true, 1, false);
             assert_eq!(client.failures, attempt);
             assert!(
                 client.display_warning.is_none(),
@@ -1119,7 +1130,7 @@ mod tests {
             );
         }
         frames();
-        client.sync_display(150, true, 1);
+        client.sync_display(150, true, 1, false);
         assert_eq!(client.failures, 7, "retries wait for the retry delay");
         let wake = last_wake();
         assert!(
@@ -1127,22 +1138,42 @@ mod tests {
             "{wake:?}"
         );
         client.retry_at = Instant::now();
-        client.sync_display(150, true, 1);
+        client.sync_display(150, true, 1, false);
         assert!(client.display_warning.is_some());
         // A reconnection starts again from the connect-time settings.
-        client.sync_display(100, true, 2);
+        client.sync_display(100, true, 2, false);
         assert_eq!((client.current, client.failures), (client.initial, 0));
         // A new size waits until it has settled, then wakes the window to send it.
         client.retry_at = Instant::now();
         client.layout([0, 0, 1200, 700]).unwrap();
         frames();
-        client.sync_display(100, true, 2);
+        client.sync_display(100, true, 2, false);
         assert_eq!(client.failures, 0, "no update while the size settles");
         let wake = last_wake();
         assert!(
             wake > Duration::ZERO && wake <= Duration::from_millis(250),
             "{wake:?}"
         );
+    }
+
+    #[test]
+    fn full_screen_asks_for_the_monitors_size_and_the_tab_size_after() {
+        let _turn = one_control_at_a_time();
+        let parent = parent();
+        let mut connection = Connection::new();
+        connection.host = "localhost".into();
+        let mut client = RdpClient::new(
+            NativeWindow::from_hwnd(parent.0),
+            &connection,
+            false,
+            egui::Context::default(),
+        )
+        .unwrap();
+        // Half a screen, as one side of split view.
+        client.layout([0, 0, 640, 700]).unwrap();
+        let monitor = platform::windows::monitor_size(parent.0).unwrap();
+        assert_eq!(client.wanted_size(true), Some(monitor));
+        assert_eq!(client.wanted_size(false), Some((640, 700)));
     }
 
     #[test]
