@@ -176,21 +176,39 @@ pub(super) fn protocol_badge(ui: &mut egui::Ui, protocol: Protocol) {
         Protocol::Rdp => colors.rdp,
         Protocol::Ssh => colors.accent,
     };
-    // Both labels are three letters, so badges share one width and line up in a column.
-    egui::Frame::new()
-        .fill(color.gamma_multiply(0.13))
-        .stroke(Stroke::new(1_f32, color.gamma_multiply(0.22)))
-        .corner_radius(RADIUS_SMALL)
-        .inner_margin(egui::Margin::symmetric(6, 1))
-        .show(ui, |ui| {
-            ui.label(
-                RichText::new(protocol.label())
-                    .size(10.)
-                    .strong()
-                    .extra_letter_spacing(0.4)
-                    .color(color),
-            );
-        });
+    let label = |protocol: Protocol| {
+        egui::WidgetText::from(
+            RichText::new(protocol.label())
+                .size(10.)
+                .strong()
+                .extra_letter_spacing(0.4),
+        )
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Small,
+        )
+    };
+    let galley = label(protocol);
+    // Every badge is as wide as the widest label, so names beside them line up. It keeps its
+    // own size, so a row centring it does not stretch it to the row's height.
+    let width = [Protocol::Rdp, Protocol::Ssh]
+        .map(|p| label(p).size().x)
+        .into_iter()
+        .fold(0_f32, f32::max);
+    // A point of outline and of padding above and below; six of padding at the sides.
+    let size = Vec2::new(width + 14., galley.size().y + 4.);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().rect(
+        rect,
+        RADIUS_SMALL,
+        color.gamma_multiply(0.13),
+        Stroke::new(1_f32, color.gamma_multiply(0.22)),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2., galley, color);
 }
 
 /// The height of text fields and buttons, so controls in a row line up.
