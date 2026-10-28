@@ -9,15 +9,47 @@ use std::{
 /// How many recent connections each library keeps.
 const RECENT: usize = 12;
 
-/// The library to reopen at startup. Server libraries reopen only with a remembered
-/// connection string.
+/// A library: the one to reopen at startup, and the one each tab came from. Server libraries
+/// reopen only with a remembered connection string.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "SavedLibrary")]
 pub enum Library {
     #[default]
     Personal,
     Sqlite(PathBuf),
-    Mssql,
-    Mysql,
+    /// A server library by its server and database, never its credentials, as connection IDs
+    /// belong to one database. `None` was saved before Relay recorded which, and matches no
+    /// open library.
+    Mssql(Option<String>),
+    Mysql(Option<String>),
+}
+
+/// A library as saved by this or an earlier Relay, which named server libraries by kind alone.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SavedLibrary {
+    Kind(String),
+    Place(SavedPlace),
+}
+
+#[derive(Deserialize)]
+enum SavedPlace {
+    Sqlite(PathBuf),
+    Mssql(Option<String>),
+    Mysql(Option<String>),
+}
+
+impl From<SavedLibrary> for Library {
+    fn from(saved: SavedLibrary) -> Self {
+        match saved {
+            SavedLibrary::Kind(kind) if kind == "Mssql" => Self::Mssql(None),
+            SavedLibrary::Kind(kind) if kind == "Mysql" => Self::Mysql(None),
+            SavedLibrary::Kind(_) => Self::Personal,
+            SavedLibrary::Place(SavedPlace::Sqlite(path)) => Self::Sqlite(path),
+            SavedLibrary::Place(SavedPlace::Mssql(server)) => Self::Mssql(server),
+            SavedLibrary::Place(SavedPlace::Mysql(server)) => Self::Mysql(server),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -149,26 +181,67 @@ impl Library {
         match location {
             Location::Local(_) => Self::Personal,
             Location::Sqlite(path) => Self::Sqlite(path.clone()),
-            Location::Mssql(_) => Self::Mssql,
-            Location::Mysql(_) => Self::Mysql,
+            Location::Mssql(_) => Self::Mssql(Some(location.detail())),
+            Location::Mysql(_) => Self::Mysql(Some(location.detail())),
         }
     }
 }
 
-/// Identifies a library for recents. Server connection strings can hold passwords, so all
-/// libraries of one server kind share a key.
+/// Identifies a library for recents. Server connection strings can hold passwords, so server
+/// libraries go by their server and database.
 fn key(location: &Location) -> String {
     match location {
         Location::Local(_) => "personal".into(),
         Location::Sqlite(path) => format!("sqlite:{}", path.display()),
-        Location::Mssql(_) => "mssql".into(),
-        Location::Mysql(_) => "mysql".into(),
+        Location::Mssql(_) => format!("mssql:{}", location.detail()),
+        Location::Mysql(_) => format!("mysql:{}", location.detail()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn server(connection: &str) -> crate::database::Server {
+        crate::database::Server {
+            connection: connection.into(),
+            tls: true,
+        }
+    }
+
+    #[test]
+    fn server_libraries_are_told_apart_by_server_and_database() {
+        let a = Location::Mssql(server("Server=sql01;Database=A;Password=secret"));
+        let b = Location::Mssql(server("Server=sql01;Database=B;Password=secret"));
+        assert_ne!(Library::of(&a), Library::of(&b));
+        let mut state = State::default();
+        state.note_recent(&a, 1);
+        assert!(
+            state.recent(&b).is_empty(),
+            "recents stay with their database"
+        );
+        let json = serde_json::to_string(&Library::of(&a)).unwrap();
+        assert!(!json.contains("secret"), "{json}");
+        assert_eq!(
+            serde_json::from_str::<Library>(&json).unwrap(),
+            Library::of(&a)
+        );
+    }
+
+    #[test]
+    fn libraries_saved_by_earlier_versions_still_load() {
+        let read = |json: &str| serde_json::from_str::<Library>(json).unwrap();
+        assert_eq!(read(r#""Personal""#), Library::Personal);
+        assert_eq!(
+            read(r#"{"Sqlite":"team.sqlite"}"#),
+            Library::Sqlite(PathBuf::from("team.sqlite"))
+        );
+        // Which server they came from is unknown, so they match no open library.
+        assert_eq!(read(r#""Mssql""#), Library::Mssql(None));
+        assert_eq!(read(r#""Mysql""#), Library::Mysql(None));
+        let a = Location::Mssql(server("Server=sql01;Database=A"));
+        assert_ne!(Library::of(&a), Library::Mssql(None));
+    }
     #[test]
     fn recents_are_per_library_unique_and_bounded() {
         let mut state = State::default();

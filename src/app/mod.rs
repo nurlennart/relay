@@ -411,17 +411,17 @@ impl App {
                 database::Location::Sqlite(path.clone())
             }
             // Only a remembered connection string can reopen a server library.
-            state::Library::Mssql if self.db_mssql.remember => {
+            state::Library::Mssql(_) if self.db_mssql.remember => {
                 self.db_kind = LibraryKind::Mssql;
                 self.server_remembered = true;
                 database::Location::Mssql(self.db_mssql.server())
             }
-            state::Library::Mysql if self.db_mysql.remember => {
+            state::Library::Mysql(_) if self.db_mysql.remember => {
                 self.db_kind = LibraryKind::Mysql;
                 self.server_remembered = true;
                 database::Location::Mysql(self.db_mysql.server())
             }
-            state::Library::Mssql | state::Library::Mysql => return,
+            state::Library::Mssql(_) | state::Library::Mysql(_) => return,
         };
         self.pending_location = Some(location.clone());
         self.pending = Some(database::start(location, 0, None, self.ctx.clone()));
