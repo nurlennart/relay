@@ -445,6 +445,10 @@ impl RdpClient {
                 SetParent(self.window.0, parent);
             }
             self.parent = parent;
+            // Holes were cut for the old window's overlays, such as the menu that moved the
+            // session. Forgetting them is not enough: the new window starts whole, or a stale
+            // hole stays open over the remote desktop.
+            let _ = platform::windows::clip(self.window.0, [0, 0], &[]);
             self.holes.clear();
         }
     }
@@ -993,6 +997,41 @@ mod tests {
                 .unwrap();
             assert_eq!(u32::try_from(&value).unwrap(), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn moving_to_another_window_closes_holes_cut_for_the_old_ones_overlays() {
+        use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, GetWindowRgn};
+        let _turn = one_control_at_a_time();
+        let (first, second) = (parent(), parent());
+        let mut connection = Connection::new();
+        connection.host = "localhost".into();
+        let mut client = RdpClient::new(
+            NativeWindow::from_hwnd(first.0),
+            &connection,
+            false,
+            egui::Context::default(),
+        )
+        .unwrap();
+        // Shown without contacting a host, under a menu that hangs over its top.
+        client.started = true;
+        client
+            .place(Some([0, 0, 400, 300]), &[[20, 0, 200, 36]])
+            .unwrap();
+        let region = unsafe { CreateRectRgn(0, 0, 0, 0) };
+        assert_ne!(
+            unsafe { GetWindowRgn(client.window.0, region) },
+            0,
+            "the hole is cut"
+        );
+        // The menu's choice moves the session to its own window in the same frame.
+        client.set_parent(NativeWindow::from_hwnd(second.0));
+        assert_eq!(
+            unsafe { GetWindowRgn(client.window.0, region) },
+            0,
+            "a hole stayed open in the new window"
+        );
+        unsafe { DeleteObject(region) };
     }
 
     #[test]
