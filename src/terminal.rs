@@ -1,6 +1,7 @@
 mod colors;
 mod links;
 mod mouse;
+mod osc;
 mod search;
 
 pub use colors::{Colors, Scheme};
@@ -85,9 +86,21 @@ pub struct Terminal {
     sent: Vec<u8>,
 }
 
+/// What the parser collects for the terminal: replies to send back to the program, and what
+/// it copied or linked.
 #[derive(Default)]
-pub struct Replies(Vec<u8>);
+pub struct Replies(Vec<u8>, osc::Osc);
 impl vt100::Callbacks for Replies {
+    fn copy_to_clipboard(&mut self, _: &mut vt100::Screen, _ty: &[u8], data: &[u8]) {
+        self.1.copy(data);
+    }
+
+    fn unhandled_osc(&mut self, screen: &mut vt100::Screen, params: &[&[u8]]) {
+        if params.first() == Some(&&b"8"[..]) {
+            self.1.hyperlink(screen, params);
+        }
+    }
+
     fn unhandled_csi(
         &mut self,
         screen: &mut vt100::Screen,
@@ -366,6 +379,11 @@ impl Terminal {
         plain_lines(&self.tail.lock().unwrap().0, n)
     }
 
+    /// Text the program copied to the clipboard since this was last asked, with OSC 52.
+    pub fn take_copied(&self) -> Option<String> {
+        self.parser.lock().unwrap().callbacks_mut().1.copied.take()
+    }
+
     /// Focuses the terminal the next time it is shown.
     pub fn focus(&mut self) {
         self.focus_requested = true;
@@ -537,12 +555,22 @@ impl Terminal {
                 })
                 .collect()
         };
+        // A link a program made with OSC 8 comes first: its text need not be an address.
         let hovered_link = pointer.filter(|_| over).and_then(|pos| {
             let (row, col) = cell_at(pos);
-            (view_links.iter()).find(|(_, cells)| cells.contains(&(row as usize, col)))
+            let screen = parser.screen();
+            let made = (parser.callbacks().1.link_at(screen, row, col)).map(|link| {
+                let cells = link.cols.clone().map(|c| (row as usize, c)).collect();
+                (link.url.clone(), cells)
+            });
+            made.or_else(|| {
+                (view_links.iter())
+                    .find(|(_, cells)| cells.contains(&(row as usize, col)))
+                    .cloned()
+            })
         });
         let mut opened_link = false;
-        if let Some((url, _)) = hovered_link {
+        if let Some((url, _)) = &hovered_link {
             if modifiers.command {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
@@ -835,7 +863,7 @@ impl Terminal {
                 paint(run_start, row, &run, run.len(), fg, underline);
             }
         }
-        if let Some((_, cells)) = hovered_link {
+        if let Some((_, cells)) = &hovered_link {
             for (row, col) in cells {
                 let pos = content.min + Vec2::new(*col as f32 * cell.x, *row as f32 * cell.y);
                 let y = pos.y + cell.y - 1.;
@@ -2074,6 +2102,93 @@ mod tests {
             command,
         );
         assert_eq!(look.font_size, *FONT_SIZES.end());
+    }
+
+    #[test]
+    fn programs_copy_but_never_read_the_clipboard() {
+        let (terminal, parser, _ctx) = harness();
+        parser.lock().unwrap().process(b"\x1b]52;c;aMOkbGxv\x07");
+        assert_eq!(terminal.take_copied().as_deref(), Some("hällo"));
+        assert_eq!(terminal.take_copied(), None, "taken once");
+        // Asking for the clipboard gets no answer, and copies nothing.
+        parser.lock().unwrap().process(b"\x1b]52;c;?\x07");
+        assert_eq!(terminal.take_copied(), None);
+        assert!(parser.lock().unwrap().callbacks().0.is_empty());
+    }
+
+    /// The addresses Ctrl+clicking the cell at `row`, `col` opens.
+    fn ctrl_click(ctx: &egui::Context, terminal: &mut Terminal, row: f32, col: f32) -> Vec<String> {
+        let command = egui::Modifiers::COMMAND;
+        let pos = cell_center(ctx, row, col);
+        show_frame(ctx, terminal, vec![egui::Event::PointerMoved(pos)], command);
+        let press = egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: command,
+        };
+        let release = egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: command,
+        };
+        let output = show_frame(ctx, terminal, vec![press], command);
+        show_frame(ctx, terminal, vec![release], command);
+        (output.platform_output.commands.iter())
+            .filter_map(|c| match c {
+                egui::OutputCommand::OpenUrl(url) => Some(url.url.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn links_programs_make_open_from_their_text() {
+        let (mut terminal, parser, ctx) = harness();
+        settle(
+            &ctx,
+            &mut terminal,
+            b"see \x1b]8;id=1;https://example.com/a;b\x07the docs\x1b]8;;\x07 or \
+              \x1b]8;;file://build/etc/hosts\x07hosts\x1b]8;;\x07\r\n",
+        );
+        assert_eq!(
+            ctrl_click(&ctx, &mut terminal, 0., 6.),
+            ["https://example.com/a;b"]
+        );
+        assert!(
+            ctrl_click(&ctx, &mut terminal, 0., 2.).is_empty(),
+            "before the link"
+        );
+        assert!(
+            ctrl_click(&ctx, &mut terminal, 0., 18.).is_empty(),
+            "file links mean nothing here"
+        );
+        // A link that wraps opens from either row.
+        let width = terminal.size.1 as usize;
+        let mut wrapped = b"x".repeat(width - 3);
+        wrapped.extend(b"\x1b]8;;https://example.com/long\x07abcdef\x1b]8;;\x07\r\n");
+        parser.lock().unwrap().process(&wrapped);
+        assert_eq!(
+            ctrl_click(&ctx, &mut terminal, 1., (width - 2) as f32),
+            ["https://example.com/long"]
+        );
+        assert_eq!(
+            ctrl_click(&ctx, &mut terminal, 2., 1.),
+            ["https://example.com/long"]
+        );
+        // Scrolled into the history, the first link still opens from its row.
+        let lines: String = (0..60).map(|i| format!("line {i}\r\n")).collect();
+        parser.lock().unwrap().process(lines.as_bytes());
+        parser
+            .lock()
+            .unwrap()
+            .screen_mut()
+            .set_scrollback(usize::MAX);
+        assert_eq!(
+            ctrl_click(&ctx, &mut terminal, 0., 6.),
+            ["https://example.com/a;b"]
+        );
     }
 
     #[test]

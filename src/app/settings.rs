@@ -349,6 +349,14 @@ impl App {
             .size(12.)
             .color(colors.muted),
         );
+        ui.checkbox(
+            &mut next.programs_copy,
+            "Programs on the server can copy to this computer's clipboard",
+        )
+        .on_hover_text(
+            "As tmux, vim and others do with OSC 52. Relay says when it happens. \
+             Programs can never read the clipboard.",
+        );
         ui.add_space(6.);
         ui.label(RichText::new("Colors").color(colors.muted));
         ui.add_space(2.);

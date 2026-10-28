@@ -64,6 +64,8 @@ pub struct TerminalSettings {
     /// A font file to use instead of the system's monospace font.
     pub font: Option<PathBuf>,
     pub scheme: crate::terminal::Scheme,
+    /// Programs in a terminal may put text on the clipboard (OSC 52), as tmux and vim do.
+    pub programs_copy: bool,
 }
 
 impl Default for TerminalSettings {
@@ -72,6 +74,7 @@ impl Default for TerminalSettings {
             font_size: crate::terminal::FONT_SIZE,
             font: None,
             scheme: Default::default(),
+            programs_copy: true,
         }
     }
 }

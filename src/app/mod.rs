@@ -694,6 +694,31 @@ impl App {
         }
     }
 
+    /// Puts text a program in a terminal copied (OSC 52) on the clipboard, and says so, as a
+    /// server could otherwise change what is pasted next without anyone noticing.
+    fn take_copies(&mut self, ctx: &egui::Context) {
+        let mut copied = None;
+        for s in &self.sessions {
+            if let Some(text) = s.terminal.as_ref().and_then(|t| t.take_copied()) {
+                copied = Some((s.title().into_owned(), text));
+            }
+        }
+        let Some((name, text)) = copied else {
+            return;
+        };
+        if !self.state.terminal.programs_copy {
+            return;
+        }
+        let count = text.chars().count();
+        ctx.copy_text(text);
+        let unit = if count == 1 {
+            "character"
+        } else {
+            "characters"
+        };
+        self.notify(format!("{name} copied {count} {unit} to the clipboard"));
+    }
+
     /// Keeps a font size a terminal zoomed to.
     fn zoomed(&mut self, font_size: f32) {
         if font_size != self.state.terminal.font_size {
@@ -1124,6 +1149,7 @@ impl eframe::App for App {
         for s in &mut self.sessions {
             s.poll(self.parent);
         }
+        self.take_copies(ctx);
         if self.split == self.active {
             self.split = None;
         }
