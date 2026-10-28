@@ -180,6 +180,8 @@ pub struct RdpClient {
     /// Overlay rectangles currently cut out of the viewport.
     holes: Vec<[i32; 4]>,
     display_warning: Option<String>,
+    /// Wakes the window when a display update is due.
+    ctx: egui::Context,
     _apartment: Apartment,
 }
 
@@ -284,6 +286,7 @@ impl RdpClient {
             resized: Instant::now(),
             holes: vec![],
             display_warning: None,
+            ctx: ctx.clone(),
             _apartment: apartment,
         };
         for (name, value) in [
@@ -514,6 +517,8 @@ impl RdpClient {
         const RETRY: Duration = Duration::from_secs(1);
         /// After this many failures in a row, the warning is shown.
         const ATTEMPTS: u32 = 8;
+        /// How long the size must stay the same before the session is asked to match it.
+        const SETTLE: Duration = Duration::from_millis(250);
         if generation != self.generation {
             // A new connection or reconnection starts from the connect-time settings.
             self.generation = generation;
@@ -524,12 +529,16 @@ impl RdpClient {
             return;
         };
         let wanted = (size, scale);
-        if self.display != Display::Fit
-            || !connected
-            || self.current == Some(wanted)
-            || self.resized.elapsed() < Duration::from_millis(250)
-            || Instant::now() < self.retry_at
-        {
+        if self.display != Display::Fit || !connected || self.current == Some(wanted) {
+            return;
+        }
+        // Wait for the size to settle, and between retries. Nothing else may redraw the window
+        // meanwhile, so wake it when the wait is over.
+        let wait = SETTLE
+            .saturating_sub(self.resized.elapsed())
+            .max(self.retry_at.saturating_duration_since(Instant::now()));
+        if !wait.is_zero() {
+            self.ctx.request_repaint_after(wait);
             return;
         }
         // Physical size in millimetres at the window's DPI.
@@ -946,13 +955,14 @@ mod tests {
         let parent = parent();
         let mut connection = Connection::new();
         connection.host = "localhost".into();
-        let mut client = RdpClient::new(
-            NativeWindow::from_hwnd(parent.0),
-            &connection,
-            false,
-            egui::Context::default(),
-        )
-        .unwrap();
+        // Waits must wake the window themselves, since nothing else may redraw it.
+        let ctx = egui::Context::default();
+        let wakes = Arc::new(Mutex::new(vec![]));
+        let seen = wakes.clone();
+        ctx.set_request_repaint_callback(move |info| seen.lock().unwrap().push(info.delay));
+        let last_wake = || wakes.lock().unwrap().pop().expect("a scheduled wake-up");
+        let mut client =
+            RdpClient::new(NativeWindow::from_hwnd(parent.0), &connection, false, ctx).unwrap();
         client.layout([0, 0, 1000, 600]).unwrap();
         client.resized = Instant::now() - Duration::from_secs(1);
         // Pretend the session connected with this size at 100%, without contacting a host.
@@ -977,12 +987,27 @@ mod tests {
         }
         client.sync_display(150, true, 1);
         assert_eq!(client.failures, 7, "retries wait for the retry delay");
+        let wake = last_wake();
+        assert!(
+            wake > Duration::ZERO && wake <= Duration::from_secs(1),
+            "{wake:?}"
+        );
         client.retry_at = Instant::now();
         client.sync_display(150, true, 1);
         assert!(client.display_warning.is_some());
         // A reconnection starts again from the connect-time settings.
         client.sync_display(100, true, 2);
         assert_eq!((client.current, client.failures), (client.initial, 0));
+        // A new size waits until it has settled, then wakes the window to send it.
+        client.retry_at = Instant::now();
+        client.layout([0, 0, 1200, 700]).unwrap();
+        client.sync_display(100, true, 2);
+        assert_eq!(client.failures, 0, "no update while the size settles");
+        let wake = last_wake();
+        assert!(
+            wake > Duration::ZERO && wake <= Duration::from_millis(250),
+            "{wake:?}"
+        );
     }
 
     #[test]
