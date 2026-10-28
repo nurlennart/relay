@@ -448,6 +448,10 @@ impl RdpClient {
             self.holes.clear();
         }
     }
+    /// The control draws itself and wakes the window only for its own events, such as signing
+    /// in or ending, so whether its tab is shown changes nothing.
+    pub fn set_shown(&self, _shown: bool) {}
+
     pub fn display_warning(&self) -> Option<&str> {
         self.display_warning.as_deref()
     }

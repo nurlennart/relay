@@ -370,6 +370,17 @@ impl Session {
         self.terminal.as_ref().is_some_and(|t| t.focused)
             || self.rdp.as_ref().is_some_and(|r| r.focused())
     }
+    /// Tells the session whether it is on screen, so a hidden one's output does not wake the
+    /// window.
+    pub fn set_shown(&self, shown: bool) {
+        if let Some(terminal) = &self.terminal {
+            terminal.set_shown(shown);
+        }
+        if let Some(rdp) = &self.rdp {
+            rdp.set_shown(shown);
+        }
+    }
+
     pub fn is_running(&self) -> bool {
         !self.ended
     }

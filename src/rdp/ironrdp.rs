@@ -13,7 +13,13 @@ use crate::{
 };
 use connection::{Command, Event, Outcome, Settings, Untrusted, Worker};
 use eframe::egui::{self, RichText};
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 /// Relay never saves RDP passwords here, so there is nothing to forget.
 pub const SAVES_PASSWORDS: bool = false;
@@ -100,6 +106,8 @@ pub struct RdpClient {
     offered: Option<String>,
     copied: Option<String>,
     checked: Option<Instant>,
+    /// Whether the tab is on screen, shared with each connection.
+    shown: Arc<AtomicBool>,
 }
 
 impl RdpClient {
@@ -132,6 +140,7 @@ impl RdpClient {
             offered: None,
             copied: None,
             checked: None,
+            shown: Arc::new(AtomicBool::new(true)),
         })
     }
 
@@ -141,6 +150,12 @@ impl RdpClient {
     }
 
     pub fn set_parent(&mut self, _parent: Window) {}
+
+    /// Tells the connection whether its tab is on screen, so a hidden desktop's updates do not
+    /// wake the window.
+    pub fn set_shown(&self, shown: bool) {
+        self.shown.store(shown, Ordering::Relaxed);
+    }
 
     /// Applies what the connection reported since the last frame.
     pub fn poll(&mut self) {
@@ -311,7 +326,7 @@ impl RdpClient {
         };
         self.requested = Some(size);
         self.warning = None;
-        self.stage = match Worker::start(settings, self.ctx.clone()) {
+        self.stage = match Worker::start(settings, self.ctx.clone(), self.shown.clone()) {
             Ok(worker) => Stage::Running {
                 worker,
                 credentials,

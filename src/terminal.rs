@@ -67,6 +67,9 @@ pub struct Terminal {
     drained: Arc<AtomicBool>,
     /// How many bytes of output have arrived, so searches know when to look again.
     output_bytes: Arc<AtomicU64>,
+    /// Whether the terminal is on screen. Output in a hidden one is still read, but does not
+    /// wake the window: it shows when its tab does.
+    shown: Arc<AtomicBool>,
     /// A mouse selection between two visible cells, in drag order.
     selection: Option<((u16, u16), (u16, u16))>,
     focus_requested: bool,
@@ -222,7 +225,9 @@ impl Terminal {
         let tail = Arc::new(Mutex::new((Vec::new(), Instant::now())));
         let drained = Arc::new(AtomicBool::new(false));
         let output_bytes = Arc::new(AtomicU64::new(0));
+        let shown = Arc::new(AtomicBool::new(true));
         let (received, done, counted) = (tail.clone(), drained.clone(), output_bytes.clone());
+        let visible = shown.clone();
         std::thread::spawn(move || {
             let mut bytes = [0u8; 8192];
             loop {
@@ -252,6 +257,8 @@ impl Terminal {
                             // searched.
                             counted.fetch_add(n as u64, Ordering::Relaxed);
                             let response = std::mem::take(&mut parser.callbacks_mut().0);
+                            // A program copying to the clipboard is announced from any tab.
+                            let copied = parser.callbacks().1.copied.is_some();
                             drop(parser);
                             if !response.is_empty() {
                                 let mut writer = replies.lock().unwrap();
@@ -263,7 +270,9 @@ impl Terminal {
                                     break;
                                 }
                             }
-                            if let Some(ctx) = &ctx {
+                            if let Some(ctx) = &ctx
+                                && (copied || visible.load(Ordering::Relaxed))
+                            {
                                 ctx.request_repaint();
                             }
                         } else {
@@ -293,6 +302,7 @@ impl Terminal {
             tail,
             drained,
             output_bytes,
+            shown,
             selection: None,
             focus_requested: true,
             search: None,
@@ -382,6 +392,12 @@ impl Terminal {
     /// Text the program copied to the clipboard since this was last asked, with OSC 52.
     pub fn take_copied(&self) -> Option<String> {
         self.parser.lock().unwrap().callbacks_mut().1.copied.take()
+    }
+
+    /// Tells the terminal whether it is on screen, so output in a hidden one does not wake the
+    /// window.
+    pub fn set_shown(&self, shown: bool) {
+        self.shown.store(shown, Ordering::Relaxed);
     }
 
     /// Focuses the terminal the next time it is shown.
@@ -1530,6 +1546,61 @@ fn color(color: vt100::Color, default: Color32, pal: &Colors) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn hidden_terminals_read_output_without_waking_the_window_but_announce_copies() {
+        let ctx = egui::Context::default();
+        let wakes = Arc::new(Mutex::new(vec![]));
+        let seen = wakes.clone();
+        ctx.set_request_repaint_callback(move |info| seen.lock().unwrap().push(info.delay));
+        // egui reports a wake only when sooner than one already due, so frames pass in
+        // between, as they do in Relay.
+        let frames = || {
+            for _ in 0..3 {
+                let _ = ctx.run(egui::RawInput::default(), |_| {});
+            }
+            wakes.lock().unwrap().clear();
+        };
+        let script = "sleep 0.5; for i in $(seq 0 99); do echo line$i; done; sleep 0.5; \
+                      printf '\\033]52;c;aGk=\\007'; sleep 0.5; echo after; sleep 10";
+        let terminal = Terminal::script(script, Some(ctx.clone()));
+        terminal.set_shown(false);
+        frames();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let wait_for = |done: &dyn Fn() -> bool, what: &str| {
+            while !done() {
+                assert!(Instant::now() < deadline, "{what}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        // Output in a hidden terminal is read and on its screen, without waking anything.
+        wait_for(
+            &|| terminal.screen_text().contains("line99"),
+            "output arrived",
+        );
+        assert!(
+            wakes.lock().unwrap().is_empty(),
+            "hidden output woke the window"
+        );
+        // A copy is announced from a hidden tab too.
+        wait_for(
+            &|| !wakes.lock().unwrap().is_empty(),
+            "the copy woke the window",
+        );
+        assert_eq!(terminal.take_copied().as_deref(), Some("hi"));
+        // Shown again, its output wakes the window as before.
+        terminal.set_shown(true);
+        frames();
+        wait_for(
+            &|| terminal.screen_text().contains("after"),
+            "output after showing",
+        );
+        wait_for(
+            &|| !wakes.lock().unwrap().is_empty(),
+            "shown output woke the window",
+        );
+    }
     #[test]
     fn keys_and_terminal_output() {
         assert_eq!(

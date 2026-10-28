@@ -19,7 +19,11 @@ use ironrdp_tokio::{FramedWrite, TokioFramed, single_sequence_step_read, split_t
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 use tokio::{
@@ -133,7 +137,12 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn start(settings: Settings, ctx: egui::Context) -> Result<Self, String> {
+    /// Starts connecting. Screen updates wake the window only while `shown` is set.
+    pub fn start(
+        settings: Settings,
+        ctx: egui::Context,
+        shown: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
         let (commands, receiver) = unbounded_channel();
         let (events, reports) = mpsc::channel();
         let frame = Arc::new(Mutex::new(Frame::default()));
@@ -141,6 +150,7 @@ impl Worker {
             events,
             ctx,
             frame: frame.clone(),
+            shown,
         };
         std::thread::Builder::new()
             .name("rdp".into())
@@ -178,6 +188,9 @@ struct Link {
     events: mpsc::Sender<Event>,
     ctx: egui::Context,
     frame: Arc<Mutex<Frame>>,
+    /// Whether the desktop is on screen. A hidden one keeps its picture up to date without
+    /// waking the window, and shows it when its tab does.
+    shown: Arc<AtomicBool>,
 }
 
 impl Link {
@@ -649,7 +662,9 @@ async fn session(
                             },
                         );
                     }
-                    link.ctx.request_repaint();
+                    if link.shown.load(Ordering::Relaxed) {
+                        link.ctx.request_repaint();
+                    }
                 }
                 ActiveStageOutput::Terminate(reason) => return Stop::Ended(reason.to_string()),
                 ActiveStageOutput::DeactivateAll => {
@@ -764,6 +779,7 @@ mod tests {
                 ..settings()
             },
             egui::Context::default(),
+            Arc::new(AtomicBool::new(true)),
         )
         .unwrap();
         let (mut socket, _) = listener.accept().unwrap();

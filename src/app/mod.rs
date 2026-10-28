@@ -1166,6 +1166,12 @@ impl eframe::App for App {
         if self.split == self.active {
             self.split = None;
         }
+        // Only sessions on screen wake the window with their output; the others catch up when
+        // their tab is shown.
+        for (index, session) in self.sessions.iter().enumerate() {
+            let shown = [self.active, self.split].contains(&Some(index)) || self.is_detached(index);
+            session.set_shown(shown);
+        }
         // A tab restored from the last run connects when it is first shown.
         for index in [self.active, self.split].into_iter().flatten() {
             if let Some(session) = self.sessions.get_mut(index)
