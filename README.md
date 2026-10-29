@@ -9,6 +9,7 @@ Relay keeps your RDP and SSH connections in a searchable library and opens them 
 ## What you get
 
 - **Remote desktops, terminals and files in one place.** RDP, SSH and SFTP open as tabs. Put two side by side, or move one into its own window.
+- **Remote desktops that fit.** A remote desktop takes the size of its tab and your monitor's scaling, and follows along when you resize or switch monitors, so text stays sharp and the usual size.
 - **Find anything in a keystroke.** Search by name, host, user, group or notes with `Ctrl+K`, or jump straight to a recent connection with `Ctrl+T`.
 - **Works with what you already have.** SSH runs through your system's OpenSSH, so your config, keys, agent and jump hosts just work.
 - **Your passwords stay yours.** Relay never stores remote passwords.
