@@ -468,7 +468,12 @@ impl Connection {
             format!("{}:{}", self.host, self.port)
         }
     }
+    /// Whether any field contains `query`, which is lowercase. The library asks of every
+    /// connection each frame, so an empty search answers without lowercasing anything.
     pub fn matches(&self, query: &str) -> bool {
+        if query.is_empty() {
+            return true;
+        }
         [
             &self.name,
             &self.host,

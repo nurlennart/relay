@@ -39,7 +39,7 @@ impl App {
         let query = query.trim().to_lowercase();
         let recent = self.state.recent(&self.location);
         let mut found: Vec<usize> = (0..self.connections.len())
-            .filter(|&i| query.is_empty() || self.connections[i].matches(&query))
+            .filter(|&i| self.connections[i].matches(&query))
             .collect();
         found.sort_by_cached_key(|&i| {
             let c = &self.connections[i];
