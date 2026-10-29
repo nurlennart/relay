@@ -129,7 +129,11 @@ impl App {
                 self.ctx.clone(),
             ));
         }
-        ctx.request_repaint_after(SYNC_INTERVAL.saturating_sub(self.synced.elapsed()));
+        // A running load, save or slow reload can outlast the deadline; its completion wakes
+        // the window instead of an expired timer that would redraw continuously.
+        if self.pending.is_none() && self.sync.is_none() {
+            ctx.request_repaint_after(SYNC_INTERVAL.saturating_sub(self.synced.elapsed()));
+        }
     }
 
     pub(super) fn import_csv(&mut self) {

@@ -1520,6 +1520,44 @@ fn shared_library_syncs_silently() {
 }
 
 #[test]
+fn an_overdue_reload_waits_without_redrawing() {
+    let ctx = egui::Context::default();
+    let delays = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+    ctx.set_request_repaint_callback({
+        let delays = delays.clone();
+        move |info| delays.lock().unwrap().push(info.delay)
+    });
+    let mut app = test_app(&ctx);
+    app.location = database::Location::Sqlite(std::env::temp_dir().join("relay-unused.sqlite"));
+    // The next reload is scheduled for when it is due.
+    app.synced = Instant::now();
+    app.sync_library(&ctx);
+    assert!(
+        delays
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|d| *d > Duration::from_secs(50))
+    );
+    assert!(!delays.lock().unwrap().is_empty());
+    // A save or a reload that outlasts the interval wakes the window when it ends instead.
+    let overdue = |app: &mut App| {
+        delays.lock().unwrap().clear();
+        app.synced = Instant::now() - Duration::from_secs(61);
+        app.sync_library(&ctx);
+        assert!(delays.lock().unwrap().is_empty());
+    };
+    let (_saving, rx) = std::sync::mpsc::channel();
+    app.pending = Some(rx);
+    overdue(&mut app);
+    app.pending = None;
+    let (_reloading, rx) = std::sync::mpsc::channel();
+    app.sync = Some(rx);
+    overdue(&mut app);
+    assert!(app.sync.is_some());
+}
+
+#[test]
 fn changes_that_repeat_an_id_are_not_saved() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);
