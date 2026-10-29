@@ -2,27 +2,19 @@ mod colors;
 mod links;
 mod mouse;
 mod osc;
+mod process;
 mod search;
 
 pub use colors::{Colors, Scheme};
+use process::Process;
+pub use process::local_shell;
+#[cfg(any(test, feature = "ui-check"))]
+use process::shell;
 
 use crate::model::Connection;
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
-use portable_pty::{ChildKiller, CommandBuilder, ExitStatus, MasterPty, PtySize};
-use std::{
-    io::{Read, Write},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
-    time::{Duration, Instant},
-};
-
-/// How much of the latest output is kept as it arrived, for ssh's parting words.
-const TAIL: usize = 4096;
-/// Where the pseudo-terminal does not report the end of the output (as on Windows), the
-/// output of an exited process is complete once none has arrived for this long.
-const QUIET: Duration = Duration::from_millis(250);
+use portable_pty::CommandBuilder;
+use std::{sync::atomic::Ordering, time::Duration};
 
 /// The font size terminals start with, and the sizes zooming moves between.
 pub const FONT_SIZE: f32 = 14.;
@@ -44,32 +36,15 @@ impl Default for Look {
     }
 }
 
+/// A terminal on screen: the program it runs, and how it is viewed and typed into.
 pub struct Terminal {
-    pub parser: Arc<Mutex<vt100::Parser<Replies>>>,
-    master: Box<dyn MasterPty + Send>,
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    /// Stops the process, which a thread of its own waits for.
-    killer: Box<dyn ChildKiller + Send + Sync>,
-    /// How the process ended, once it has, as its waiting thread saw.
-    exit: Arc<Mutex<Option<std::io::Result<ExitStatus>>>>,
+    process: Process,
     size: (u16, u16),
     pub ended: bool,
     pub focused: bool,
     pub error: Option<String>,
     /// The ssh exit code once the session has ended.
     pub exit_code: Option<u32>,
-    started: Instant,
-    /// When the process was seen to exit.
-    exited: Option<Instant>,
-    /// The latest output as received, before the screen interprets it, and when it arrived.
-    tail: Arc<Mutex<(Vec<u8>, Instant)>>,
-    /// Whether all output has been read.
-    drained: Arc<AtomicBool>,
-    /// How many bytes of output have arrived, so searches know when to look again.
-    output_bytes: Arc<AtomicU64>,
-    /// Whether the terminal is on screen. Output in a hidden one is still read, but does not
-    /// wake the window: it shows when its tab does.
-    shown: Arc<AtomicBool>,
     /// A mouse selection between two visible cells, in drag order.
     selection: Option<((u16, u16), (u16, u16))>,
     focus_requested: bool,
@@ -163,7 +138,8 @@ impl Terminal {
             "sleep 60"
         };
         let terminal = Self::spawn(shell(quiet), None).unwrap();
-        let (parser, counted) = (terminal.parser.clone(), terminal.output_bytes.clone());
+        let process = &terminal.process;
+        let (parser, counted) = (process.parser.clone(), process.output_bytes.clone());
         std::thread::spawn(move || {
             // Let the pseudo-terminal's startup output settle first.
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -175,134 +151,14 @@ impl Terminal {
         terminal
     }
 
-    fn spawn(mut command: CommandBuilder, ctx: Option<egui::Context>) -> Result<Self, String> {
-        // portable-pty rebuilds the environment from the registry, and a REG_SZ value with a
-        // trailing NUL ends the block early, dropping variables such as USERPROFILE. Without
-        // them ssh cannot find its home and exits with 255. Pass Relay's own environment.
-        command.env_clear();
-        for (key, value) in std::env::vars_os() {
-            command.env(key, value);
-        }
-        command.env("TERM", "xterm-256color");
-        let pair = portable_pty::native_pty_system()
-            .openpty(PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| e.to_string())?;
-        let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-        let writer = Arc::new(Mutex::new(
-            pair.master.take_writer().map_err(|e| e.to_string())?,
-        ));
-        let mut child = pair
-            .slave
-            .spawn_command(command)
-            .map_err(|e| e.to_string())?;
-        drop(pair.slave);
-        // Waiting on a thread wakes the window once when the process ends, so nothing has to
-        // check on it while it runs.
-        let killer = child.clone_killer();
-        let exit = Arc::new(Mutex::new(None));
-        let waited = exit.clone();
-        let wake = ctx.clone();
-        std::thread::spawn(move || {
-            let status = child.wait();
-            *waited.lock().unwrap() = Some(status);
-            if let Some(ctx) = wake {
-                ctx.request_repaint();
-            }
-        });
-        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            24,
-            80,
-            5000,
-            Replies::default(),
-        )));
-        let output = parser.clone();
-        let replies = writer.clone();
-        let tail = Arc::new(Mutex::new((Vec::new(), Instant::now())));
-        let drained = Arc::new(AtomicBool::new(false));
-        let output_bytes = Arc::new(AtomicU64::new(0));
-        let shown = Arc::new(AtomicBool::new(true));
-        let (received, done, counted) = (tail.clone(), drained.clone(), output_bytes.clone());
-        let visible = shown.clone();
-        std::thread::spawn(move || {
-            let mut bytes = [0u8; 8192];
-            loop {
-                match reader.read(&mut bytes) {
-                    Ok(0) => break,
-                    Err(e) => {
-                        if let Ok(mut parser) = output.lock() {
-                            parser
-                                .process(format!("\r\nTerminal output ended: {e}\r\n").as_bytes());
-                        }
-                        if let Some(ctx) = &ctx {
-                            ctx.request_repaint();
-                        }
-                        break;
-                    }
-                    Ok(n) => {
-                        if let Ok(mut tail) = received.lock() {
-                            let (latest, at) = &mut *tail;
-                            latest.extend_from_slice(&bytes[..n]);
-                            latest.drain(..latest.len().saturating_sub(TAIL));
-                            *at = Instant::now();
-                        }
-                        if let Ok(mut parser) = output.lock() {
-                            parser.process(&bytes[..n]);
-                            // Counted only once on the screen, under the same lock a search
-                            // reads both with, so it never takes output it has not seen as
-                            // searched.
-                            counted.fetch_add(n as u64, Ordering::Relaxed);
-                            let response = std::mem::take(&mut parser.callbacks_mut().0);
-                            // A program copying to the clipboard is announced from any tab.
-                            let copied = parser.callbacks().1.copied.is_some();
-                            drop(parser);
-                            if !response.is_empty() {
-                                let mut writer = replies.lock().unwrap();
-                                if writer
-                                    .write_all(&response)
-                                    .and_then(|_| writer.flush())
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                            if let Some(ctx) = &ctx
-                                && (copied || visible.load(Ordering::Relaxed))
-                            {
-                                ctx.request_repaint();
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            }
-            done.store(true, Ordering::Release);
-            if let Some(ctx) = &ctx {
-                ctx.request_repaint();
-            }
-        });
+    fn spawn(command: CommandBuilder, ctx: Option<egui::Context>) -> Result<Self, String> {
         Ok(Self {
-            parser,
-            master: pair.master,
-            writer,
-            killer,
-            exit,
+            process: Process::spawn(command, ctx)?,
             size: (24, 80),
             ended: false,
             focused: false,
             error: None,
             exit_code: None,
-            started: Instant::now(),
-            exited: None,
-            tail,
-            drained,
-            output_bytes,
-            shown,
             selection: None,
             focus_requested: true,
             search: None,
@@ -318,16 +174,14 @@ impl Terminal {
 
     pub fn poll(&mut self) {
         if !self.ended {
-            match self.exit.lock().unwrap().take() {
+            match self.process.take_exit() {
                 Some(Ok(status)) => {
                     self.ended = true;
-                    self.exited = Some(Instant::now());
                     self.exit_code = Some(status.exit_code());
                     self.error = Some(format!("Session ended ({status})."));
                 }
                 Some(Err(e)) => {
                     self.ended = true;
-                    self.exited = Some(Instant::now());
                     self.error = Some(format!("Cannot check SSH process: {e}"));
                 }
                 None => {}
@@ -362,42 +216,56 @@ impl Terminal {
         if self.ended {
             return;
         }
-        let bracketed = self.parser.lock().unwrap().screen().bracketed_paste();
+        let bracketed = self
+            .process
+            .parser
+            .lock()
+            .unwrap()
+            .screen()
+            .bracketed_paste();
         let bytes = snippet_bytes(text, run, bracketed);
-        self.parser.lock().unwrap().screen_mut().set_scrollback(0);
-        let mut writer = self.writer.lock().unwrap();
-        if let Err(e) = writer.write_all(&bytes).and_then(|_| writer.flush()) {
+        self.process
+            .parser
+            .lock()
+            .unwrap()
+            .screen_mut()
+            .set_scrollback(0);
+        if let Err(e) = self.process.write(&bytes) {
             self.error = Some(format!("Cannot send terminal input: {e}"));
         }
     }
 
     /// How long the session has been running, or ran before it ended.
     pub fn uptime(&self) -> Duration {
-        self.exited.unwrap_or_else(Instant::now) - self.started
+        self.process.uptime()
     }
 
     /// Whether the ended process's output has all arrived, or has had time to.
     pub fn output_complete(&self) -> bool {
-        let quiet = self.tail.lock().unwrap().1.elapsed() >= QUIET;
-        self.drained.load(Ordering::Acquire)
-            || self.exited.is_some_and(|at| at.elapsed() >= QUIET) && quiet
+        self.process.output_complete()
     }
 
-    /// The last `n` lines of output with text, oldest first, such as ssh's parting words. They
-    /// come from the output as received, so a cleared or redrawn screen does not hide them.
+    /// The last `n` lines of output with text, oldest first, such as ssh's parting words.
     pub fn last_lines(&self, n: usize) -> Vec<String> {
-        plain_lines(&self.tail.lock().unwrap().0, n)
+        self.process.last_lines(n)
     }
 
     /// Text the program copied to the clipboard since this was last asked, with OSC 52.
     pub fn take_copied(&self) -> Option<String> {
-        self.parser.lock().unwrap().callbacks_mut().1.copied.take()
+        self.process
+            .parser
+            .lock()
+            .unwrap()
+            .callbacks_mut()
+            .1
+            .copied
+            .take()
     }
 
     /// Tells the terminal whether it is on screen, so output in a hidden one does not wake the
     /// window.
     pub fn set_shown(&self, shown: bool) {
-        self.shown.store(shown, Ordering::Relaxed);
+        self.process.set_shown(shown);
     }
 
     /// Focuses the terminal the next time it is shown.
@@ -455,15 +323,11 @@ impl Terminal {
         let rows = ((content.height() / cell.y) as u16).clamp(2, 300);
         let cols = ((content.width() / cell.x) as u16).clamp(2, 500);
         if self.size != (rows, cols) {
-            match self.master.resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            }) {
+            match self.process.resize(rows, cols) {
                 Ok(()) => {
                     self.size = (rows, cols);
-                    self.parser
+                    self.process
+                        .parser
                         .lock()
                         .unwrap()
                         .screen_mut()
@@ -509,7 +373,7 @@ impl Terminal {
             }
         }
 
-        let mut parser = self.parser.lock().unwrap();
+        let mut parser = self.process.parser.lock().unwrap();
         let offset = parser.screen().scrollback();
         // vt100 clamps the offset to the history it holds, which reveals the history length.
         parser.screen_mut().set_scrollback(usize::MAX);
@@ -518,7 +382,7 @@ impl Terminal {
 
         // Finding matches reads the whole history, so it happens again only when the query
         // changes or, at most a few times a second, when new output arrives.
-        let output = self.output_bytes.load(Ordering::Relaxed);
+        let output = self.process.output_bytes.load(Ordering::Relaxed);
         let mut reveal = false;
         if let Some(search) = &mut self.search {
             if search.stale(output) {
@@ -978,8 +842,7 @@ impl Terminal {
             self.selection = None;
             #[cfg(test)]
             self.sent.extend(&input);
-            let mut writer = self.writer.lock().unwrap();
-            if let Err(e) = writer.write_all(&input).and_then(|_| writer.flush()) {
+            if let Err(e) = self.process.write(&input) {
                 self.error = Some(format!("Cannot send terminal input: {e}"));
             }
         }
@@ -1210,58 +1073,6 @@ fn each_line(
     screen.set_scrollback(offset);
 }
 
-/// The last `n` lines of `output` with text, without escape sequences or text a carriage
-/// return wrote over.
-fn plain_lines(output: &[u8], n: usize) -> Vec<String> {
-    let mut text = String::new();
-    let output = String::from_utf8_lossy(output);
-    let mut chars = output.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\x1b' => match chars.next() {
-                // Control sequences end with a byte from @ to ~. Those that move the cursor to
-                // a line start a new one: Windows draws line breaks that way.
-                Some('[') => {
-                    if let Some(end) = chars.by_ref().find(|c| ('@'..='~').contains(c))
-                        && matches!(end, 'H' | 'f' | 'd' | 'E' | 'F')
-                    {
-                        text.push('\n');
-                    }
-                }
-                // Operating system commands, such as window titles, end with BEL or ESC and a
-                // backslash.
-                Some(']') => {
-                    while let Some(c) = chars.next() {
-                        if c == '\x1b' {
-                            chars.next();
-                        }
-                        if c == '\x07' || c == '\x1b' {
-                            break;
-                        }
-                    }
-                }
-                _ => {}
-            },
-            '\n' | '\r' => text.push(c),
-            c if c.is_control() => {}
-            c => text.push(c),
-        }
-    }
-    let mut lines: Vec<_> = (text.split('\n').rev())
-        .map(|line| {
-            line.trim_end_matches('\r')
-                .rsplit('\r')
-                .next()
-                .unwrap_or("")
-        })
-        .filter(|line| !line.trim().is_empty())
-        .take(n)
-        .map(String::from)
-        .collect();
-    lines.reverse();
-    lines
-}
-
 #[cfg(test)]
 impl Terminal {
     /// A terminal running `script` with the system shell, waking `ctx` if given.
@@ -1271,54 +1082,13 @@ impl Terminal {
 
     /// The text on screen.
     pub fn screen_text(&self) -> String {
-        self.parser.lock().unwrap().screen().contents()
+        self.process.parser.lock().unwrap().screen().contents()
     }
 
     /// Whether the waiting thread has seen the process end, before anything polled it.
     pub fn exit_seen(&self) -> bool {
-        self.exit.lock().unwrap().is_some()
+        self.process.exit_seen()
     }
-}
-
-/// The shell a local terminal runs, with its arguments: the login shell from `SHELL` on macOS
-/// and Linux (as a login shell on macOS, as Terminal does there), and on Windows PowerShell 7
-/// if installed, then Windows PowerShell, then the command prompt.
-pub fn local_shell() -> (std::path::PathBuf, Vec<&'static str>) {
-    if cfg!(windows) {
-        for program in ["pwsh.exe", "powershell.exe"] {
-            if let Some(path) = crate::platform::find_program(program) {
-                return (path, vec!["-NoLogo"]);
-            }
-        }
-        let cmd =
-            std::env::var_os("ComSpec").unwrap_or_else(|| r"C:\Windows\System32\cmd.exe".into());
-        return (cmd.into(), vec![]);
-    }
-    let shell = std::env::var_os("SHELL")
-        .filter(|s| !s.is_empty())
-        .map(std::path::PathBuf::from)
-        .filter(|p| p.is_file())
-        .unwrap_or_else(|| "/bin/sh".into());
-    let args = if cfg!(target_os = "macos") {
-        vec!["-l"]
-    } else {
-        vec![]
-    };
-    (shell, args)
-}
-
-/// Runs `script` with the system shell, for tests and rendering checks.
-#[cfg(any(test, feature = "ui-check"))]
-fn shell(script: &str) -> CommandBuilder {
-    let mut command;
-    if cfg!(windows) {
-        command = CommandBuilder::new(r"C:\Windows\System32\cmd.exe");
-        command.args(["/d", "/c", script]);
-    } else {
-        command = CommandBuilder::new("/bin/sh");
-        command.args(["-c", script]);
-    }
-    command
 }
 
 /// Copies the selection; Ctrl+C alone interrupts, except on macOS where Cmd is free.
@@ -1379,13 +1149,6 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
         channel(a.g(), b.g()),
         channel(a.b(), b.b()),
     )
-}
-
-impl Drop for Terminal {
-    fn drop(&mut self) {
-        // Its waiting thread collects it once it has stopped.
-        let _ = self.killer.kill();
-    }
 }
 
 fn lock_focus(ui: &egui::Ui, response: &egui::Response) {
@@ -1548,6 +1311,10 @@ fn color(color: vt100::Color, default: Color32, pal: &Colors) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        sync::{Arc, Mutex},
+        time::Instant,
+    };
 
     #[cfg(unix)]
     #[test]
@@ -1752,7 +1519,7 @@ mod tests {
             ("echo H=$HOME; command -v sh", "HOME", "/sh")
         };
         let terminal = run(shell(script));
-        let screen = terminal.parser.lock().unwrap().screen().contents();
+        let screen = terminal.process.parser.lock().unwrap().screen().contents();
         let home = std::env::var(home).unwrap();
         assert!(screen.contains(&format!("H={home}")), "{screen}");
         assert!(
@@ -1773,7 +1540,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let screen = terminal.parser.lock().unwrap().screen().contents();
+        let screen = terminal.process.parser.lock().unwrap().screen().contents();
         assert!(
             screen.contains("relay-test.invalid"),
             "ssh output was lost: {screen:?}"
@@ -1787,7 +1554,7 @@ mod tests {
             "sleep 10"
         };
         let mut terminal = Terminal::spawn(shell(quiet), None).unwrap();
-        let parser = terminal.parser.clone();
+        let parser = terminal.process.parser.clone();
         let ctx = egui::Context::default();
         let mut frame = |events: Vec<egui::Event>, modifiers| {
             ctx.run(
@@ -1856,7 +1623,7 @@ mod tests {
             "sleep 20"
         };
         let terminal = Terminal::spawn(shell(quiet), None).unwrap();
-        let parser = terminal.parser.clone();
+        let parser = terminal.process.parser.clone();
         (terminal, parser, egui::Context::default())
     }
 
@@ -1906,7 +1673,7 @@ mod tests {
     fn settle(ctx: &egui::Context, terminal: &mut Terminal, text: &[u8]) {
         show_frame(ctx, terminal, vec![], egui::Modifiers::NONE);
         std::thread::sleep(std::time::Duration::from_millis(700));
-        let mut parser = terminal.parser.lock().unwrap();
+        let mut parser = terminal.process.parser.lock().unwrap();
         parser.process(b"\x1b[2J\x1b[H");
         parser.process(text);
     }
@@ -2038,6 +1805,7 @@ mod tests {
         assert_eq!(terminal.selection, Some(((0, 0), (0, 4))));
         // Without mouse reporting, a full-screen program's text moves with the wheel's arrows.
         terminal
+            .process
             .parser
             .lock()
             .unwrap()
@@ -2070,26 +1838,26 @@ mod tests {
         // Windows sends output of its own as the process starts; let it be counted first, so
         // the reader is not left waiting for the lock with it.
         std::thread::sleep(Duration::from_millis(700));
-        let parser = terminal.parser.lock().unwrap();
-        let before = terminal.output_bytes.load(Ordering::Relaxed);
+        let parser = terminal.process.parser.lock().unwrap();
+        let before = terminal.process.output_bytes.load(Ordering::Relaxed);
         let deadline = Instant::now() + Duration::from_secs(10);
         // The raw output is kept before the screen is updated, so this is the moment between.
-        while !String::from_utf8_lossy(&terminal.tail.lock().unwrap().0).contains("late") {
+        while !terminal.last_lines(1).concat().contains("late") {
             assert!(Instant::now() < deadline, "the output did not arrive");
             std::thread::sleep(Duration::from_millis(10));
         }
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(
-            terminal.output_bytes.load(Ordering::Relaxed),
+            terminal.process.output_bytes.load(Ordering::Relaxed),
             before,
             "output was counted before it reached the screen"
         );
         drop(parser);
-        while terminal.output_bytes.load(Ordering::Relaxed) == before {
+        while terminal.process.output_bytes.load(Ordering::Relaxed) == before {
             assert!(Instant::now() < deadline, "the output was never counted");
             std::thread::sleep(Duration::from_millis(10));
         }
-        let screen = terminal.parser.lock().unwrap().screen().contents();
+        let screen = terminal.process.parser.lock().unwrap().screen().contents();
         assert!(
             screen.contains("late"),
             "counted but not on the screen: {screen:?}"
@@ -2315,7 +2083,7 @@ mod tests {
     fn ctrl_click_opens_a_link_that_wraps_from_its_second_row() {
         let (mut terminal, _parser, ctx) = harness();
         show_frame(&ctx, &mut terminal, vec![], egui::Modifiers::NONE);
-        let cols = terminal.parser.lock().unwrap().screen().size().1 as usize;
+        let cols = terminal.process.parser.lock().unwrap().screen().size().1 as usize;
         // The address starts ten columns before the end of the first row and goes on below,
         // with another link further down.
         let text = format!(
@@ -2358,18 +2126,6 @@ mod tests {
     }
 
     #[test]
-    fn plain_lines_drop_escapes_and_overwritten_text() {
-        let output = b"\x1b]0;deploy@build\x07\x1b[1;31mfailed\x1b[0m\r\n\
-            Password: \r\n\r\n10%\r50%\r100%\x1b[2J\x1b[5;1Hdeploy@build: Permission denied.\x1b[K";
-        assert_eq!(
-            plain_lines(output, 3),
-            ["Password: ", "100%", "deploy@build: Permission denied."]
-        );
-        assert_eq!(plain_lines(output, 9)[0], "failed");
-        assert!(plain_lines(b"", 2).is_empty());
-    }
-
-    #[test]
     fn last_lines_read_what_the_process_printed_last() {
         let script = if cfg!(windows) {
             "echo Welcome&& echo.&& echo deploy@build: Permission denied."
@@ -2389,68 +2145,5 @@ mod tests {
         }
         // Blank lines between are skipped.
         assert_eq!(terminal.last_lines(2)[0], "Welcome");
-    }
-
-    #[test]
-    fn pty_runs_and_receives_input() {
-        let command = if cfg!(windows) {
-            let mut command = CommandBuilder::new(r"C:\Windows\System32\cmd.exe");
-            command.args(["/d", "/q"]);
-            command
-        } else {
-            CommandBuilder::new("/bin/sh")
-        };
-        let mut terminal = Terminal::spawn(command, None).unwrap();
-        let ready = std::time::Instant::now() + std::time::Duration::from_secs(8);
-        while terminal
-            .parser
-            .lock()
-            .unwrap()
-            .screen()
-            .contents()
-            .is_empty()
-        {
-            assert!(
-                std::time::Instant::now() < ready,
-                "the pseudo-terminal did not start"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        {
-            let mut writer = terminal.writer.lock().unwrap();
-            writer.write_all(b"echo RELAY_PTY_OK\r\n").unwrap();
-            writer.flush().unwrap();
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-        loop {
-            if terminal
-                .parser
-                .lock()
-                .unwrap()
-                .screen()
-                .contents()
-                .lines()
-                .any(|line| line.trim() == "RELAY_PTY_OK")
-            {
-                break;
-            }
-            terminal.poll();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the pseudo-terminal did not return output; screen={:?}, status={:?}",
-                terminal.parser.lock().unwrap().screen().contents(),
-                terminal.error
-            );
-            std::thread::sleep(std::time::Duration::from_millis(30));
-        }
-        terminal
-            .master
-            .resize(PtySize {
-                rows: 30,
-                cols: 100,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .unwrap();
     }
 }
