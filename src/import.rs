@@ -7,13 +7,13 @@ use std::path::{Path, PathBuf};
 
 /// The user's OpenSSH configuration, `~/.ssh/config`.
 pub fn ssh_config_path() -> Option<PathBuf> {
-    crate::platform::home_dir().map(|home| home.join(".ssh").join("config"))
+    dirs::home_dir().map(|home| home.join(".ssh").join("config"))
 }
 
 pub fn read_ssh_config(path: &Path, existing: &[Connection]) -> Result<Import, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-    let home = crate::platform::home_dir().unwrap_or_default();
+    let home = dirs::home_dir().unwrap_or_default();
     ssh_config(&text, &home.to_string_lossy(), existing)
 }
 
