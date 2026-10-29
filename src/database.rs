@@ -1,7 +1,7 @@
 use crate::model::{self, Connection};
 use std::{
     path::PathBuf,
-    sync::mpsc::{self, Receiver},
+    sync::mpsc::{self, Receiver, Sender},
     time::Duration,
 };
 use tokio_util::compat::TokioAsyncWriteCompatExt;
@@ -122,26 +122,42 @@ fn spawn<T: Send + 'static>(
 ) -> Receiver<Result<T, String>> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let result = match &location {
-            Location::Local(path) => match op {
-                Op::Write(connections) => model::save(path, &connections).map(|_| Snapshot {
-                    connections,
-                    revision: revision + 1,
-                }),
-                Op::Read | Op::ReadChanged => model::load(path).map(|connections| Snapshot {
-                    connections,
-                    revision: 0,
-                }),
-            }
-            .map(Some),
-            Location::Sqlite(path) => sqlite(path, revision, op),
-            Location::Mssql(server) => mssql(server, revision, op),
-            Location::Mysql(server) => mysql(server, revision, op),
-        };
-        let _ = tx.send(answer(result));
-        ctx.request_repaint();
+        run(&ctx, tx, || {
+            let result = match &location {
+                Location::Local(path) => match op {
+                    Op::Write(connections) => model::save(path, &connections).map(|_| Snapshot {
+                        connections,
+                        revision: revision + 1,
+                    }),
+                    Op::Read | Op::ReadChanged => model::load(path).map(|connections| Snapshot {
+                        connections,
+                        revision: 0,
+                    }),
+                }
+                .map(Some),
+                Location::Sqlite(path) => sqlite(path, revision, op),
+                Location::Mssql(server) => mssql(server, revision, op),
+                Location::Mysql(server) => mysql(server, revision, op),
+            };
+            answer(result)
+        })
     });
     rx
+}
+
+/// Sends what `job` returns, then wakes the UI to collect it. A panicking job wakes it too,
+/// once its channel has closed, so the stopped worker is noticed without another event.
+fn run<T>(ctx: &eframe::egui::Context, tx: Sender<T>, job: impl FnOnce() -> T) {
+    struct Wake<'a>(&'a eframe::egui::Context);
+    impl Drop for Wake<'_> {
+        fn drop(&mut self) {
+            self.0.request_repaint();
+        }
+    }
+    let _wake = Wake(ctx);
+    // Locals drop in reverse order, so the channel closes before the wake-up.
+    let tx = tx;
+    let _ = tx.send(job());
 }
 
 /// The revision a read compares against: the one given when only a change is wanted, and
@@ -430,6 +446,24 @@ fn mysql(server: &Server, revision: i64, op: Op) -> Result<Option<Snapshot>, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_panicking_worker_wakes_the_ui_after_closing_its_channel() {
+        let ctx = eframe::egui::Context::default();
+        let (tx, rx) = mpsc::channel::<()>();
+        let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+        let woken = std::sync::Arc::new(std::sync::Mutex::new(None));
+        ctx.set_request_repaint_callback({
+            let (rx, woken) = (rx.clone(), woken.clone());
+            move |_| *woken.lock().unwrap() = Some(rx.lock().unwrap().try_recv())
+        });
+        let worker = ctx.clone();
+        let stopped = std::thread::spawn(move || run(&worker, tx, || panic!("worker failed")));
+        assert!(stopped.join().is_err());
+        assert_eq!(
+            *woken.lock().unwrap(),
+            Some(Err(mpsc::TryRecvError::Disconnected))
+        );
+    }
     #[test]
     fn sqlite_rejects_stale_writes_and_roundtrips() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
