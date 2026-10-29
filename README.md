@@ -50,7 +50,7 @@ A file browser beside its terminal, with drag-and-drop uploads and a transfer qu
 
 Remote desktops right in a tab, resizing as you go:
 
-![Two Windows remote desktops side by side in one Relay tab; as the divider is dragged, each desktop resizes to fit its half](assets/remote-desktops.gif)
+![Two Windows remote desktops side by side in one Relay tab; as the divider is dragged and the sidebar collapses, each desktop resizes to fit its space](assets/remote-desktops.gif)
 
 ## Handy shortcuts
 
