@@ -8,7 +8,8 @@ impl App {
             .is_some_and(|s| self.detached.contains(&s.key))
     }
 
-    /// Moves session `index` into its own window.
+    /// Moves session `index` into its own window. A pair it was in is unsplit, and the other
+    /// side stays in front.
     pub(super) fn detach(&mut self, index: usize) {
         let Some(session) = self.sessions.get_mut(index) else {
             return;
@@ -16,12 +17,16 @@ impl App {
         if let Some(terminal) = &mut session.terminal {
             terminal.focus();
         }
-        self.detached.push(session.key);
-        if self.split == Some(index) {
-            self.split = None;
-        }
+        let key = session.key;
+        let partner = self.partner(key);
+        self.detached.push(key);
         if self.active == Some(index) {
-            self.active = self.split.take();
+            self.active = partner.and_then(|k| self.session_index(k));
+        }
+        if let Some(place) = self.tab_of(key)
+            && partner.is_some()
+        {
+            self.unsplit(place);
         }
     }
 
@@ -182,8 +187,8 @@ impl App {
                 match pane {
                     Pane::Beside => {
                         unsplit = ui
-                            .button("Close split")
-                            .on_hover_text("Ctrl+\\ toggles split view")
+                            .button("Unsplit")
+                            .on_hover_text("Show the two sessions as separate tabs again (Ctrl+\\)")
                             .clicked();
                     }
                     Pane::Window => {
@@ -286,14 +291,13 @@ impl App {
         if snippets {
             self.palette = Some(Palette::default());
         }
-        if unsplit {
-            self.split = None;
+        if unsplit && let Some(place) = self.tab_of(self.sessions[index].key) {
+            self.unsplit(place);
         }
+        // The panes may have changed; they are laid out again next frame.
         if companion {
             self.open_companion(index);
-            if pane == Pane::Beside {
-                return None;
-            }
+            return None;
         }
         if attach {
             self.attach(self.sessions[index].key);
@@ -301,7 +305,7 @@ impl App {
         let s = &self.sessions[index];
         ui.add_space(6.);
         if s.browsing {
-            self.files_pane(ui, index, pane);
+            self.files_pane(ui, index);
         } else if s.terminal.is_some() {
             if let Some(status) = s.status() {
                 let (mut now, mut stop) = (false, false);
@@ -384,8 +388,9 @@ pub(super) fn overlays(ctx: &egui::Context) -> Vec<egui::Rect> {
 /// Where a session pane is shown, which decides its header actions.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Pane {
+    /// A tab of its own, or the left side of a pair.
     Main,
-    /// The right side of split view.
+    /// The right side of a pair.
     Beside,
     /// A detached session window.
     Window,

@@ -1,8 +1,7 @@
 use super::{
     library::{Column, GAP, table_columns},
-    sessions::Pane,
     settings::theme_option,
-    tabs::{Kind, drop_index, session_tab},
+    tabs::{Kind, Look, Pair, Tab, drop_index, session_tab},
     *,
 };
 use egui::{Rect, Vec2};
@@ -573,14 +572,15 @@ fn closing_the_tab_in_front_shows_another_tab_rather_than_the_library() {
     app.close_tab(0);
     app.close_tab(1);
     assert_eq!(name(&app).as_deref(), Some("Bravo"), "the tab to the left");
-    // In split view, the other side takes the front.
+    // In a pair, the other side takes the front, as a tab of its own.
     let mut charlie = app.connections[2].clone();
     charlie.name = "Charlie".into();
     app.add_session(session::Session::restored(charlie, false, ctx.clone()));
     app.note_tab();
-    app.split = Some(0);
+    app.open_beside(0);
     app.close_tab(1);
-    assert_eq!((name(&app).as_deref(), app.split), (Some("Bravo"), None));
+    assert_eq!(name(&app).as_deref(), Some("Bravo"));
+    assert_eq!(app.tabs, [Tab::Single(app.sessions[0].key)]);
     // The first tab closing shows the one now first, and the last the library.
     let mut echo = app.connections[0].clone();
     echo.name = "Echo".into();
@@ -592,34 +592,228 @@ fn closing_the_tab_in_front_shows_another_tab_rather_than_the_library() {
     assert_eq!(app.active, None, "no tabs left");
 }
 
-#[test]
-fn split_view_pairs_two_tabs_and_follows_moves() {
-    let ctx = egui::Context::default();
-    let mut app = test_app(&ctx);
+/// An app with a tab for each test connection, Alpha, Bravo and Charlie, and their keys.
+fn app_with_tabs(ctx: &egui::Context) -> (App, [u64; 3]) {
+    let mut app = test_app(ctx);
     for c in app.connections.clone() {
         app.sessions
             .push(session::Session::restored(c, false, ctx.clone()));
     }
+    app.sync_tabs();
+    let keys = [0, 1, 2].map(|i| app.sessions[i].key);
+    (app, keys)
+}
+
+fn pair(left: u64, right: u64, focus: u64) -> Tab {
+    Tab::Pair(Pair {
+        left,
+        right,
+        fraction: SPLIT_MIDDLE,
+        focus,
+    })
+}
+
+#[test]
+fn split_view_joins_two_tabs_into_one() {
+    let ctx = egui::Context::default();
+    let (mut app, [a, b, c]) = app_with_tabs(&ctx);
     app.active = Some(0);
     app.toggle_split();
-    assert_eq!(app.split, Some(1), "the neighbouring tab opens beside");
+    assert_eq!(
+        app.tabs,
+        [pair(a, b, a), Tab::Single(c)],
+        "the next tab joins"
+    );
     app.toggle_split();
-    assert_eq!(app.split, None);
-    app.split_with(0);
-    assert_eq!(app.split, None, "a tab cannot sit beside itself");
-    app.split_with(2);
-    assert_eq!(app.split, Some(2));
-    app.move_session(2, 0);
-    assert_eq!((app.active, app.split), (Some(1), Some(0)));
+    assert_eq!(app.tabs, [Tab::Single(a), Tab::Single(b), Tab::Single(c)]);
+    app.open_beside(0);
+    assert_eq!(app.tabs.len(), 3, "a tab cannot sit beside itself");
+    // The pair takes the place of the tab in front, which stays in front.
+    app.active = Some(2);
+    app.open_beside(0);
+    assert_eq!(app.tabs, [Tab::Single(b), pair(c, a, c)]);
+    assert_eq!(app.active, Some(2));
+    // A session already in a pair joins no other.
+    app.active = Some(1);
+    app.open_beside(0);
+    assert_eq!(app.tabs, [Tab::Single(b), pair(c, a, c)]);
+    // The last tab joins the one before it, on its left.
+    let (mut app, [a, b, c]) = app_with_tabs(&ctx);
     app.active = Some(2);
     app.toggle_split();
-    assert_eq!(app.split, None, "toggling closes an open split");
+    assert_eq!(app.tabs, [Tab::Single(a), pair(b, c, c)]);
+    // Alone, there is nothing to split with.
+    let (mut app, [a, ..]) = app_with_tabs(&ctx);
+    app.close_tab(2);
+    app.close_tab(1);
+    app.active = Some(0);
     app.toggle_split();
+    assert_eq!(app.tabs, [Tab::Single(a)]);
+    assert!(app.notice.is_some());
+}
+
+#[test]
+fn pairs_swap_unsplit_and_move_as_one() {
+    let ctx = egui::Context::default();
+    let (mut app, [a, b, c]) = app_with_tabs(&ctx);
+    app.active = Some(1);
+    app.open_beside(2);
+    app.tabs[1] = Tab::Pair(Pair {
+        fraction: 0.3,
+        ..match app.tabs[1] {
+            Tab::Pair(p) => p,
+            Tab::Single(_) => unreachable!(),
+        }
+    });
+    app.swap_sides(1);
     assert_eq!(
-        app.split,
-        Some(1),
-        "the last tab pairs with the one before it"
+        app.tabs[1],
+        Tab::Pair(Pair {
+            left: c,
+            right: b,
+            fraction: 0.7,
+            focus: b,
+        }),
+        "each side keeps its width and the keyboard stays"
     );
+    app.move_tab(1, 0);
+    assert_eq!(app.tabs[1], Tab::Single(a));
+    app.unsplit(0);
+    assert_eq!(app.tabs, [Tab::Single(c), Tab::Single(b), Tab::Single(a)]);
+    assert_eq!(app.active, Some(1));
+}
+
+#[test]
+fn a_pair_counts_as_one_tab_and_returns_to_its_last_side() {
+    let ctx = egui::Context::default();
+    let (mut app, [a, b, c]) = app_with_tabs(&ctx);
+    app.active = Some(0);
+    app.open_beside(1);
+    // The right side takes the keyboard, then another tab is shown.
+    app.active = Some(1);
+    app.select_tab(2);
+    assert_eq!(app.active, Some(2), "Charlie is the second tab");
+    assert_eq!(app.tabs, [pair(a, b, b), Tab::Single(c)]);
+    app.select_tab(1);
+    assert_eq!(app.active, Some(1), "back to the side used last");
+    app.select_tab(3);
+    assert_eq!(app.active, None, "past the last tab");
+    app.select_tab(0);
+    assert_eq!(app.active, None, "the library");
+}
+
+#[test]
+fn closing_or_detaching_a_side_leaves_the_other_as_a_tab() {
+    let ctx = egui::Context::default();
+    let (mut app, [a, b, c]) = app_with_tabs(&ctx);
+    app.active = Some(1);
+    app.open_beside(2);
+    app.detach(1);
+    assert_eq!(app.tabs, [Tab::Single(a), Tab::Single(b), Tab::Single(c)]);
+    assert_eq!(app.active, Some(2), "the other side stays in front");
+    app.attach(b);
+    app.active = Some(0);
+    app.open_beside(1);
+    app.close_tab(0);
+    assert_eq!(app.tabs, [Tab::Single(b), Tab::Single(c)]);
+    assert_eq!(app.active, Some(0));
+    // Whatever the change to the sessions, every one has exactly one tab.
+    app.sessions.push(session::Session::restored(
+        app.connections[0].clone(),
+        false,
+        ctx.clone(),
+    ));
+    app.sync_tabs();
+    let mut keys: Vec<u64> = app.tabs.iter().flat_map(Tab::keys).collect();
+    keys.sort();
+    let mut sessions: Vec<u64> = app.sessions.iter().map(|s| s.key).collect();
+    sessions.sort();
+    assert_eq!(keys, sessions);
+}
+
+#[test]
+fn pairs_come_back_with_their_order_width_and_side() {
+    let ctx = egui::Context::default();
+    let (mut app, [_, b, c]) = app_with_tabs(&ctx);
+    app.active = Some(2);
+    app.open_beside(1);
+    app.swap_sides(1);
+    if let Tab::Pair(pair) = &mut app.tabs[1] {
+        pair.fraction = 0.4;
+    }
+    assert_eq!(
+        app.tabs[1],
+        Tab::Pair(Pair {
+            left: b,
+            right: c,
+            fraction: 0.4,
+            focus: c
+        })
+    );
+    app.record_tabs();
+    let names: Vec<_> = app.state.open.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["Alpha", "Bravo", "Charlie"]);
+    assert_eq!(
+        app.state.pairs,
+        [state::SavedPair {
+            left: 1,
+            right: 2,
+            fraction: 0.4,
+            right_focused: true,
+        }]
+    );
+    let restore = |state: state::State| {
+        let mut app = App::with(
+            ctx.clone(),
+            PathBuf::from("unused.json"),
+            Ok(vec![]),
+            None,
+            None,
+            None,
+            state,
+        );
+        app.restore_tabs();
+        app
+    };
+    let restored = restore(app.state.clone());
+    let keys: Vec<u64> = restored.sessions.iter().map(|s| s.key).collect();
+    assert_eq!(
+        restored.tabs,
+        [
+            Tab::Single(keys[0]),
+            Tab::Pair(Pair {
+                left: keys[1],
+                right: keys[2],
+                fraction: 0.4,
+                focus: keys[2],
+            })
+        ]
+    );
+    assert_eq!(restored.active, Some(2));
+    // Pairs that do not fit the saved tabs are dropped, and state from before pairs has none.
+    let mut broken = app.state.clone();
+    broken.pairs = vec![
+        state::SavedPair {
+            left: 0,
+            right: 7,
+            ..Default::default()
+        },
+        state::SavedPair {
+            left: 1,
+            right: 1,
+            ..Default::default()
+        },
+    ];
+    assert!(
+        restore(broken)
+            .tabs
+            .iter()
+            .all(|t| matches!(t, Tab::Single(_)))
+    );
+    let old: state::State = serde_json::from_str(r#"{"open": [], "active_tab": null}"#).unwrap();
+    assert!(old.pairs.is_empty());
+    let saved: state::SavedPair = serde_json::from_str(r#"{"left": 0, "right": 1}"#).unwrap();
+    assert_eq!(saved.fraction, 0.5);
 }
 
 #[test]
@@ -677,18 +871,7 @@ fn split_divider_drags_and_returns_to_the_middle_on_double_click() {
 }
 
 #[test]
-fn moving_tabs_keeps_every_index_consistent() {
-    let items = ['a', 'b', 'c', 'd'];
-    for from in 0..items.len() {
-        for to in 0..items.len() {
-            let mut after = items.to_vec();
-            let item = after.remove(from);
-            after.insert(to, item);
-            for (index, item) in items.iter().enumerate() {
-                assert_eq!(after[moved(index, from, to)], *item, "{from} -> {to}");
-            }
-        }
-    }
+fn dragged_tabs_drop_between_the_others() {
     let tab = |x: f32| Rect::from_min_size(egui::pos2(x, 0.), Vec2::new(100., 36.));
     let tabs = [tab(0.), tab(110.), tab(220.)];
     assert_eq!(drop_index(&tabs, 0, 10.), 0);
@@ -751,7 +934,7 @@ fn tab_close_is_inside_tab_and_does_not_select_it() {
                                 &first,
                                 Kind::Session,
                                 session::TabState::Open,
-                                true,
+                                Look::Tab { selected: true },
                             );
                             assert!(session.response.rect.contains_rect(session.inner.1.rect));
                             assert!(!session.inner.0.rect.intersects(session.inner.1.rect));
@@ -760,7 +943,7 @@ fn tab_close_is_inside_tab_and_does_not_select_it() {
                                 &second,
                                 Kind::Files,
                                 session::TabState::Waiting,
-                                false,
+                                Look::Tab { selected: false },
                             );
                             assert_eq!(
                                 session.response.rect.center().y,
@@ -981,7 +1164,7 @@ fn files_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
             ..Default::default()
         },
         |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.files_pane(ui, 0, Pane::Main));
+            egui::CentralPanel::default().show(ctx, |ui| app.files_pane(ui, 0));
         },
     );
 }
@@ -1121,13 +1304,32 @@ fn file_tabs_are_remembered_as_browsers() {
     // A terminal's Files button pairs it with the open browser instead of opening another.
     app.active = Some(0);
     app.open_companion(0);
+    let keys = (app.sessions[0].key, app.sessions[1].key);
+    assert_eq!(app.sessions.len(), 2);
     assert_eq!(
-        (app.active, app.split, app.sessions.len()),
-        (Some(0), Some(1), 2)
+        app.tabs,
+        [Tab::Pair(Pair {
+            left: keys.0,
+            right: keys.1,
+            fraction: SPLIT_MIDDLE,
+            focus: keys.0
+        })]
     );
-    app.split = None;
+    // From the pair, the button moves to the other side.
+    app.open_companion(0);
+    assert_eq!((app.active, app.tabs.len()), (Some(1), 1));
+    app.unsplit(0);
     app.open_companion(1);
-    assert_eq!((app.active, app.split), (Some(1), Some(0)));
+    assert_eq!(app.active, Some(1));
+    assert_eq!(
+        app.tabs,
+        [Tab::Pair(Pair {
+            left: keys.1,
+            right: keys.0,
+            fraction: SPLIT_MIDDLE,
+            focus: keys.1
+        })]
+    );
 }
 
 #[test]

@@ -335,7 +335,8 @@ git pull && ./deploy.sh",
                 terminal,
                 app.ctx.clone(),
             ));
-            app.split = Some(1);
+            let keys = (app.sessions[0].key, app.sessions[1].key);
+            app.join(keys.0, keys.1, keys.0);
         }
         if std::env::var_os("RELAY_UI_PALETTE").is_some() {
             app.palette = Some(Palette::default());
@@ -608,19 +609,21 @@ fn files(app: &mut App) {
             terminal,
             app.ctx.clone(),
         ));
-        app.active = Some(app.sessions.len() - 1);
-        app.split = Some(app.sessions.len());
-    } else {
-        app.active = Some(app.sessions.len());
     }
+    app.active = Some(app.sessions.len());
     app.sessions.push(session::Session::demo_files(
         connection,
         browser,
         app.ctx.clone(),
     ));
+    if std::env::var_os("RELAY_UI_SPLIT").is_some() {
+        let count = app.sessions.len();
+        let keys = (app.sessions[count - 2].key, app.sessions[count - 1].key);
+        app.active = Some(count - 2);
+        app.join(keys.0, keys.1, keys.0);
+    }
     // Show the library with the tabs open beside it.
     if std::env::var_os("RELAY_UI_LIBRARY").is_some() {
         app.active = None;
-        app.split = None;
     }
 }
