@@ -1209,6 +1209,34 @@ fn file_browser_keys_select_ranges_and_ask_before_deleting() {
 }
 
 #[test]
+fn renaming_a_name_without_an_extension_selects_all_of_it() {
+    let ctx = egui::Context::default();
+    let mut app = files_app(&ctx);
+    let mut c = app.connections[0].clone();
+    c.protocol = Protocol::Ssh;
+    let entry = crate::sftp::Entry {
+        name: "日本語".into(),
+        dir: false,
+        link: false,
+        special: false,
+        size: 10,
+        modified: Some(1_700_000_000),
+        mode: Some(0o100_644),
+    };
+    let browser = crate::sftp::Browser::demo("/srv", vec![entry]);
+    app.sessions[0] = session::Session::demo_files(c, browser, ctx.clone());
+    let none = egui::Modifiers::NONE;
+    files_frame(&mut app, &ctx, vec![]);
+    files_frame(&mut app, &ctx, vec![key(egui::Key::End, none)]);
+    files_frame(&mut app, &ctx, vec![key(egui::Key::F2, none)]);
+    files_frame(&mut app, &ctx, vec![]);
+    files_frame(&mut app, &ctx, vec![egui::Event::Text("x".into())]);
+    files_frame(&mut app, &ctx, vec![key(egui::Key::Enter, none)]);
+    let selected: Vec<_> = files(&app).view.selected.iter().cloned().collect();
+    assert_eq!(selected, ["x"]);
+}
+
+#[test]
 fn f2_renames_in_place_and_keeps_the_extension() {
     let ctx = egui::Context::default();
     let mut app = files_app(&ctx);
@@ -1843,4 +1871,32 @@ fn a_chosen_side_keeps_the_keyboard_and_a_click_moves_it() {
     assert_eq!(keyboard(&app), [true, false]);
     let left = app.sessions[0].key;
     assert!(matches!(app.tabs[0], Tab::Pair(pair) if pair.focus == left));
+}
+
+#[test]
+fn a_library_worker_that_stops_mid_save_returns_the_edit() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let mut edited = app.connections[0].clone();
+    edited.name = "Alpha prime".into();
+    let (stopped, rx) = std::sync::mpsc::channel();
+    drop(stopped);
+    app.pending = Some(rx);
+    app.pending_save = true;
+    app.pending_editor = Some(edited.clone());
+    app.poll_storage();
+    assert!(matches!(&app.modal, Modal::Editor(c) if *c == edited));
+    assert!(!app.pending_save && app.pending.is_none());
+    assert!(app.error.as_deref().is_some_and(|e| e.contains("stopped")));
+}
+
+#[test]
+fn native_desktops_take_physical_pixels_with_overlays_cut_out() {
+    let rect = Rect::from_min_size(egui::pos2(10., 20.), Vec2::new(100., 50.));
+    let menu = Rect::from_min_size(egui::pos2(100., 30.), Vec2::new(40., 10.));
+    let elsewhere = Rect::from_min_size(egui::pos2(300., 300.), Vec2::new(5., 5.));
+    let (area, holes) = native_area(rect, 2., &[menu, elsewhere]);
+    assert_eq!(area, [20, 40, 200, 100]);
+    // Only the part of the menu over the desktop, from the desktop's corner.
+    assert_eq!(holes, [[180, 20, 20, 20]]);
 }

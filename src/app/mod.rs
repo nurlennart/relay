@@ -1288,39 +1288,21 @@ impl eframe::App for App {
         let windows = self.detached_windows(ctx);
         let covered = self.covered();
         let ppp = ctx.pixels_per_point();
-        let pixels = |r: egui::Rect| {
-            [
-                (r.min.x * ppp).round() as i32,
-                (r.min.y * ppp).round() as i32,
-                (r.width() * ppp).round() as i32,
-                (r.height() * ppp).round() as i32,
-            ]
-        };
         // Toasts, tooltips and menus float over remote desktops; cut them out of each.
         let floating = overlays(ctx);
-        let holes = |session: egui::Rect| -> Vec<[i32; 4]> {
-            floating
-                .iter()
-                .map(|r| r.intersect(session))
-                .filter(|r| r.is_positive())
-                .map(|r| {
-                    let [x, y, w, h] = pixels(r);
-                    let [sx, sy, ..] = pixels(session);
-                    [x - sx, y - sy, w, h]
-                })
-                .collect()
-        };
         for (i, s) in self.sessions.iter_mut().enumerate() {
             // Detached windows are separate from the main window's dialogs.
             if let Some((_, rect, holes)) = windows.iter().find(|(index, ..)| *index == i) {
                 s.place_around(Some(*rect), holes);
                 continue;
             }
-            let rect = session_rects
-                .iter()
-                .find(|(index, _)| *index == i && !covered)
-                .map(|(_, rect)| *rect);
-            s.place_around(rect.map(pixels), &rect.map(holes).unwrap_or_default());
+            match (session_rects.iter()).find(|(index, _)| *index == i && !covered) {
+                Some((_, rect)) => {
+                    let (area, holes) = native_area(*rect, ppp, &floating);
+                    s.place_around(Some(area), &holes);
+                }
+                None => s.place(None),
+            }
         }
     }
 }

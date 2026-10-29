@@ -21,66 +21,62 @@ impl App {
     }
 
     pub(super) fn poll_storage(&mut self) {
-        let result = self.pending.as_ref().map(|rx| rx.try_recv());
-        if let Some(result) = result {
-            match result {
-                Ok(Ok(snapshot)) => {
-                    self.connections = snapshot.connections;
-                    self.revision = snapshot.revision;
-                    self.storage_ok = true;
-                    let mut remember_error = None;
-                    let saved = self.pending_save;
-                    let opened = self.pending_location.as_ref().map(|l| l.label());
-                    if let Some(location) = self.pending_location.take() {
-                        remember_error = self.remember_server(&location).err();
-                        self.state.use_library(&location);
-                        self.save_state();
-                        self.location = location;
-                        if matches!(self.modal, Modal::Library) {
-                            self.modal = Modal::None;
+        let result = match self.pending.as_ref().map(|rx| rx.try_recv()) {
+            None | Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return,
+            Some(Ok(result)) => result,
+            // A worker that stopped is a failure like any other, so a rejected edit returns.
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => Err(
+                "The library worker stopped unexpectedly. Your changes were not confirmed.".into(),
+            ),
+        };
+        match result {
+            Ok(snapshot) => {
+                self.connections = snapshot.connections;
+                self.revision = snapshot.revision;
+                self.storage_ok = true;
+                let mut remember_error = None;
+                let saved = self.pending_save;
+                let opened = self.pending_location.as_ref().map(|l| l.label());
+                if let Some(location) = self.pending_location.take() {
+                    remember_error = self.remember_server(&location).err();
+                    self.state.use_library(&location);
+                    self.save_state();
+                    self.location = location;
+                    if matches!(self.modal, Modal::Library) {
+                        self.modal = Modal::None;
+                    }
+                    self.group = None;
+                    self.filter = Filter::All;
+                    for form in [&mut self.db_mssql, &mut self.db_mysql] {
+                        if !form.remember {
+                            form.connection.clear();
                         }
-                        self.group = None;
-                        self.filter = Filter::All;
-                        for form in [&mut self.db_mssql, &mut self.db_mysql] {
-                            if !form.remember {
-                                form.connection.clear();
-                            }
-                        }
-                    }
-                    if self.pending_save {
-                        self.recovery = None;
-                    }
-                    self.pending_save = false;
-                    self.pending_editor = None;
-                    self.pending = None;
-                    self.error = remember_error;
-                    self.forget_removed();
-                    // Routine saves stay silent; loads say what happened.
-                    if let Some(opened) = opened {
-                        self.notify(format!("Opened the {opened}."));
-                    } else if !saved {
-                        self.notify("Library refreshed.");
                     }
                 }
-                Ok(Err(e)) => {
-                    self.pending_save = false;
-                    self.error = Some(e);
-                    self.pending = None;
-                    self.pending_location = None;
-                    // Reopen the editor so a rejected edit is not lost.
-                    if let Some(editor) = self.pending_editor.take() {
-                        self.modal = Modal::Editor(editor);
-                    }
+                if saved {
+                    self.recovery = None;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.error = Some(
-                        "The library worker stopped unexpectedly. Your changes were not confirmed."
-                            .into(),
-                    );
-                    self.pending = None;
-                    self.pending_location = None;
+                self.pending_save = false;
+                self.pending_editor = None;
+                self.pending = None;
+                self.error = remember_error;
+                self.forget_removed();
+                // Routine saves stay silent; loads say what happened.
+                if let Some(opened) = opened {
+                    self.notify(format!("Opened the {opened}."));
+                } else if !saved {
+                    self.notify("Library refreshed.");
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            Err(e) => {
+                self.pending_save = false;
+                self.error = Some(e);
+                self.pending = None;
+                self.pending_location = None;
+                // Reopen the editor so a rejected edit is not lost.
+                if let Some(editor) = self.pending_editor.take() {
+                    self.modal = Modal::Editor(editor);
+                }
             }
         }
     }

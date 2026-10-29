@@ -74,10 +74,6 @@ pub fn data_dir() -> PathBuf {
         .join(name)
 }
 
-pub fn home_dir() -> Option<PathBuf> {
-    dirs::home_dir()
-}
-
 /// Where downloads go unless the person picks another folder.
 pub fn downloads_dir() -> Option<PathBuf> {
     dirs::download_dir().or_else(dirs::home_dir)

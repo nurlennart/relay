@@ -295,25 +295,22 @@ impl Session {
     fn restart(&mut self, mut connection: Connection) -> Result<(), String> {
         if self.local {
             self.terminal = Some(Terminal::local(self.ctx.clone())?);
-            self.error = None;
-            self.ended = false;
-            self.started = Instant::now();
-            return Ok(());
-        }
-        connection.validate()?;
-        if self.browsing {
-            // A reconnected browser returns to the folder it showed.
-            let folder = self
-                .files
-                .as_ref()
-                .map(|f| f.path.clone())
-                .filter(|p| !p.is_empty());
-            self.files = Some(Browser::open(&connection, self.ctx.clone(), folder));
         } else {
-            self.terminal = terminal_for(&connection, &self.ctx)?;
+            connection.validate()?;
+            if self.browsing {
+                // A reconnected browser returns to the folder it showed.
+                let folder = self
+                    .files
+                    .as_ref()
+                    .map(|f| f.path.clone())
+                    .filter(|p| !p.is_empty());
+                self.files = Some(Browser::open(&connection, self.ctx.clone(), folder));
+            } else {
+                self.terminal = terminal_for(&connection, &self.ctx)?;
+            }
+            self.rdp = None;
+            self.connection = connection;
         }
-        self.rdp = None;
-        self.connection = connection;
         self.error = None;
         self.ended = false;
         self.started = Instant::now();

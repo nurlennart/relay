@@ -133,25 +133,8 @@ impl App {
                 }
             };
             if let (Some(_), Some((rect, ppp, floating))) = (window, shown) {
-                let pixels = |r: egui::Rect| {
-                    [
-                        (r.min.x * ppp).round() as i32,
-                        (r.min.y * ppp).round() as i32,
-                        (r.width() * ppp).round() as i32,
-                        (r.height() * ppp).round() as i32,
-                    ]
-                };
-                let [sx, sy, ..] = pixels(rect);
-                let holes = floating
-                    .iter()
-                    .map(|r| r.intersect(rect))
-                    .filter(|r| r.is_positive())
-                    .map(|r| {
-                        let [x, y, w, h] = pixels(r);
-                        [x - sx, y - sy, w, h]
-                    })
-                    .collect();
-                placed.push((index, pixels(rect), holes));
+                let (area, holes) = native_area(rect, ppp, &floating);
+                placed.push((index, area, holes));
             }
         }
         placed
@@ -435,6 +418,33 @@ pub(super) fn overlays(ctx: &egui::Context) -> Vec<egui::Rect> {
             .filter_map(|layer| memory.area_rect(layer.id))
             .collect()
     })
+}
+
+/// `rect` in physical pixels, for a native remote desktop window, and the parts of `floating`
+/// over it, relative to its corner, to cut out of it.
+pub(super) fn native_area(
+    rect: egui::Rect,
+    ppp: f32,
+    floating: &[egui::Rect],
+) -> ([i32; 4], Vec<[i32; 4]>) {
+    let pixels = |r: egui::Rect| {
+        [
+            (r.min.x * ppp).round() as i32,
+            (r.min.y * ppp).round() as i32,
+            (r.width() * ppp).round() as i32,
+            (r.height() * ppp).round() as i32,
+        ]
+    };
+    let [sx, sy, ..] = pixels(rect);
+    let holes = (floating.iter())
+        .map(|r| r.intersect(rect))
+        .filter(|r| r.is_positive())
+        .map(|r| {
+            let [x, y, w, h] = pixels(r);
+            [x - sx, y - sy, w, h]
+        })
+        .collect();
+    (pixels(rect), holes)
 }
 
 /// Where a session pane is shown, which decides its header actions.

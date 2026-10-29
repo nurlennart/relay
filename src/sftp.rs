@@ -197,7 +197,7 @@ impl Transfer {
 
     /// The fraction copied, once the size is known.
     pub fn fraction(&self) -> Option<f32> {
-        match (self.state.clone(), self.total) {
+        match (&self.state, self.total) {
             (TransferState::Done, _) => Some(1.),
             (_, Some(0)) => Some(0.),
             (_, Some(total)) => Some((self.done as f64 / total as f64).min(1.) as f32),

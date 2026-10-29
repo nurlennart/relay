@@ -1012,7 +1012,7 @@ fn row(
             let stem = text
                 .rfind('.')
                 .filter(|i| *i > 0 && !entry.dir)
-                .unwrap_or(text.chars().count());
+                .unwrap_or(text.len());
             let stem = text[..stem].chars().count();
             if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), field.id) {
                 state
@@ -1647,7 +1647,7 @@ fn os_drops(
     }
     let folder = target
         .filter(|_| pointer.is_some())
-        .unwrap_or(files.path.clone());
+        .unwrap_or_else(|| files.path.clone());
     if hovering {
         let painter = ui.ctx().layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
