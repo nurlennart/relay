@@ -1686,3 +1686,14 @@ fn a_library_worker_that_stops_mid_save_returns_the_edit() {
     assert!(!app.pending_save && app.pending.is_none());
     assert!(app.error.as_deref().is_some_and(|e| e.contains("stopped")));
 }
+
+#[test]
+fn native_desktops_take_physical_pixels_with_overlays_cut_out() {
+    let rect = Rect::from_min_size(egui::pos2(10., 20.), Vec2::new(100., 50.));
+    let menu = Rect::from_min_size(egui::pos2(100., 30.), Vec2::new(40., 10.));
+    let elsewhere = Rect::from_min_size(egui::pos2(300., 300.), Vec2::new(5., 5.));
+    let (area, holes) = native_area(rect, 2., &[menu, elsewhere]);
+    assert_eq!(area, [20, 40, 200, 100]);
+    // Only the part of the menu over the desktop, from the desktop's corner.
+    assert_eq!(holes, [[180, 20, 20, 20]]);
+}
