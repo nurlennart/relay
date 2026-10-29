@@ -49,7 +49,10 @@ impl App {
                 .show(ui, |ui| {
                     ui.add_space(12.);
                     match self.settings_tab {
-                        SettingsTab::Appearance => theme_picker(ui, &mut choice),
+                        SettingsTab::Appearance => {
+                            theme_picker(ui, &mut choice);
+                            zoom_picker(ui);
+                        }
                         SettingsTab::Terminal => self.terminal_settings(ui),
                         SettingsTab::Library => action = self.library_settings(ui),
                         SettingsTab::Snippets => {
@@ -729,6 +732,37 @@ fn theme_picker(ui: &mut egui::Ui, choice: &mut theme::Theme) {
     }
 }
 
+/// The workspace zoom, which the zoom keys also change outside a terminal.
+fn zoom_picker(ui: &mut egui::Ui) {
+    let colors = theme::palette(ui.ctx());
+    let ctx = ui.ctx().clone();
+    let zoom = ctx.zoom_factor();
+    let percent = |zoom: f32| format!("{:.0}%", zoom * 100.);
+    ui.add_space(16.);
+    ui.horizontal(|ui| {
+        ui.label("Zoom");
+        egui::ComboBox::from_id_salt("zoom")
+            .selected_text(percent(zoom))
+            .show_ui(ui, |ui| {
+                for step in [0.5, 0.75, 0.9, 1., 1.1, 1.25, 1.5, 1.75, 2.] {
+                    if ui.selectable_label(zoom == step, percent(step)).clicked() {
+                        ctx.set_zoom_factor(step);
+                    }
+                }
+            });
+        if zoom != 1. && ui.button("Reset").clicked() {
+            ctx.set_zoom_factor(1.);
+        }
+    });
+    ui.label(
+        RichText::new(format!(
+            "{WINDOW_ZOOM_KEYS} also zoom outside a terminal, and {ZOOM_RESET_KEY} resets it."
+        ))
+        .size(12.)
+        .color(colors.muted),
+    );
+}
+
 /// Relay's version, with the commit it was built from when that is known, such as
 /// `Relay 0.4.0 · a0bb71f`.
 pub(super) fn version() -> String {
@@ -743,6 +777,12 @@ const ZOOM_KEYS: &str = if cfg!(target_os = "macos") {
     "Cmd+Plus and Cmd+Minus (or Cmd with the scroll wheel)"
 } else {
     "Ctrl+Plus and Ctrl+Minus (or Ctrl with the scroll wheel)"
+};
+/// The keys that zoom the workspace, outside a terminal.
+const WINDOW_ZOOM_KEYS: &str = if cfg!(target_os = "macos") {
+    "Cmd+Plus and Cmd+Minus"
+} else {
+    "Ctrl+Plus and Ctrl+Minus"
 };
 const ZOOM_RESET_KEY: &str = if cfg!(target_os = "macos") {
     "Cmd+0"

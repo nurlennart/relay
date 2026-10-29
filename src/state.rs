@@ -58,6 +58,8 @@ pub struct State {
     /// The restored (not maximized) window size in points.
     pub window: Option<[f32; 2]>,
     pub maximized: bool,
+    /// The workspace zoom, where 1 is 100%; `None` until it is changed.
+    pub zoom: Option<f32>,
     pub sidebar_collapsed: Option<bool>,
     pub library: Library,
     /// Server libraries opened without TLS; the default is to require it.
@@ -266,6 +268,20 @@ mod tests {
         assert_eq!(read(r#""Mysql""#), Library::Mysql(None));
         let a = Location::Mssql(server("Server=sql01;Database=A"));
         assert_ne!(Library::of(&a), Library::Mssql(None));
+    }
+
+    #[test]
+    fn zoom_is_kept_and_absent_from_earlier_files() {
+        let read = |json: &str| serde_json::from_str::<State>(json).unwrap();
+        assert_eq!(read(r#"{"maximized":true}"#).zoom, None);
+        let state = State {
+            zoom: Some(1.25),
+            ..State::default()
+        };
+        assert_eq!(
+            read(&serde_json::to_string(&state).unwrap()).zoom,
+            Some(1.25)
+        );
     }
     #[test]
     fn recents_are_per_library_unique_and_bounded() {

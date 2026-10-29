@@ -248,6 +248,10 @@ impl App {
         let font_error = set_fonts(&cc.egui_ctx, saved.terminal.font.as_deref()).err();
         theme::load(&theme::path()).apply(&cc.egui_ctx);
         apply_style(&cc.egui_ctx);
+        // Within the range the zoom keys reach, in case the file was edited by hand.
+        if let Some(zoom) = saved.zoom {
+            cc.egui_ctx.set_zoom_factor(zoom.clamp(0.2, 5.));
+        }
         let path = model::data_path();
         let loaded = model::load(&path);
         let parent = platform::Window::of(cc);
@@ -1165,12 +1169,20 @@ impl eframe::App for App {
         if let Some(connection) = self.browse_request.take() {
             self.open_session(connection, true, false, state::Library::of(&self.location));
         }
+        // Remember the zoom, whether set in Settings or with the keys.
+        let zoom = ctx.zoom_factor();
+        if self.state.zoom.unwrap_or(1.) != zoom {
+            self.state.zoom = (zoom != 1.).then_some(zoom);
+            self.save_state();
+        }
         // Remember the restored window size; a maximized window keeps the size it returns to.
+        // The window opens at its size before zooming, which the zoomed points are scaled back to.
         let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized));
         if let Some(maximized) = maximized {
             self.state.maximized = maximized;
             if !maximized && let Some(inner) = inner {
-                self.state.window = Some([inner.width().round(), inner.height().round()]);
+                let size = inner.size() * zoom;
+                self.state.window = Some([size.x.round(), size.y.round()]);
             }
         }
         #[cfg(feature = "ui-check")]

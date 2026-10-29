@@ -8,6 +8,7 @@ pub fn seed(app: &mut App) {
     }
     app.state = state::State::default();
     app.state_path = None;
+    app.ctx.set_zoom_factor(1.);
     if let Ok(name) = std::env::var("RELAY_UI_THEME")
         && let Some(theme) = theme::Theme::ALL
             .into_iter()
