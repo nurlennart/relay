@@ -361,8 +361,9 @@ impl App {
                 .on_hover_text("Keep this connection in the library")
                 .clicked();
         }
-        // A terminal and its files open side by side.
-        let shell = s.connection.protocol == Protocol::Ssh && s.terminal.is_some() && !s.local;
+        let terminal = s.connection.protocol == Protocol::Ssh && s.terminal.is_some();
+        // A terminal and its files open side by side; a local shell has no server to browse.
+        let shell = terminal && !s.local;
         if s.browsing {
             actions.companion = ui
                 .button("Terminal")
@@ -375,7 +376,7 @@ impl App {
                 .clicked();
         }
         // The snippet palette opens over the main window's active tab.
-        if shell && s.is_running() && pane != Pane::Window {
+        if terminal && s.is_running() && pane != Pane::Window {
             actions.snippets = ui
                 .button("Snippets")
                 .on_hover_text("Saved commands · Ctrl+Shift+P")

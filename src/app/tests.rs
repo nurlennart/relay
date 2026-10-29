@@ -1558,6 +1558,22 @@ fn an_overdue_reload_waits_without_redrawing() {
 }
 
 #[test]
+fn local_shells_offer_snippets_but_not_files() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut app = test_app(&ctx);
+    app.sessions
+        .push(session::Session::local(ctx.clone()).unwrap());
+    app.sync_tabs();
+    app.select_tab(1);
+    let output = ctx.run(egui::RawInput::default(), |ctx| app.tabs(ctx));
+    let update = output.platform_output.accesskit_update.unwrap();
+    let shown = |label| (update.nodes.iter()).any(|(_, node)| node.label() == Some(label));
+    assert!(shown("Snippets"));
+    assert!(!shown("Files"));
+}
+
+#[test]
 fn changes_that_repeat_an_id_are_not_saved() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);
