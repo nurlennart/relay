@@ -19,14 +19,15 @@ impl App {
         }
         let key = session.key;
         let partner = self.partner(key);
+        let in_front = self.active() == Some(index);
         self.detached.push(key);
-        if self.active == Some(index) {
-            self.active = partner.and_then(|k| self.session_index(k));
-        }
         if let Some(place) = self.tab_of(key)
             && partner.is_some()
         {
             self.unsplit(place);
+        }
+        if in_front {
+            self.activate(partner);
         }
     }
 
@@ -36,7 +37,7 @@ impl App {
         self.windows.retain(|(k, _)| *k != key);
         if let Some(index) = self.sessions.iter().position(|s| s.key == key) {
             self.sessions[index].set_host(None, self.parent);
-            self.active = Some(index);
+            self.activate_session(index);
         }
     }
 
@@ -191,8 +192,8 @@ impl App {
                 .flatten()
         });
         for (index, rect, pane) in sides {
-            if pressed.is_some_and(|p| rect.contains(p)) {
-                self.active = Some(index);
+            if pressed.is_some_and(|p| rect.contains(p)) && self.active() != Some(index) {
+                self.activate_session(index);
             }
             let mut pane_ui = ui.new_child(
                 egui::UiBuilder::new()

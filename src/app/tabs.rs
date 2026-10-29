@@ -19,14 +19,16 @@ impl App {
                     .show(ui, |ui| {
                         ui.horizontal_centered(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.;
-                            let library = library_tab(ui, self.active.is_none())
+                            let library = library_tab(ui, self.front.is_none())
                                 .on_hover_text("Connection library (Ctrl+1)");
                             if library.clicked() {
-                                self.active = None;
+                                self.activate(None);
                             }
                             // Tabs can be dragged; the drop position follows the pointer.
                             // A pair moves as one.
                             let active_tab = self.active_tab();
+                            let active = self.active();
+                            let mut activate = None;
                             let mut rects = vec![];
                             let mut beside = None;
                             let mut unsplit = None;
@@ -54,7 +56,7 @@ impl App {
                                         let look = if joined {
                                             Look::Side {
                                                 selected,
-                                                focused: self.active == Some(index),
+                                                focused: active == Some(index),
                                             }
                                         } else {
                                             Look::Tab { selected }
@@ -85,7 +87,7 @@ impl App {
                                             );
                                         } else if session.inner.0.clicked() {
                                             // A side of a pair takes the keyboard; it never swaps.
-                                            self.active = Some(index);
+                                            activate = Some(key);
                                         }
                                         // The close button, or a middle click anywhere on the tab.
                                         if session.inner.1.clicked()
@@ -177,6 +179,9 @@ impl App {
                                     }
                                     rects.push(rect);
                                 });
+                            }
+                            if let Some(key) = activate {
+                                self.activate(Some(key));
                             }
                             if let Some(index) = beside {
                                 self.open_beside(index);
@@ -560,22 +565,55 @@ impl App {
         }
     }
 
-    /// Notes the side in front as the one its pair returns to.
-    pub(super) fn note_focus(&mut self) {
-        let Some(key) = self
-            .active
-            .and_then(|i| self.sessions.get(i))
-            .map(|s| s.key)
-        else {
+    /// Shows `key`'s tab, or the library for `None`, with that session in front, and gives
+    /// it the keyboard. Every way of choosing a tab or a side comes through here: a click, a
+    /// shortcut, restoring the workspace, or the tab in front closing.
+    pub(super) fn activate(&mut self, key: Option<u64>) {
+        if !self.bring_forward(key) {
             return;
-        };
-        for tab in &mut self.tabs {
-            if let Tab::Pair(pair) = tab
-                && (pair.left == key || pair.right == key)
-            {
-                pair.focus = key;
-            }
         }
+        self.chosen = true;
+        if let Some(index) = key.and_then(|k| self.session_index(k)) {
+            self.sessions[index].focus();
+        }
+    }
+
+    /// Shows session `index`'s tab with it in front, as `activate` does.
+    pub(super) fn activate_session(&mut self, index: usize) {
+        if let Some(key) = self.sessions.get(index).map(|s| s.key) {
+            self.activate(Some(key));
+        }
+    }
+
+    /// Brings `key`'s tab in front with that side of a pair as its focus, or the library for
+    /// `None`, and notes the tab left behind to return to. The library is passed through, not
+    /// returned to. Returns false, changing nothing, for a session without a tab.
+    pub(super) fn bring_forward(&mut self, key: Option<u64>) -> bool {
+        self.sync_tabs();
+        let Some(key) = key else {
+            self.front = None;
+            return true;
+        };
+        let Some(place) = self.tab_of(key) else {
+            return false;
+        };
+        if let Tab::Pair(pair) = &mut self.tabs[place] {
+            pair.focus = key;
+        }
+        let (last, before) = self.tab_trail;
+        self.tab_trail = if last.and_then(|k| self.tab_of(k)) == Some(place) {
+            (Some(key), before)
+        } else {
+            (Some(key), last)
+        };
+        self.front = Some(key);
+        true
+    }
+
+    /// The session in front: the tab in front's, or the side of its pair with the keyboard.
+    pub(super) fn active(&self) -> Option<usize> {
+        let place = self.active_tab()?;
+        self.session_index(self.tabs[place].focus())
     }
 
     pub(super) fn session_index(&self, key: u64) -> Option<usize> {
@@ -589,8 +627,7 @@ impl App {
 
     /// The position in the strip of the tab in front; `None` while the library shows.
     pub(super) fn active_tab(&self) -> Option<usize> {
-        let key = self.sessions.get(self.active?)?.key;
-        self.tab_of(key)
+        self.tab_of(self.front?)
     }
 
     /// The pair in front, if the tab in front is one.
@@ -654,9 +691,7 @@ impl App {
     /// Shows session `index` beside the session in front, which keeps the keyboard.
     pub(super) fn open_beside(&mut self, index: usize) {
         let (Some(active), Some(other)) = (
-            self.active
-                .and_then(|i| self.sessions.get(i))
-                .map(|s| s.key),
+            self.active().map(|i| self.sessions[i].key),
             self.sessions.get(index).map(|s| s.key),
         ) else {
             return;
@@ -726,9 +761,7 @@ impl App {
     /// Selects tab `index`, where 0 is the connection library and 1.. are the tabs after it.
     /// A pair returns to the side that had the keyboard last.
     pub(super) fn select_tab(&mut self, index: usize) {
-        self.note_focus();
-        self.active = (index.checked_sub(1))
-            .and_then(|i| self.tabs.get(i))
-            .and_then(|t| self.session_index(t.focus()));
+        let tab = index.checked_sub(1).and_then(|i| self.tabs.get(i));
+        self.activate(tab.map(Tab::focus));
     }
 }

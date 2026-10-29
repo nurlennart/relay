@@ -480,7 +480,7 @@ impl App {
             return;
         };
         let index = self
-            .active
+            .active()
             .filter(|i| self.sessions.get(*i).is_some_and(|s| s.terminal.is_some()));
         let Some(index) = index.filter(|_| !self.covered()) else {
             return;

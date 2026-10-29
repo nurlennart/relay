@@ -23,7 +23,7 @@ impl App {
 
     /// Gives the keyboard back to the tab in front after quick open closes.
     fn refocus_session(&mut self) {
-        if let Some(session) = self.active.and_then(|i| self.sessions.get_mut(i)) {
+        if let Some(session) = self.active().and_then(|i| self.sessions.get_mut(i)) {
             if let Some(terminal) = &mut session.terminal {
                 terminal.focus();
             }

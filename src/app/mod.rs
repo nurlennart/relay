@@ -137,8 +137,8 @@ const MSSQL_EXAMPLE: &str = if cfg!(windows) {
 
 struct App {
     connections: Vec<Connection>,
+    /// Open sessions, in no particular order; each is known by its `key`.
     sessions: Vec<Session>,
-    active: Option<usize>,
     filter: Filter,
     query: String,
     modal: Modal,
@@ -187,17 +187,22 @@ struct App {
     state: state::State,
     /// Where `state` is saved; tests leave it unset.
     state_path: Option<PathBuf>,
-    /// The tab shown last frame, to focus a terminal when its tab opens.
-    shown: Option<usize>,
-    /// The session tab shown now and the one shown before it, by key, so closing a tab returns
-    /// to the one it was opened from.
+    /// The tab in front, by the key of a session it shows; `None` shows the library. Which side
+    /// of a pair is in front is the pair's own `focus`, so `active` derives the session.
+    front: Option<u64>,
+    /// Whether a tab or side was chosen since the last frame, which the keyboard a side still
+    /// holds from before must not undo.
+    chosen: bool,
+    /// The session tab shown last, by key, and the one shown before it, so closing a tab
+    /// returns to the one it was opened from.
     tab_trail: (Option<u64>, Option<u64>),
     /// Sessions shown in their own windows, by session key.
     detached: Vec<u64>,
     /// Native windows found for detached sessions, which remote desktops are moved into.
     windows: Vec<(u64, platform::Window)>,
-    /// The tab strip, in order: each tab one session or a pair side by side, by session key.
-    /// Every session has exactly one tab; `sync_tabs` keeps it so.
+    /// The tab strip, in order: each tab one session or a pair side by side, by session key,
+    /// with the side of each pair that has the keyboard. Every session has exactly one tab;
+    /// `sync_tabs` keeps it so.
     tabs: Vec<tabs::Tab>,
     /// The sessions on screen that had the keyboard last frame, to notice one taking it.
     keyboard: Vec<u64>,
@@ -285,7 +290,6 @@ impl App {
         Self {
             connections,
             sessions: vec![],
-            active: None,
             filter: Filter::All,
             query: String::new(),
             modal: Modal::None,
@@ -320,7 +324,8 @@ impl App {
             list_view: (0., 0.),
             state,
             state_path: None,
-            shown: None,
+            front: None,
+            chosen: false,
             tab_trail: (None, None),
             detached: vec![],
             windows: vec![],
@@ -381,9 +386,6 @@ impl App {
                 .clone();
             self.sessions.push(session);
         }
-        self.active = (self.state.active_tab)
-            .map(|i| first + i)
-            .filter(|i| *i < self.sessions.len());
         self.sync_tabs();
         // Pairs that no longer fit the saved tabs, such as one naming a tab twice, are dropped.
         let keys: Vec<u64> = self.sessions[first..].iter().map(|s| s.key).collect();
@@ -398,7 +400,7 @@ impl App {
                 pair.fraction = saved.fraction.clamp(SPLIT_MIN, 1. - SPLIT_MIN);
             }
         }
-        self.sync_tabs();
+        self.activate(self.state.active_tab.and_then(|i| keys.get(i).copied()));
     }
 
     /// Records the open tabs so the next start can restore them.
@@ -421,7 +423,6 @@ impl App {
     /// Writes the open tabs into `state`, in strip order, without saving it.
     fn record_tabs(&mut self) {
         self.sync_tabs();
-        self.note_focus();
         let order = self.strip_order();
         let sessions: Vec<&Session> = order.iter().map(|&i| &self.sessions[i]).collect();
         let which = |test: fn(&Session) -> bool| {
@@ -444,7 +445,8 @@ impl App {
                 tabs::Tab::Single(_) => None,
             })
             .collect();
-        self.state.active_tab = self.active.and_then(|a| order.iter().position(|&i| i == a));
+        let active = self.active();
+        self.state.active_tab = active.and_then(|a| order.iter().position(|&i| i == a));
     }
 
     /// Reopens the library used last time, if it was a shared one.
@@ -494,7 +496,7 @@ impl App {
                 self.open_local_shell();
             }
             let ssh = self
-                .active
+                .active()
                 .and_then(|i| self.sessions.get(i))
                 .is_some_and(|s| s.connection.protocol == Protocol::Ssh && s.terminal.is_some());
             if ssh && shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::P) {
@@ -555,7 +557,7 @@ impl App {
             }
             if shortcut(ctrl, egui::Key::K) {
                 self.search_focus = true;
-                self.active = None;
+                self.activate(None);
             }
             if shortcut(ctrl, egui::Key::T) {
                 self.open_quick();
@@ -564,7 +566,7 @@ impl App {
                 self.set_sidebar_collapsed(!self.sidebar_collapsed(ctx));
             }
             if shortcut(ctrl, egui::Key::W)
-                && let Some(active) = self.active
+                && let Some(active) = self.active()
             {
                 self.request_close(active);
             }
@@ -687,8 +689,8 @@ impl App {
             s.place(None);
         }
         self.sessions.push(session);
-        self.active = Some(self.sessions.len() - 1);
         self.sync_tabs();
+        self.activate_session(self.sessions.len() - 1);
         self.remember_tabs();
     }
 
@@ -765,10 +767,10 @@ impl App {
         let other_key = self.sessions[other].key;
         // A session in its own window, or already beside another, shows the other in a tab.
         if partner == Some(other_key) || self.join(key, other_key, key).is_none() {
-            self.active = Some(other);
+            self.activate_session(other);
             return;
         }
-        self.active = Some(index);
+        self.activate_session(index);
         self.remember_tabs();
     }
 
@@ -790,82 +792,44 @@ impl App {
             return;
         }
         self.sync_tabs();
-        let was_active = self.active == Some(index);
+        let in_front = self.active() == Some(index);
         let key = self.sessions[index].key;
         let (partner, place) = (self.partner(key), self.tab_of(key).unwrap_or(0));
         self.sessions.remove(index);
-        self.active = match self.active {
-            Some(a) if a == index => None,
-            Some(a) if a > index => Some(a - 1),
-            other => other,
-        };
         // A pair's other side stays, as a tab of its own.
         self.sync_tabs();
         // Closing the session in front shows another rather than the library: the other side
         // of its pair, the one it was opened from, or the tab to its left.
-        if was_active {
-            let index = |key: Option<u64>| key.and_then(|k| self.session_index(k));
-            let left = (self.tabs.get(place.saturating_sub(1))).map(|t| t.focus());
-            self.active = index(partner).or(index(self.tab_trail.1)).or(index(left));
+        if in_front {
+            let open = |key: Option<u64>| key.filter(|&k| self.session_index(k).is_some());
+            let left = (self.tabs.get(place.saturating_sub(1))).map(tabs::Tab::focus);
+            self.activate(open(partner).or(open(self.tab_trail.1)).or(left));
         }
         self.remember_tabs();
     }
 
-    /// Settles which session is in front, giving it the keyboard when that changes. A side
-    /// chosen since the last frame, with its tab or a shortcut, stays chosen, as a side still
-    /// holding the keyboard from before must not undo the choice. Otherwise a side that takes
-    /// the keyboard by itself, such as a remote desktop clicked into, comes in front.
+    /// Settles which side of the tab in front has the keyboard. A side that takes it by
+    /// itself, such as a remote desktop clicked into, comes in front, unless a side was chosen
+    /// since the last frame: one still holding the keyboard from before must not undo that.
     fn follow_focus(&mut self) {
         let focused: Vec<u64> = (self.on_screen().into_iter())
             .map(|i| &self.sessions[i])
             .filter(|s| s.keyboard_focused())
             .map(|s| s.key)
             .collect();
-        let taken = (focused.iter())
-            .find(|key| !self.keyboard.contains(key))
-            .and_then(|&key| self.session_index(key));
-        if self.shown == self.active
-            && let Some(index) = taken
+        let taken = (focused.iter().copied()).find(|key| !self.keyboard.contains(key));
+        if !std::mem::take(&mut self.chosen)
+            && let Some(key) = taken
         {
-            self.active = Some(index);
+            self.bring_forward(Some(key));
         }
         self.keyboard = focused;
-        self.note_focus();
-        if self.shown != self.active {
-            self.shown = self.active;
-            if let Some(session) = self.active.and_then(|i| self.sessions.get_mut(i)) {
-                session.focus();
-            }
-        }
         // Only the side in front takes the keyboard when asked, such as a new terminal's.
+        let active = self.active();
         for index in self.on_screen() {
-            if Some(index) != self.active {
+            if Some(index) != active {
                 self.sessions[index].cancel_focus();
             }
-        }
-    }
-
-    /// Notes which session tab is shown, keeping the one before it to return to.
-    fn note_tab(&mut self) {
-        let current = self
-            .active
-            .and_then(|i| self.sessions.get(i))
-            .map(|s| s.key);
-        // The library is a place to pass through, not a tab to return to, and moving between
-        // the sides of a pair stays in the same tab.
-        if let Some(key) = current
-            && current != self.tab_trail.0
-        {
-            let before = if self
-                .tab_trail
-                .0
-                .is_some_and(|k| self.partner(k) == Some(key))
-            {
-                self.tab_trail.1
-            } else {
-                self.tab_trail.0
-            };
-            self.tab_trail = (current, before);
         }
     }
 
@@ -1030,7 +994,7 @@ impl App {
                     if ui.add_enabled(self.pending.is_none(), quit).clicked() {
                         self.remember_tabs();
                         self.sessions.clear();
-                        self.active = None;
+                        self.activate(None);
                         // The warning above was the last chance to export unsaved changes.
                         self.recovery = None;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1222,7 +1186,6 @@ impl eframe::App for App {
             self.quitting = true;
         }
         self.sync_tabs();
-        self.note_focus();
         let terminal_focused = self.workspace_shortcuts(ctx);
         // Before the views behind it, so its keys never reach them.
         self.quick_open(ctx);
@@ -1253,7 +1216,6 @@ impl eframe::App for App {
             }
         }
         self.follow_focus();
-        self.note_tab();
         // Hide native children before painting overlays; embedded remote desktops sit above GPU content.
         let covered = self.covered();
         for (i, s) in self.sessions.iter_mut().enumerate() {
@@ -1301,7 +1263,7 @@ impl eframe::App for App {
                     let right = self.session_index(pair.right)?;
                     Some((place, pair.fraction, left, right))
                 });
-                match (self.active, pair) {
+                match (self.active(), pair) {
                     (Some(index), _) if self.is_detached(index) => {
                         self.detached_placeholder(ui, index)
                     }
