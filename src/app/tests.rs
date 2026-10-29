@@ -1,11 +1,25 @@
 use super::{
     library::{Column, GAP, table_columns},
-    sessions::Pane,
     settings::theme_option,
-    tabs::{Kind, drop_index, session_tab},
+    tabs::{Kind, Look, Pair, Tab, drop_index, session_tab},
     *,
 };
 use egui::{Rect, Vec2};
+/// An app started from `state`, with the tabs it saved reopened.
+fn reopened(ctx: &egui::Context, state: state::State) -> App {
+    let mut app = App::with(
+        ctx.clone(),
+        PathBuf::from("unused.json"),
+        Ok(vec![]),
+        None,
+        None,
+        None,
+        state,
+    );
+    app.restore_tabs();
+    app
+}
+
 fn test_app(ctx: &egui::Context) -> App {
     let connections = ["Alpha", "Bravo", "Charlie"]
         .iter()
@@ -349,7 +363,7 @@ fn snippets_send_what_text_typed_in_the_same_frame_as_enter_selects() {
     // cat shows what the snippet types.
     app.sessions
         .push(session::Session::scripted(ssh, "cat", ctx.clone()));
-    app.active = Some(0);
+    app.activate_session(0);
     app.palette = Some(Palette::default());
     let frame = |app: &mut App, events| {
         let _ = ctx.run(
@@ -455,18 +469,9 @@ fn tabs_from_the_last_run_come_back_waiting() {
     quick.id = 0;
     state.open = vec![desk, quick];
     state.active_tab = Some(1);
-    let mut app = App::with(
-        ctx.clone(),
-        PathBuf::from("unused.json"),
-        Ok(vec![]),
-        None,
-        None,
-        None,
-        state,
-    );
-    app.restore_tabs();
+    let mut app = reopened(&ctx, state);
     assert_eq!(app.sessions.len(), 2);
-    assert_eq!(app.active, Some(1));
+    assert_eq!(app.active(), Some(1));
     assert!(
         app.sessions
             .iter()
@@ -477,7 +482,7 @@ fn tabs_from_the_last_run_come_back_waiting() {
     app.state.active_tab = Some(9);
     app.sessions.clear();
     app.restore_tabs();
-    assert_eq!(app.active, None);
+    assert_eq!(app.active(), None);
 }
 
 #[test]
@@ -547,19 +552,16 @@ fn reconnecting_never_takes_settings_from_another_database_of_the_same_kind() {
 #[test]
 fn closing_the_tab_in_front_shows_another_tab_rather_than_the_library() {
     let ctx = egui::Context::default();
-    let mut app = test_app(&ctx);
-    for c in app.connections.clone() {
-        app.sessions
-            .push(session::Session::restored(c, false, ctx.clone()));
-    }
-    let name = |app: &App| app.active.map(|i| app.sessions[i].connection.name.clone());
+    let (mut app, _) = app_with_tabs(&ctx);
+    let name = |app: &App| {
+        app.active()
+            .map(|i| app.sessions[i].connection.name.clone())
+    };
     // From Alpha, a new connection opens beside it; closing that returns to Alpha.
-    app.active = Some(0);
-    app.note_tab();
+    app.activate_session(0);
     let mut delta = app.connections[1].clone();
     delta.name = "Delta".into();
     app.add_session(session::Session::restored(delta, false, ctx.clone()));
-    app.note_tab();
     app.close_tab(3);
     assert_eq!(
         name(&app).as_deref(),
@@ -567,59 +569,238 @@ fn closing_the_tab_in_front_shows_another_tab_rather_than_the_library() {
         "back to where it was opened"
     );
     // With the tab it came from gone, the left neighbour.
-    app.note_tab();
-    app.active = Some(2);
-    app.note_tab();
+    app.activate_session(2);
     app.close_tab(0);
     app.close_tab(1);
     assert_eq!(name(&app).as_deref(), Some("Bravo"), "the tab to the left");
-    // In split view, the other side takes the front.
+    // In a pair, the other side takes the front, as a tab of its own.
     let mut charlie = app.connections[2].clone();
     charlie.name = "Charlie".into();
     app.add_session(session::Session::restored(charlie, false, ctx.clone()));
-    app.note_tab();
-    app.split = Some(0);
+    app.open_beside(0);
     app.close_tab(1);
-    assert_eq!((name(&app).as_deref(), app.split), (Some("Bravo"), None));
+    assert_eq!(name(&app).as_deref(), Some("Bravo"));
+    assert_eq!(app.tabs, [Tab::Single(app.sessions[0].key)]);
     // The first tab closing shows the one now first, and the last the library.
     let mut echo = app.connections[0].clone();
     echo.name = "Echo".into();
     app.add_session(session::Session::restored(echo, false, ctx.clone()));
-    app.active = Some(0);
+    app.activate_session(0);
     app.close_tab(0);
     assert_eq!(name(&app).as_deref(), Some("Echo"));
     app.close_tab(0);
-    assert_eq!(app.active, None, "no tabs left");
+    assert_eq!(app.active(), None, "no tabs left");
 }
 
-#[test]
-fn split_view_pairs_two_tabs_and_follows_moves() {
-    let ctx = egui::Context::default();
-    let mut app = test_app(&ctx);
+/// An app with a tab for each test connection, Alpha, Bravo and Charlie, and their keys.
+fn app_with_tabs(ctx: &egui::Context) -> (App, [u64; 3]) {
+    let mut app = test_app(ctx);
     for c in app.connections.clone() {
         app.sessions
             .push(session::Session::restored(c, false, ctx.clone()));
     }
-    app.active = Some(0);
-    app.toggle_split();
-    assert_eq!(app.split, Some(1), "the neighbouring tab opens beside");
-    app.toggle_split();
-    assert_eq!(app.split, None);
-    app.split_with(0);
-    assert_eq!(app.split, None, "a tab cannot sit beside itself");
-    app.split_with(2);
-    assert_eq!(app.split, Some(2));
-    app.move_session(2, 0);
-    assert_eq!((app.active, app.split), (Some(1), Some(0)));
-    app.active = Some(2);
-    app.toggle_split();
-    assert_eq!(app.split, None, "toggling closes an open split");
+    app.sync_tabs();
+    let keys = [0, 1, 2].map(|i| app.sessions[i].key);
+    (app, keys)
+}
+
+fn pair(left: u64, right: u64, focus: u64) -> Tab {
+    Tab::Pair(Pair {
+        left,
+        right,
+        fraction: SPLIT_MIDDLE,
+        focus,
+    })
+}
+
+#[test]
+fn split_view_joins_two_tabs_into_one() {
+    let ctx = egui::Context::default();
+    let (mut app, [a, b, c]) = app_with_tabs(&ctx);
+    app.activate_session(0);
     app.toggle_split();
     assert_eq!(
-        app.split,
-        Some(1),
-        "the last tab pairs with the one before it"
+        app.tabs,
+        [pair(a, b, a), Tab::Single(c)],
+        "the next tab joins"
     );
+    app.toggle_split();
+    assert_eq!(app.tabs, [Tab::Single(a), Tab::Single(b), Tab::Single(c)]);
+    app.open_beside(0);
+    assert_eq!(app.tabs.len(), 3, "a tab cannot sit beside itself");
+    // The pair takes the place of the tab in front, which stays in front.
+    app.activate_session(2);
+    app.open_beside(0);
+    assert_eq!(app.tabs, [Tab::Single(b), pair(c, a, c)]);
+    assert_eq!(app.active(), Some(2));
+    // A session already in a pair joins no other.
+    app.activate_session(1);
+    app.open_beside(0);
+    assert_eq!(app.tabs, [Tab::Single(b), pair(c, a, c)]);
+    // The last tab joins the one before it, on its left.
+    let (mut app, [a, b, c]) = app_with_tabs(&ctx);
+    app.activate_session(2);
+    app.toggle_split();
+    assert_eq!(app.tabs, [Tab::Single(a), pair(b, c, c)]);
+    // Alone, there is nothing to split with.
+    let (mut app, [a, ..]) = app_with_tabs(&ctx);
+    app.close_tab(2);
+    app.close_tab(1);
+    app.activate_session(0);
+    app.toggle_split();
+    assert_eq!(app.tabs, [Tab::Single(a)]);
+    assert!(app.notice.is_some());
+}
+
+#[test]
+fn pairs_swap_unsplit_and_move_as_one() {
+    let ctx = egui::Context::default();
+    let (mut app, [a, b, c]) = app_with_tabs(&ctx);
+    app.activate_session(1);
+    app.open_beside(2);
+    app.tabs[1] = Tab::Pair(Pair {
+        fraction: 0.3,
+        ..match app.tabs[1] {
+            Tab::Pair(p) => p,
+            Tab::Single(_) => unreachable!(),
+        }
+    });
+    app.swap_sides(1);
+    assert_eq!(
+        app.tabs[1],
+        Tab::Pair(Pair {
+            left: c,
+            right: b,
+            fraction: 0.7,
+            focus: b,
+        }),
+        "each side keeps its width and the keyboard stays"
+    );
+    app.move_tab(1, 0);
+    assert_eq!(app.tabs[1], Tab::Single(a));
+    app.unsplit(0);
+    assert_eq!(app.tabs, [Tab::Single(c), Tab::Single(b), Tab::Single(a)]);
+    assert_eq!(app.active(), Some(1));
+}
+
+#[test]
+fn a_pair_counts_as_one_tab_and_returns_to_its_last_side() {
+    let ctx = egui::Context::default();
+    let (mut app, [a, b, c]) = app_with_tabs(&ctx);
+    app.activate_session(0);
+    app.open_beside(1);
+    // The right side takes the keyboard, then another tab is shown.
+    app.activate_session(1);
+    app.select_tab(2);
+    assert_eq!(app.active(), Some(2), "Charlie is the second tab");
+    assert_eq!(app.tabs, [pair(a, b, b), Tab::Single(c)]);
+    app.select_tab(1);
+    assert_eq!(app.active(), Some(1), "back to the side used last");
+    app.select_tab(3);
+    assert_eq!(app.active(), None, "past the last tab");
+    app.select_tab(0);
+    assert_eq!(app.active(), None, "the library");
+}
+
+#[test]
+fn closing_or_detaching_a_side_leaves_the_other_as_a_tab() {
+    let ctx = egui::Context::default();
+    let (mut app, [a, b, c]) = app_with_tabs(&ctx);
+    app.activate_session(1);
+    app.open_beside(2);
+    app.detach(1);
+    assert_eq!(app.tabs, [Tab::Single(a), Tab::Single(b), Tab::Single(c)]);
+    assert_eq!(app.active(), Some(2), "the other side stays in front");
+    app.attach(b);
+    app.activate_session(0);
+    app.open_beside(1);
+    app.close_tab(0);
+    assert_eq!(app.tabs, [Tab::Single(b), Tab::Single(c)]);
+    assert_eq!(app.active(), Some(0));
+    // Whatever the change to the sessions, every one has exactly one tab.
+    app.sessions.push(session::Session::restored(
+        app.connections[0].clone(),
+        false,
+        ctx.clone(),
+    ));
+    app.sync_tabs();
+    let mut keys: Vec<u64> = app.tabs.iter().flat_map(Tab::keys).collect();
+    keys.sort();
+    let mut sessions: Vec<u64> = app.sessions.iter().map(|s| s.key).collect();
+    sessions.sort();
+    assert_eq!(keys, sessions);
+}
+
+#[test]
+fn pairs_come_back_with_their_order_width_and_side() {
+    let ctx = egui::Context::default();
+    let (mut app, [_, b, c]) = app_with_tabs(&ctx);
+    app.activate_session(2);
+    app.open_beside(1);
+    app.swap_sides(1);
+    if let Tab::Pair(pair) = &mut app.tabs[1] {
+        pair.fraction = 0.4;
+    }
+    assert_eq!(
+        app.tabs[1],
+        Tab::Pair(Pair {
+            left: b,
+            right: c,
+            fraction: 0.4,
+            focus: c
+        })
+    );
+    app.record_tabs();
+    let names: Vec<_> = app.state.open.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["Alpha", "Bravo", "Charlie"]);
+    assert_eq!(
+        app.state.pairs,
+        [state::SavedPair {
+            left: 1,
+            right: 2,
+            fraction: 0.4,
+            right_focused: true,
+        }]
+    );
+    let restored = reopened(&ctx, app.state.clone());
+    let keys: Vec<u64> = restored.sessions.iter().map(|s| s.key).collect();
+    assert_eq!(
+        restored.tabs,
+        [
+            Tab::Single(keys[0]),
+            Tab::Pair(Pair {
+                left: keys[1],
+                right: keys[2],
+                fraction: 0.4,
+                focus: keys[2],
+            })
+        ]
+    );
+    assert_eq!(restored.active(), Some(2));
+    // Pairs that do not fit the saved tabs are dropped, and state from before pairs has none.
+    let mut broken = app.state.clone();
+    broken.pairs = vec![
+        state::SavedPair {
+            left: 0,
+            right: 7,
+            ..Default::default()
+        },
+        state::SavedPair {
+            left: 1,
+            right: 1,
+            ..Default::default()
+        },
+    ];
+    assert!(
+        reopened(&ctx, broken)
+            .tabs
+            .iter()
+            .all(|t| matches!(t, Tab::Single(_)))
+    );
+    let old: state::State = serde_json::from_str(r#"{"open": [], "active_tab": null}"#).unwrap();
+    assert!(old.pairs.is_empty());
+    let saved: state::SavedPair = serde_json::from_str(r#"{"left": 0, "right": 1}"#).unwrap();
+    assert_eq!(saved.fraction, 0.5);
 }
 
 #[test]
@@ -677,18 +858,7 @@ fn split_divider_drags_and_returns_to_the_middle_on_double_click() {
 }
 
 #[test]
-fn moving_tabs_keeps_every_index_consistent() {
-    let items = ['a', 'b', 'c', 'd'];
-    for from in 0..items.len() {
-        for to in 0..items.len() {
-            let mut after = items.to_vec();
-            let item = after.remove(from);
-            after.insert(to, item);
-            for (index, item) in items.iter().enumerate() {
-                assert_eq!(after[moved(index, from, to)], *item, "{from} -> {to}");
-            }
-        }
-    }
+fn dragged_tabs_drop_between_the_others() {
     let tab = |x: f32| Rect::from_min_size(egui::pos2(x, 0.), Vec2::new(100., 36.));
     let tabs = [tab(0.), tab(110.), tab(220.)];
     assert_eq!(drop_index(&tabs, 0, 10.), 0);
@@ -751,7 +921,7 @@ fn tab_close_is_inside_tab_and_does_not_select_it() {
                                 &first,
                                 Kind::Session,
                                 session::TabState::Open,
-                                true,
+                                Look::Tab { selected: true },
                             );
                             assert!(session.response.rect.contains_rect(session.inner.1.rect));
                             assert!(!session.inner.0.rect.intersects(session.inner.1.rect));
@@ -760,7 +930,7 @@ fn tab_close_is_inside_tab_and_does_not_select_it() {
                                 &second,
                                 Kind::Files,
                                 session::TabState::Waiting,
-                                false,
+                                Look::Tab { selected: false },
                             );
                             assert_eq!(
                                 session.response.rect.center().y,
@@ -966,7 +1136,7 @@ fn files_app(ctx: &egui::Context) -> App {
     c.protocol = Protocol::Ssh;
     app.sessions
         .push(session::Session::demo_files(c, browser, ctx.clone()));
-    app.active = Some(0);
+    app.activate_session(0);
     app
 }
 
@@ -981,7 +1151,7 @@ fn files_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
             ..Default::default()
         },
         |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.files_pane(ui, 0, Pane::Main));
+            egui::CentralPanel::default().show(ctx, |ui| app.files_pane(ui, 0));
         },
     );
 }
@@ -1072,29 +1242,51 @@ fn admin_sessions_stay_with_their_tab() {
     let mut admin = session::Session::restored(c.clone(), false, ctx.clone());
     admin.admin = true;
     assert_eq!(admin.title(), format!("{} (admin)", c.name));
-    app.sessions
-        .push(session::Session::restored(c.clone(), false, ctx.clone()));
-    app.sessions.push(admin);
-    app.remember_tabs();
-    assert_eq!(app.state.admin_tabs, [1]);
-    // The saved connection is unchanged, so editing it from the tab cannot store admin.
-    assert_eq!(app.state.open[1], c);
-    let mut restored = App::with(
-        ctx.clone(),
-        PathBuf::from("unused.json"),
-        Ok(vec![]),
-        None,
-        None,
-        None,
-        app.state.clone(),
-    );
-    restored.restore_tabs();
-    let kinds: Vec<_> = restored.sessions.iter().map(|s| s.admin).collect();
-    assert_eq!(kinds, [false, true]);
 }
 
 #[test]
-fn file_tabs_are_remembered_as_browsers() {
+fn every_kind_of_tab_comes_back_as_itself() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let mut ssh = app.connections[0].clone();
+    ssh.protocol = Protocol::Ssh;
+    let mut rdp = app.connections[1].clone();
+    rdp.protocol = Protocol::Rdp;
+    let mut admin = session::Session::restored(rdp.clone(), false, ctx.clone());
+    admin.admin = true;
+    app.sessions.extend([
+        session::Session::restored(ssh.clone(), false, ctx.clone()),
+        session::Session::restored(ssh, true, ctx.clone()),
+        admin,
+        session::Session::restored_local(ctx.clone()),
+    ]);
+    app.remember_tabs();
+    let state = &app.state;
+    assert_eq!(
+        (&state.file_tabs, &state.admin_tabs, &state.local_tabs),
+        (&vec![1], &vec![2], &vec![3])
+    );
+    // The saved connection is unchanged, so editing it from the tab cannot store admin.
+    assert_eq!(state.open[2], rdp);
+    let restored = reopened(&ctx, app.state.clone());
+    let kinds: Vec<_> = (restored.sessions.iter())
+        .map(|s| (s.browsing, s.admin, s.local))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true)
+        ]
+    );
+    // Each starts when first shown.
+    assert!((restored.sessions.iter()).all(|s| s.tab_state() == session::TabState::Waiting));
+}
+
+#[test]
+fn the_files_button_pairs_a_terminal_with_its_open_browser() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);
     let mut c = app.connections[0].clone();
@@ -1103,31 +1295,19 @@ fn file_tabs_are_remembered_as_browsers() {
         .push(session::Session::restored(c.clone(), false, ctx.clone()));
     app.sessions
         .push(session::Session::restored(c.clone(), true, ctx.clone()));
-    app.remember_tabs();
-    assert_eq!(app.state.file_tabs, [1]);
-    let mut restored = App::with(
-        ctx.clone(),
-        PathBuf::from("unused.json"),
-        Ok(vec![]),
-        None,
-        None,
-        None,
-        app.state.clone(),
-    );
-    restored.restore_tabs();
-    let kinds: Vec<_> = restored.sessions.iter().map(|s| s.browsing).collect();
-    assert_eq!(kinds, [false, true]);
-
-    // A terminal's Files button pairs it with the open browser instead of opening another.
-    app.active = Some(0);
+    // It pairs with the open browser instead of opening another.
+    app.activate_session(0);
     app.open_companion(0);
-    assert_eq!(
-        (app.active, app.split, app.sessions.len()),
-        (Some(0), Some(1), 2)
-    );
-    app.split = None;
+    let keys = (app.sessions[0].key, app.sessions[1].key);
+    assert_eq!(app.sessions.len(), 2);
+    assert_eq!(app.tabs, [pair(keys.0, keys.1, keys.0)]);
+    // From the pair, the button moves to the other side.
+    app.open_companion(0);
+    assert_eq!((app.active(), app.tabs.len()), (Some(1), 1));
+    app.unsplit(0);
     app.open_companion(1);
-    assert_eq!((app.active, app.split), (Some(1), Some(0)));
+    assert_eq!(app.active(), Some(1));
+    assert_eq!(app.tabs, [pair(keys.1, keys.0, keys.1)]);
 }
 
 #[test]
@@ -1155,16 +1335,12 @@ fn breadcrumbs_read_like_the_path() {
 #[test]
 fn ended_and_unconnected_tabs_close_without_asking() {
     let ctx = egui::Context::default();
-    let mut app = test_app(&ctx);
-    for c in app.connections.clone() {
-        app.sessions
-            .push(session::Session::restored(c, false, ctx.clone()));
-    }
-    app.active = Some(2);
+    let (mut app, _) = app_with_tabs(&ctx);
+    app.activate_session(2);
     // Restored tabs that never connected close at once, keeping the selection.
     app.request_close(0);
     assert!(matches!(app.modal, Modal::None));
-    assert_eq!((app.sessions.len(), app.active), (2, Some(1)));
+    assert_eq!((app.sessions.len(), app.active()), (2, Some(1)));
     // A connected session asks first.
     let mut c = app.connections[0].clone();
     c.protocol = Protocol::Ssh;
@@ -1190,12 +1366,8 @@ fn ended_and_unconnected_tabs_close_without_asking() {
 #[test]
 fn turning_off_reopening_forgets_and_skips_tabs() {
     let ctx = egui::Context::default();
-    let mut app = test_app(&ctx);
-    for c in app.connections.clone() {
-        app.sessions
-            .push(session::Session::restored(c, false, ctx.clone()));
-    }
-    app.active = Some(1);
+    let (mut app, _) = app_with_tabs(&ctx);
+    app.activate_session(1);
     app.remember_tabs();
     assert_eq!(app.state.open.len(), 3);
     app.state.forget_tabs = true;
@@ -1204,16 +1376,7 @@ fn turning_off_reopening_forgets_and_skips_tabs() {
     // Even a state file that still lists tabs opens none.
     let mut state = app.state.clone();
     state.open = app.connections.clone();
-    let mut next = App::with(
-        ctx.clone(),
-        PathBuf::from("unused.json"),
-        Ok(vec![]),
-        None,
-        None,
-        None,
-        state,
-    );
-    next.restore_tabs();
+    let next = reopened(&ctx, state);
     assert!(next.sessions.is_empty());
 }
 
@@ -1240,6 +1403,7 @@ fn middle_clicking_a_tab_closes_it() {
     let c = app.connections[0].clone();
     app.sessions
         .push(session::Session::restored(c, false, ctx.clone()));
+    app.sync_tabs();
     let frame = |app: &mut App, events| {
         let _ = ctx.run(
             egui::RawInput {
@@ -1373,11 +1537,8 @@ fn search_clear_button_empties_the_search() {
 #[test]
 fn number_shortcuts_switch_tabs_from_the_library() {
     let ctx = egui::Context::default();
-    let mut app = test_app(&ctx);
-    for c in app.connections.clone() {
-        app.sessions
-            .push(session::Session::restored(c, false, ctx.clone()));
-    }
+    let (mut app, _) = app_with_tabs(&ctx);
+    app.sync_tabs();
     let frame = |app: &mut App, key| {
         let _ = ctx.run(
             egui::RawInput {
@@ -1397,13 +1558,13 @@ fn number_shortcuts_switch_tabs_from_the_library() {
         );
     };
     frame(&mut app, egui::Key::Num2);
-    assert_eq!(app.active, Some(0));
+    assert_eq!(app.active(), Some(0));
     frame(&mut app, egui::Key::Num1);
-    assert_eq!(app.active, None, "Ctrl+1 is the library");
+    assert_eq!(app.active(), None, "Ctrl+1 is the library");
     frame(&mut app, egui::Key::Num3);
-    assert_eq!(app.active, Some(1));
+    assert_eq!(app.active(), Some(1));
     frame(&mut app, egui::Key::Num9);
-    assert_eq!(app.active, Some(2), "Ctrl+9 is the last tab");
+    assert_eq!(app.active(), Some(2), "Ctrl+9 is the last tab");
 }
 
 #[test]
@@ -1419,6 +1580,7 @@ fn connected_tabs_offer_reconnect_from_their_menu() {
     let c = app.connections[1].clone();
     app.sessions
         .push(session::Session::restored(c, false, ctx.clone()));
+    app.sync_tabs();
     let frame = |app: &mut App, events| {
         let output = ctx.run(
             egui::RawInput {
@@ -1612,32 +1774,73 @@ fn several_connections_are_chosen_and_changed_together() {
 }
 
 #[test]
-fn local_shells_are_remembered_as_local_shells() {
+fn a_chosen_side_keeps_the_keyboard_and_a_click_moves_it() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);
-    let mut c = app.connections[0].clone();
-    c.protocol = Protocol::Ssh;
-    app.sessions
-        .push(session::Session::restored(c, false, ctx.clone()));
-    app.sessions
-        .push(session::Session::restored_local(ctx.clone()));
-    app.remember_tabs();
-    assert_eq!(app.state.local_tabs, [1]);
-    let mut restored = App::with(
-        ctx.clone(),
-        PathBuf::from("unused.json"),
-        Ok(vec![]),
-        None,
-        None,
-        None,
-        app.state.clone(),
+    let mut ssh = app.connections[0].clone();
+    ssh.protocol = Protocol::Ssh;
+    for _ in 0..2 {
+        app.sessions
+            .push(session::Session::scripted(ssh.clone(), "cat", ctx.clone()));
+    }
+    app.activate_session(0);
+    app.sync_tabs();
+    app.open_beside(1);
+    let mut time = 0.;
+    let mut frame = |app: &mut App, events: Vec<egui::Event>| {
+        time += 0.05;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1200., 800.),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                app.follow_focus();
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (place, pair) = app.active_pair().unwrap();
+                    let sides = [pair.left, pair.right].map(|k| app.session_index(k).unwrap());
+                    app.pair_panes(ui, place, pair.fraction, sides, &mut vec![]);
+                });
+            },
+        );
+    };
+    let settle = |frame: &mut dyn FnMut(&mut App, Vec<egui::Event>), app: &mut App| {
+        for _ in 0..3 {
+            frame(app, vec![]);
+        }
+    };
+    let keyboard =
+        |app: &App| -> Vec<bool> { app.sessions.iter().map(|s| s.keyboard_focused()).collect() };
+    settle(&mut frame, &mut app);
+    assert_eq!(keyboard(&app), [true, false]);
+    // Choosing a side, as its tab does, is not undone by the side that still had the keyboard.
+    for side in [1, 0, 1] {
+        app.activate_session(side);
+        settle(&mut frame, &mut app);
+        assert_eq!(app.active(), Some(side));
+        assert_eq!(keyboard(&app), [side == 0, side == 1]);
+    }
+    // A click into the other side's terminal brings it in front, and the pair remembers it.
+    let on_left = egui::pos2(300., 400.);
+    let button = |pressed| egui::Event::PointerButton {
+        pos: on_left,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame(
+        &mut app,
+        vec![egui::Event::PointerMoved(on_left), button(true)],
     );
-    restored.restore_tabs();
-    let local: Vec<_> = restored.sessions.iter().map(|s| s.local).collect();
-    assert_eq!(local, [false, true]);
-    assert_eq!(
-        restored.sessions[1].tab_state(),
-        session::TabState::Waiting,
-        "it starts when first shown, like other tabs"
-    );
+    frame(&mut app, vec![button(false)]);
+    settle(&mut frame, &mut app);
+    assert_eq!(app.active(), Some(0));
+    assert_eq!(keyboard(&app), [true, false]);
+    let left = app.sessions[0].key;
+    assert!(matches!(app.tabs[0], Tab::Pair(pair) if pair.focus == left));
 }

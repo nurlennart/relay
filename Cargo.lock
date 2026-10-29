@@ -4770,7 +4770,6 @@ dependencies = [
  "ironrdp-mstsgu",
  "ironrdp-pdu",
  "ironrdp-session",
- "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",
  "keyring",

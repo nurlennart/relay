@@ -85,7 +85,32 @@ pub struct State {
     pub download_folder: Option<PathBuf>,
     /// Which of `open` are local shells, kept apart like `file_tabs`.
     pub local_tabs: Vec<usize>,
+    /// Tabs among `open` shown side by side, kept apart like `file_tabs`.
+    pub pairs: Vec<SavedPair>,
     pub terminal: TerminalSettings,
+}
+
+/// Two of `open` shown side by side in one tab.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedPair {
+    pub left: usize,
+    pub right: usize,
+    /// Where the divider sits, as a fraction of the width.
+    pub fraction: f32,
+    /// Whether the right side had the keyboard last.
+    pub right_focused: bool,
+}
+
+impl Default for SavedPair {
+    fn default() -> Self {
+        Self {
+            left: 0,
+            right: 0,
+            fraction: 0.5,
+            right_focused: false,
+        }
+    }
 }
 
 /// How terminals look and whether they keep logs, the same for every tab.

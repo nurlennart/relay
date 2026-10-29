@@ -223,6 +223,8 @@ pub struct RdpClient {
     display_warning: Option<String>,
     /// Whether the control was in full screen when last placed, to notice it leaving.
     full_screen: bool,
+    /// Take the keyboard once the control is next shown.
+    focus_requested: bool,
     /// Wakes the window when a display update is due.
     ctx: egui::Context,
     _apartment: Apartment,
@@ -329,6 +331,7 @@ impl RdpClient {
             holes: vec![],
             display_warning: None,
             full_screen: false,
+            focus_requested: false,
             ctx: ctx.clone(),
             _apartment: apartment,
         };
@@ -480,9 +483,17 @@ impl RdpClient {
     pub fn can_full_screen(&self) -> bool {
         true
     }
-    /// The control takes the keyboard natively; its shortcuts arrive through a hook instead.
+    /// Whether the control has the keyboard. It takes it natively, so its shortcuts arrive
+    /// through a hook instead.
     pub fn focused(&self) -> bool {
-        false
+        platform::windows::has_focus(self.window.0)
+    }
+    /// Gives the control the keyboard once it is shown, which `place` does.
+    pub fn focus(&mut self) {
+        self.focus_requested = true;
+    }
+    pub fn cancel_focus(&mut self) {
+        self.focus_requested = false;
     }
     /// The control reports through callbacks, so there is nothing to collect.
     pub fn poll(&mut self) {}
@@ -538,6 +549,7 @@ impl RdpClient {
         let Some(rect) = rect else {
             // Typing goes to Relay, such as a dialog that covers the desktop, not the hidden control.
             platform::windows::release_focus(self.window.0, self.parent);
+            self.focus_requested = false;
             unsafe {
                 ShowWindow(self.window.0, SW_HIDE);
             }
@@ -551,6 +563,9 @@ impl RdpClient {
         }
         unsafe {
             ShowWindow(self.window.0, SW_SHOWNA);
+        }
+        if std::mem::take(&mut self.focus_requested) {
+            platform::windows::focus_input(self.window.0);
         }
         let scale = scale_for(self.parent);
         if !self.started {

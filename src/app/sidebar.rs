@@ -123,7 +123,7 @@ impl App {
                 if let Some(filter) = chosen {
                     self.filter = filter;
                     self.group = None;
-                    self.active = None;
+                    self.activate(None);
                 }
                 if !collapsed {
                     ui.add_space(12.);
@@ -149,7 +149,7 @@ impl App {
                                 if nav_row(ui, Icon::Folder, &group, count, selected) {
                                     self.group = Some(group);
                                     self.filter = Filter::All;
-                                    self.active = None;
+                                    self.activate(None);
                                 }
                             }
                         });

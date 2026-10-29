@@ -100,6 +100,8 @@ pub struct RdpClient {
     translator: input::Translator,
     keys: ironrdp_input::Database,
     focused: bool,
+    /// Take the keyboard the next time the desktop is drawn.
+    focus_requested: bool,
     warning: Option<String>,
     clipboard: Option<arboard::Clipboard>,
     /// Local clipboard text already offered, text the remote side copied, and the last check.
@@ -135,6 +137,7 @@ impl RdpClient {
             translator: input::Translator::default(),
             keys: ironrdp_input::Database::new(),
             focused: false,
+            focus_requested: false,
             warning: None,
             clipboard: None,
             offered: None,
@@ -249,6 +252,20 @@ impl RdpClient {
     pub fn focused(&self) -> bool {
         self.focused
     }
+    /// Gives the desktop, or the sign-in form before it, the keyboard when next shown.
+    pub fn focus(&mut self) {
+        match &mut self.stage {
+            Stage::SignIn { place_cursor, .. } => *place_cursor = true,
+            _ => self.focus_requested = true,
+        }
+    }
+    /// Withdraws a request for the keyboard, such as the sign-in form's when it first shows.
+    pub fn cancel_focus(&mut self) {
+        self.focus_requested = false;
+        if let Stage::SignIn { place_cursor, .. } = &mut self.stage {
+            *place_cursor = false;
+        }
+    }
 
     /// Draws the sign-in prompt, certificate decision, or desktop into the rest of `ui`.
     /// Returns the area a native desktop window would cover.
@@ -260,6 +277,8 @@ impl RdpClient {
             ((ppp * 100.).round() as u32).max(100),
         ));
         self.poll();
+        // A request made while connecting lapses, rather than taking the keyboard later.
+        let focus = std::mem::take(&mut self.focus_requested);
         let mut start = None;
         match &mut self.stage {
             Stage::SignIn {
@@ -295,7 +314,7 @@ impl RdpClient {
                 ui.spinner();
                 ui.heading(format!("Connecting to {}…", self.connection.host));
             }
-            Stage::Running { .. } => self.desktop(ui, rect),
+            Stage::Running { .. } => self.desktop(ui, rect, focus),
             Stage::Ended(_) => {}
         }
         if let Some(credentials) = start {
@@ -337,14 +356,15 @@ impl RdpClient {
         };
     }
 
-    /// Draws the remote desktop into `rect` and forwards input to it.
-    fn desktop(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+    /// Draws the remote desktop into `rect` and forwards input to it, taking the keyboard if
+    /// `focus`.
+    fn desktop(&mut self, ui: &mut egui::Ui, rect: egui::Rect, focus: bool) {
         let Stage::Running { worker, .. } = &self.stage else {
             return;
         };
         let frame = worker.frame.clone();
         let (rect, response) = ui.allocate_exact_size(rect.size(), egui::Sense::click_and_drag());
-        if response.clicked() || response.drag_started() {
+        if focus || response.clicked() || response.drag_started() {
             response.request_focus();
         }
         if response.has_focus() {

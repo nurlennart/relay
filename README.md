@@ -59,7 +59,7 @@ A Windows remote desktop right in a tab:
 | `Enter` / `Shift+Enter` | Connect / browse an SSH connection's files |
 | `Ctrl+N` | New connection |
 | `Ctrl+Tab`, `Ctrl+1`–`9` | Switch tabs |
-| `Ctrl+\` | Split view with the neighbouring tab |
+| `Ctrl+\` | Split with the neighbouring tab, or unsplit |
 | `Ctrl+W` | Close the tab |
 | `Ctrl+Shift+T` | Open a local shell |
 | `Ctrl+Shift+P` | Run a saved snippet in an SSH tab |

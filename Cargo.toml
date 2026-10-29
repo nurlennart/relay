@@ -41,7 +41,7 @@ tiberius = { version = "0.13", default-features = false, features = ["tds73", "n
 wgpu = { version = "27", default-features = false, features = ["dx12", "wgsl"] }
 windows = { version = "0.61.3", features = ["Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant"] }
 windows-core = "0.61.2"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Security_Credentials", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Security_Credentials", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse"] }
 
 # Elsewhere remote desktops are drawn by IronRDP. Its crates require Rust 1.94.
 [target.'cfg(not(windows))'.dependencies]
@@ -56,7 +56,6 @@ ironrdp-input = "0.8"
 ironrdp-mstsgu = { version = "0.0.2", features = ["rustls"] }
 ironrdp-pdu = "0.10"
 ironrdp-session = "0.12"
-ironrdp-svc = "0.9"
 ironrdp-tls = { version = "0.3", features = ["rustls"] }
 ironrdp-tokio = "0.11"
 sha2 = "0.11"

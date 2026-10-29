@@ -325,7 +325,8 @@ git pull && ./deploy.sh",
             terminal,
             app.ctx.clone(),
         ));
-        app.active = Some(0);
+        app.sync_tabs();
+        app.activate_session(0);
         if std::env::var_os("RELAY_UI_SPLIT").is_some() {
             let mut connection = app.connections[3].clone();
             connection.host = "staging.example.com".into();
@@ -335,7 +336,9 @@ git pull && ./deploy.sh",
                 terminal,
                 app.ctx.clone(),
             ));
-            app.split = Some(1);
+            app.sync_tabs();
+            let keys = (app.sessions[0].key, app.sessions[1].key);
+            app.join(keys.0, keys.1, keys.0);
         }
         if std::env::var_os("RELAY_UI_PALETTE").is_some() {
             app.palette = Some(Palette::default());
@@ -345,7 +348,7 @@ git pull && ./deploy.sh",
         }
         // Show the library with the session's tab open beside it.
         if std::env::var_os("RELAY_UI_LIBRARY").is_some() {
-            app.active = None;
+            app.activate(None);
         }
     }
     if std::env::var_os("RELAY_UI_FILES").is_some() {
@@ -608,19 +611,23 @@ fn files(app: &mut App) {
             terminal,
             app.ctx.clone(),
         ));
-        app.active = Some(app.sessions.len() - 1);
-        app.split = Some(app.sessions.len());
-    } else {
-        app.active = Some(app.sessions.len());
     }
     app.sessions.push(session::Session::demo_files(
         connection,
         browser,
         app.ctx.clone(),
     ));
+    app.sync_tabs();
+    let count = app.sessions.len();
+    if std::env::var_os("RELAY_UI_SPLIT").is_some() {
+        let keys = (app.sessions[count - 2].key, app.sessions[count - 1].key);
+        app.join(keys.0, keys.1, keys.0);
+        app.activate_session(count - 2);
+    } else {
+        app.activate_session(count - 1);
+    }
     // Show the library with the tabs open beside it.
     if std::env::var_os("RELAY_UI_LIBRARY").is_some() {
-        app.active = None;
-        app.split = None;
+        app.activate(None);
     }
 }

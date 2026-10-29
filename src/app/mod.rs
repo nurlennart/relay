@@ -137,8 +137,8 @@ const MSSQL_EXAMPLE: &str = if cfg!(windows) {
 
 struct App {
     connections: Vec<Connection>,
+    /// Open sessions, in no particular order; each is known by its `key`.
     sessions: Vec<Session>,
-    active: Option<usize>,
     filter: Filter,
     query: String,
     modal: Modal,
@@ -187,19 +187,25 @@ struct App {
     state: state::State,
     /// Where `state` is saved; tests leave it unset.
     state_path: Option<PathBuf>,
-    /// The tab shown last frame, to focus a terminal when its tab opens.
-    shown: Option<usize>,
-    /// The session tab shown now and the one shown before it, by key, so closing a tab returns
-    /// to the one it was opened from.
+    /// The tab in front, by the key of a session it shows; `None` shows the library. Which side
+    /// of a pair is in front is the pair's own `focus`, so `active` derives the session.
+    front: Option<u64>,
+    /// Whether a tab or side was chosen since the last frame, which the keyboard a side still
+    /// holds from before must not undo.
+    chosen: bool,
+    /// The session tab shown last, by key, and the one shown before it, so closing a tab
+    /// returns to the one it was opened from.
     tab_trail: (Option<u64>, Option<u64>),
     /// Sessions shown in their own windows, by session key.
     detached: Vec<u64>,
     /// Native windows found for detached sessions, which remote desktops are moved into.
     windows: Vec<(u64, platform::Window)>,
-    /// The session shown beside the active one in split view.
-    split: Option<usize>,
-    /// Where the split divider sits, as a fraction of the width.
-    split_fraction: f32,
+    /// The tab strip, in order: each tab one session or a pair side by side, by session key,
+    /// with the side of each pair that has the keyboard. Every session has exactly one tab;
+    /// `sync_tabs` keeps it so.
+    tabs: Vec<tabs::Tab>,
+    /// The sessions on screen that had the keyboard last frame, to notice one taking it.
+    keyboard: Vec<u64>,
     /// The open snippet palette, over the active SSH tab.
     palette: Option<Palette>,
     /// Quick open, from the tab bar's +: a library search that also connects to typed hosts.
@@ -284,7 +290,6 @@ impl App {
         Self {
             connections,
             sessions: vec![],
-            active: None,
             filter: Filter::All,
             query: String::new(),
             modal: Modal::None,
@@ -319,12 +324,13 @@ impl App {
             list_view: (0., 0.),
             state,
             state_path: None,
-            shown: None,
+            front: None,
+            chosen: false,
             tab_trail: (None, None),
             detached: vec![],
             windows: vec![],
-            split: None,
-            split_fraction: SPLIT_MIDDLE,
+            tabs: vec![],
+            keyboard: vec![],
             palette: None,
             quick_open: None,
             snippet_draft: None,
@@ -366,6 +372,7 @@ impl App {
         if self.state.forget_tabs {
             return;
         }
+        let first = self.sessions.len();
         for (index, connection) in self.state.open.clone().into_iter().enumerate() {
             let browsing = self.state.file_tabs.contains(&index);
             let mut session = if self.state.local_tabs.contains(&index) {
@@ -379,7 +386,21 @@ impl App {
                 .clone();
             self.sessions.push(session);
         }
-        self.active = self.state.active_tab.filter(|i| *i < self.sessions.len());
+        self.sync_tabs();
+        // Pairs that no longer fit the saved tabs, such as one naming a tab twice, are dropped.
+        let keys: Vec<u64> = self.sessions[first..].iter().map(|s| s.key).collect();
+        for saved in self.state.pairs.clone() {
+            let (Some(&left), Some(&right)) = (keys.get(saved.left), keys.get(saved.right)) else {
+                continue;
+            };
+            let focus = if saved.right_focused { right } else { left };
+            if let Some(place) = self.join(left, right, focus)
+                && let tabs::Tab::Pair(pair) = &mut self.tabs[place]
+            {
+                pair.fraction = saved.fraction.clamp(SPLIT_MIN, 1. - SPLIT_MIN);
+            }
+        }
+        self.activate(self.state.active_tab.and_then(|i| keys.get(i).copied()));
     }
 
     /// Records the open tabs so the next start can restore them.
@@ -390,23 +411,42 @@ impl App {
             self.state.admin_tabs.clear();
             self.state.local_tabs.clear();
             self.state.tab_libraries.clear();
+            self.state.pairs.clear();
             self.state.active_tab = None;
             self.save_state();
             return;
         }
-        self.state.open = self.sessions.iter().map(|s| s.connection.clone()).collect();
-        self.state.file_tabs = (0..self.sessions.len())
-            .filter(|i| self.sessions[*i].browsing)
-            .collect();
-        self.state.admin_tabs = (0..self.sessions.len())
-            .filter(|i| self.sessions[*i].admin)
-            .collect();
-        self.state.local_tabs = (0..self.sessions.len())
-            .filter(|i| self.sessions[*i].local)
-            .collect();
-        self.state.tab_libraries = self.sessions.iter().map(|s| s.library.clone()).collect();
-        self.state.active_tab = self.active;
+        self.record_tabs();
         self.save_state();
+    }
+
+    /// Writes the open tabs into `state`, in strip order, without saving it.
+    fn record_tabs(&mut self) {
+        self.sync_tabs();
+        let order = self.strip_order();
+        let sessions: Vec<&Session> = order.iter().map(|&i| &self.sessions[i]).collect();
+        let which = |test: fn(&Session) -> bool| {
+            (0..sessions.len()).filter(|&i| test(sessions[i])).collect()
+        };
+        self.state.file_tabs = which(|s| s.browsing);
+        self.state.admin_tabs = which(|s| s.admin);
+        self.state.local_tabs = which(|s| s.local);
+        self.state.open = sessions.iter().map(|s| s.connection.clone()).collect();
+        self.state.tab_libraries = sessions.iter().map(|s| s.library.clone()).collect();
+        let saved = |key| order.iter().position(|&i| self.sessions[i].key == key);
+        self.state.pairs = (self.tabs.iter())
+            .filter_map(|tab| match *tab {
+                tabs::Tab::Pair(pair) => Some(state::SavedPair {
+                    left: saved(pair.left)?,
+                    right: saved(pair.right)?,
+                    fraction: pair.fraction,
+                    right_focused: pair.focus == pair.right,
+                }),
+                tabs::Tab::Single(_) => None,
+            })
+            .collect();
+        let active = self.active();
+        self.state.active_tab = active.and_then(|a| order.iter().position(|&i| i == a));
     }
 
     /// Reopens the library used last time, if it was a shared one.
@@ -435,55 +475,11 @@ impl App {
         self.pending = Some(database::start(location, 0, None, self.ctx.clone()));
     }
 
-    /// Moves session `from` to position `to`, keeping the same tab selected.
-    fn move_session(&mut self, from: usize, to: usize) {
-        if from >= self.sessions.len() || to >= self.sessions.len() || from == to {
-            return;
-        }
-        let session = self.sessions.remove(from);
-        self.sessions.insert(to, session);
-        self.active = self.active.map(|i| moved(i, from, to));
-        self.split = self.split.map(|i| moved(i, from, to));
-        self.shown = self.active;
-        self.remember_tabs();
-    }
-
-    /// Shows `index` beside the active session, or closes split view if it is already there.
-    fn split_with(&mut self, index: usize) {
-        if self.split == Some(index) {
-            self.split = None;
-        } else if self.active.is_some_and(|a| a != index) && index < self.sessions.len() {
-            self.split = Some(index);
-        }
-    }
-
-    /// Opens split view with the neighbouring tab, or closes it.
-    fn toggle_split(&mut self) {
-        if self.split.take().is_some() {
-            return;
-        }
-        if let Some(active) = self.active {
-            let next = if active + 1 < self.sessions.len() {
-                Some(active + 1)
-            } else {
-                active.checked_sub(1)
-            };
-            if let Some(next) = next {
-                self.split_with(next);
-            } else {
-                self.notify("Open a second session to use split view.");
-            }
-        }
-    }
-
-    /// Selects tab `index`, where 0 is the connection library and 1.. are sessions.
     /// Workspace and tab shortcuts, including those a remote desktop forwards through its hook.
     /// Returns whether a visible terminal or remote desktop has the keyboard.
     fn workspace_shortcuts(&mut self, ctx: &egui::Context) -> bool {
-        // Either side of a split view can hold the focused terminal or remote desktop.
-        let terminal_focused = [self.active, self.split]
-            .into_iter()
-            .flatten()
+        // Either side of a pair can hold the focused terminal or remote desktop.
+        let terminal_focused = (self.on_screen().into_iter())
             .filter_map(|i| self.sessions.get(i))
             .any(|s| s.keyboard_focused());
         let shortcut = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
@@ -500,7 +496,7 @@ impl App {
                 self.open_local_shell();
             }
             let ssh = self
-                .active
+                .active()
                 .and_then(|i| self.sessions.get(i))
                 .is_some_and(|s| s.connection.protocol == Protocol::Ssh && s.terminal.is_some());
             if ssh && shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::P) {
@@ -521,8 +517,9 @@ impl App {
                     None
                 }
             });
-            let tabs = self.sessions.len() + 1;
-            let current = self.active.map_or(0, |i| i + 1);
+            // A pair counts as one tab.
+            let tabs = self.tabs.len() + 1;
+            let current = self.active_tab().map_or(0, |i| i + 1);
             match command {
                 Some(Command::PreviousTab) => self.select_tab((current + tabs - 1) % tabs),
                 Some(Command::NextTab) => self.select_tab((current + 1) % tabs),
@@ -544,7 +541,7 @@ impl App {
                 }
             }
             if shortcut(ctrl, egui::Key::Num9) {
-                self.select_tab(self.sessions.len());
+                self.select_tab(self.tabs.len());
             }
             if native.is_some()
                 && let Some(parent) = self.parent
@@ -560,7 +557,7 @@ impl App {
             }
             if shortcut(ctrl, egui::Key::K) {
                 self.search_focus = true;
-                self.active = None;
+                self.activate(None);
             }
             if shortcut(ctrl, egui::Key::T) {
                 self.open_quick();
@@ -569,24 +566,20 @@ impl App {
                 self.set_sidebar_collapsed(!self.sidebar_collapsed(ctx));
             }
             if shortcut(ctrl, egui::Key::W)
-                && let Some(active) = self.active
+                && let Some(active) = self.active()
             {
                 self.request_close(active);
             }
             let shift = ctrl | egui::Modifiers::SHIFT;
-            if let Some(active) = self.active {
-                if shortcut(shift, egui::Key::PageUp) && active > 0 {
-                    self.move_session(active, active - 1);
+            if let Some(place) = self.active_tab() {
+                if shortcut(shift, egui::Key::PageUp) && place > 0 {
+                    self.move_tab(place, place - 1);
                 } else if shortcut(shift, egui::Key::PageDown) {
-                    self.move_session(active, active + 1);
+                    self.move_tab(place, place + 1);
                 }
             }
         }
         terminal_focused
-    }
-
-    fn select_tab(&mut self, index: usize) {
-        self.active = index.checked_sub(1).filter(|i| *i < self.sessions.len());
     }
 
     /// Whether a dialog covers the workspace. Native RDP windows sit above GPU content, so
@@ -696,7 +689,8 @@ impl App {
             s.place(None);
         }
         self.sessions.push(session);
-        self.active = Some(self.sessions.len() - 1);
+        self.sync_tabs();
+        self.activate_session(self.sessions.len() - 1);
         self.remember_tabs();
     }
 
@@ -750,10 +744,14 @@ impl App {
         };
         let (connection, browsing) = (session.connection.clone(), !session.browsing);
         let library = session.library.clone();
+        // An open tab of its own, or the other side of this session's pair.
+        let key = session.key;
+        let partner = self.partner(key);
         let existing = self.sessions.iter().position(|s| {
             s.browsing == browsing
                 && s.connection.same_target(&connection)
                 && !self.detached.contains(&s.key)
+                && (self.tabs.contains(&tabs::Tab::Single(s.key)) || partner == Some(s.key))
         });
         let other = match existing {
             Some(other) => other,
@@ -766,12 +764,13 @@ impl App {
                 count
             }
         };
-        if self.is_detached(index) {
-            self.active = Some(other);
+        let other_key = self.sessions[other].key;
+        // A session in its own window, or already beside another, shows the other in a tab.
+        if partner == Some(other_key) || self.join(key, other_key, key).is_none() {
+            self.activate_session(other);
             return;
         }
-        self.active = Some(index);
-        self.split = Some(other);
+        self.activate_session(index);
         self.remember_tabs();
     }
 
@@ -792,38 +791,45 @@ impl App {
         if index >= self.sessions.len() {
             return;
         }
-        let was_active = self.active == Some(index);
+        self.sync_tabs();
+        let in_front = self.active() == Some(index);
+        let key = self.sessions[index].key;
+        let (partner, place) = (self.partner(key), self.tab_of(key).unwrap_or(0));
         self.sessions.remove(index);
-        let shift = |tab: Option<usize>| match tab {
-            Some(a) if a == index => None,
-            Some(a) if a > index => Some(a - 1),
-            other => other,
-        };
-        self.active = shift(self.active);
-        self.split = shift(self.split);
-        // Closing the tab in front shows another rather than the library: the one beside it in
-        // split view, the one it was opened from, or its left neighbour.
-        if was_active {
-            let previous =
-                (self.tab_trail.1).and_then(|key| self.sessions.iter().position(|s| s.key == key));
-            self.active = self
-                .split
-                .take()
-                .or(previous)
-                .or_else(|| (!self.sessions.is_empty()).then(|| index.saturating_sub(1)));
+        // A pair's other side stays, as a tab of its own.
+        self.sync_tabs();
+        // Closing the session in front shows another rather than the library: the other side
+        // of its pair, the one it was opened from, or the tab to its left.
+        if in_front {
+            let open = |key: Option<u64>| key.filter(|&k| self.session_index(k).is_some());
+            let left = (self.tabs.get(place.saturating_sub(1))).map(tabs::Tab::focus);
+            self.activate(open(partner).or(open(self.tab_trail.1)).or(left));
         }
         self.remember_tabs();
     }
 
-    /// Notes which session tab is shown, keeping the one before it to return to.
-    fn note_tab(&mut self) {
-        let current = self
-            .active
-            .and_then(|i| self.sessions.get(i))
-            .map(|s| s.key);
-        // The library is a place to pass through, not a tab to return to.
-        if current.is_some() && current != self.tab_trail.0 {
-            self.tab_trail = (current, self.tab_trail.0);
+    /// Settles which side of the tab in front has the keyboard. A side that takes it by
+    /// itself, such as a remote desktop clicked into, comes in front, unless a side was chosen
+    /// since the last frame: one still holding the keyboard from before must not undo that.
+    fn follow_focus(&mut self) {
+        let focused: Vec<u64> = (self.on_screen().into_iter())
+            .map(|i| &self.sessions[i])
+            .filter(|s| s.keyboard_focused())
+            .map(|s| s.key)
+            .collect();
+        let taken = (focused.iter().copied()).find(|key| !self.keyboard.contains(key));
+        if !std::mem::take(&mut self.chosen)
+            && let Some(key) = taken
+        {
+            self.bring_forward(Some(key));
+        }
+        self.keyboard = focused;
+        // Only the side in front takes the keyboard when asked, such as a new terminal's.
+        let active = self.active();
+        for index in self.on_screen() {
+            if Some(index) != active {
+                self.sessions[index].cancel_focus();
+            }
         }
     }
 
@@ -986,8 +992,9 @@ impl App {
                 ui.horizontal(|ui| {
                     let quit = egui::Button::new("End sessions and quit");
                     if ui.add_enabled(self.pending.is_none(), quit).clicked() {
+                        self.remember_tabs();
                         self.sessions.clear();
-                        self.active = None;
+                        self.activate(None);
                         // The warning above was the last chance to export unsaved changes.
                         self.recovery = None;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1132,8 +1139,9 @@ impl App {
 impl eframe::App for App {
     fn on_exit(&mut self) {
         // Quitting ends sessions first; keep the tabs recorded before that.
+        // Selecting tabs and resizing pairs leave the record to here.
         if !self.sessions.is_empty() && !self.state.forget_tabs {
-            self.state.active_tab = self.active;
+            self.record_tabs();
         }
         self.save_state();
     }
@@ -1177,6 +1185,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.quitting = true;
         }
+        self.sync_tabs();
         let terminal_focused = self.workspace_shortcuts(ctx);
         // Before the views behind it, so its keys never reach them.
         self.quick_open(ctx);
@@ -1191,40 +1200,27 @@ impl eframe::App for App {
             s.poll(self.parent);
         }
         self.take_copies(ctx);
-        if self.split == self.active {
-            self.split = None;
-        }
+        let on_screen = self.on_screen();
         // Only sessions on screen wake the window with their output; the others catch up when
         // their tab is shown.
         for (index, session) in self.sessions.iter().enumerate() {
-            let shown = [self.active, self.split].contains(&Some(index)) || self.is_detached(index);
+            let shown = on_screen.contains(&index) || self.is_detached(index);
             session.set_shown(shown);
         }
         // A tab restored from the last run connects when it is first shown.
-        for index in [self.active, self.split].into_iter().flatten() {
+        for &index in &on_screen {
             if let Some(session) = self.sessions.get_mut(index)
                 && let Err(e) = session.resume()
             {
                 self.error = Some(e);
             }
         }
-        self.note_tab();
-        if self.shown != self.active {
-            self.shown = self.active;
-            if let Some(session) = self.active.and_then(|i| self.sessions.get_mut(i)) {
-                if let Some(terminal) = &mut session.terminal {
-                    terminal.focus();
-                }
-                if let Some(files) = &mut session.files {
-                    files.view.focus_requested = true;
-                }
-            }
-        }
+        self.follow_focus();
         // Hide native children before painting overlays; embedded remote desktops sit above GPU content.
         let covered = self.covered();
         for (i, s) in self.sessions.iter_mut().enumerate() {
             let detached = self.detached.contains(&s.key);
-            if !detached && ((self.active != Some(i) && self.split != Some(i)) || covered) {
+            if !detached && (!on_screen.contains(&i) || covered) {
                 s.place(None);
             }
         }
@@ -1262,46 +1258,17 @@ impl eframe::App for App {
                     });
                     ui.add_space(10.);
                 }
-                let split = self.split.filter(|i| {
-                    Some(*i) != self.active && *i < self.sessions.len() && !self.is_detached(*i)
+                let pair = (self.active_pair()).and_then(|(place, pair)| {
+                    let left = self.session_index(pair.left)?;
+                    let right = self.session_index(pair.right)?;
+                    Some((place, pair.fraction, left, right))
                 });
-                match (self.active, split) {
+                match (self.active(), pair) {
                     (Some(index), _) if self.is_detached(index) => {
                         self.detached_placeholder(ui, index)
                     }
-                    (Some(left), Some(right)) => {
-                        let area = ui.available_rect_before_wrap();
-                        let divider = split_divider(ui, area, &mut self.split_fraction);
-                        let sides = [
-                            (
-                                left,
-                                egui::Rect::from_min_max(
-                                    area.min,
-                                    egui::pos2(divider.left(), area.bottom()),
-                                ),
-                                Pane::Main,
-                            ),
-                            (
-                                right,
-                                egui::Rect::from_min_max(
-                                    egui::pos2(divider.right(), area.top()),
-                                    area.max,
-                                ),
-                                Pane::Beside,
-                            ),
-                        ];
-                        for (index, rect, pane) in sides {
-                            let mut pane_ui = ui.new_child(
-                                egui::UiBuilder::new()
-                                    .max_rect(rect)
-                                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
-                            );
-                            pane_ui.set_clip_rect(rect);
-                            if let Some(rect) = self.session_pane(&mut pane_ui, index, pane) {
-                                session_rects.push((index, rect));
-                            }
-                        }
-                        ui.allocate_rect(area, egui::Sense::hover());
+                    (Some(_), Some((place, fraction, left, right))) => {
+                        self.pair_panes(ui, place, fraction, [left, right], &mut session_rects);
                     }
                     (Some(index), None) => {
                         if let Some(rect) = self.session_pane(ui, index, Pane::Main) {
@@ -1412,21 +1379,10 @@ fn set_fonts(ctx: &egui::Context, terminal_font: Option<&std::path::Path>) -> Re
     result
 }
 
-/// Where item `index` ends up after the item at `from` moves to `to`.
-fn moved(index: usize, from: usize, to: usize) -> usize {
-    if index == from {
-        to
-    } else if from < index && index <= to {
-        index - 1
-    } else if to <= index && index < from {
-        index + 1
-    } else {
-        index
-    }
-}
-
 /// Where split view's divider starts, and returns to on a double-click.
 const SPLIT_MIDDLE: f32 = 0.5;
+/// The narrowest a side of split view gets, as a fraction of the width.
+const SPLIT_MIN: f32 = 0.25;
 
 /// The divider between split view's two sides in `area`, dragged to resize them and
 /// double-clicked to return to the middle. Returns the room it takes between them.
@@ -1451,7 +1407,7 @@ fn split_divider(ui: &mut egui::Ui, area: egui::Rect, fraction: &mut f32) -> egu
     } else if handle.dragged()
         && let Some(pointer) = handle.interact_pointer_pos()
     {
-        *fraction = ((pointer.x - area.left()) / area.width()).clamp(0.25, 0.75);
+        *fraction = ((pointer.x - area.left()) / area.width()).clamp(SPLIT_MIN, 1. - SPLIT_MIN);
     }
     let line = if handle.hovered() || handle.dragged() {
         colors.accent

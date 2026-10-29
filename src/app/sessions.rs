@@ -8,7 +8,8 @@ impl App {
             .is_some_and(|s| self.detached.contains(&s.key))
     }
 
-    /// Moves session `index` into its own window.
+    /// Moves session `index` into its own window. A pair it was in is unsplit, and the other
+    /// side stays in front.
     pub(super) fn detach(&mut self, index: usize) {
         let Some(session) = self.sessions.get_mut(index) else {
             return;
@@ -16,12 +17,17 @@ impl App {
         if let Some(terminal) = &mut session.terminal {
             terminal.focus();
         }
-        self.detached.push(session.key);
-        if self.split == Some(index) {
-            self.split = None;
+        let key = session.key;
+        let partner = self.partner(key);
+        let in_front = self.active() == Some(index);
+        self.detached.push(key);
+        if let Some(place) = self.tab_of(key)
+            && partner.is_some()
+        {
+            self.unsplit(place);
         }
-        if self.active == Some(index) {
-            self.active = self.split.take();
+        if in_front {
+            self.activate(partner);
         }
     }
 
@@ -31,7 +37,7 @@ impl App {
         self.windows.retain(|(k, _)| *k != key);
         if let Some(index) = self.sessions.iter().position(|s| s.key == key) {
             self.sessions[index].set_host(None, self.parent);
-            self.active = Some(index);
+            self.activate_session(index);
         }
     }
 
@@ -151,6 +157,57 @@ impl App {
         placed
     }
 
+    /// Shows the pair at `place` side by side in `ui`, the `left` and `right` sessions either
+    /// side of a divider at `fraction` of the width. Adds where each remote desktop should
+    /// cover to `rects`.
+    pub(super) fn pair_panes(
+        &mut self,
+        ui: &mut egui::Ui,
+        place: usize,
+        mut fraction: f32,
+        [left, right]: [usize; 2],
+        rects: &mut Vec<(usize, egui::Rect)>,
+    ) {
+        let area = ui.available_rect_before_wrap();
+        let divider = split_divider(ui, area, &mut fraction);
+        if let Some(tabs::Tab::Pair(pair)) = self.tabs.get_mut(place) {
+            pair.fraction = fraction;
+        }
+        let sides = [
+            (
+                left,
+                egui::Rect::from_min_max(area.min, egui::pos2(divider.left(), area.bottom())),
+                Pane::Main,
+            ),
+            (
+                right,
+                egui::Rect::from_min_max(egui::pos2(divider.right(), area.top()), area.max),
+                Pane::Beside,
+            ),
+        ];
+        // A click into a side brings it in front.
+        let pressed = ui.input(|i| {
+            (i.pointer.any_pressed())
+                .then(|| i.pointer.interact_pos())
+                .flatten()
+        });
+        for (index, rect, pane) in sides {
+            if pressed.is_some_and(|p| rect.contains(p)) && self.active() != Some(index) {
+                self.activate_session(index);
+            }
+            let mut pane_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
+            );
+            pane_ui.set_clip_rect(rect);
+            if let Some(rect) = self.session_pane(&mut pane_ui, index, pane) {
+                rects.push((index, rect));
+            }
+        }
+        ui.allocate_rect(area, egui::Sense::hover());
+    }
+
     /// Shows session `index` in `ui`: its header, then its terminal, status, or remote desktop.
     /// Returns the area a remote desktop should cover.
     pub(super) fn session_pane(
@@ -182,8 +239,8 @@ impl App {
                 match pane {
                     Pane::Beside => {
                         unsplit = ui
-                            .button("Close split")
-                            .on_hover_text("Ctrl+\\ toggles split view")
+                            .button("Unsplit")
+                            .on_hover_text("Show the two sessions as separate tabs again (Ctrl+\\)")
                             .clicked();
                     }
                     Pane::Window => {
@@ -286,14 +343,13 @@ impl App {
         if snippets {
             self.palette = Some(Palette::default());
         }
-        if unsplit {
-            self.split = None;
+        if unsplit && let Some(place) = self.tab_of(self.sessions[index].key) {
+            self.unsplit(place);
         }
+        // The panes may have changed; they are laid out again next frame.
         if companion {
             self.open_companion(index);
-            if pane == Pane::Beside {
-                return None;
-            }
+            return None;
         }
         if attach {
             self.attach(self.sessions[index].key);
@@ -301,7 +357,7 @@ impl App {
         let s = &self.sessions[index];
         ui.add_space(6.);
         if s.browsing {
-            self.files_pane(ui, index, pane);
+            self.files_pane(ui, index);
         } else if s.terminal.is_some() {
             if let Some(status) = s.status() {
                 let (mut now, mut stop) = (false, false);
@@ -384,8 +440,9 @@ pub(super) fn overlays(ctx: &egui::Context) -> Vec<egui::Rect> {
 /// Where a session pane is shown, which decides its header actions.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Pane {
+    /// A tab of its own, or the left side of a pair.
     Main,
-    /// The right side of split view.
+    /// The right side of a pair.
     Beside,
     /// A detached session window.
     Window,

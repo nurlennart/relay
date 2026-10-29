@@ -45,7 +45,7 @@ impl App {
                     ("Mod+Tab / Mod+Shift+Tab", "Next / previous tab"),
                     ("Mod+Alt+PageDown / PageUp", "Next / previous tab"),
                     ("Mod+Shift+PageUp / PageDown", "Move tab left / right"),
-                    ("Mod+\\", "Toggle split view"),
+                    ("Mod+\\", "Split with the neighbouring tab, or unsplit"),
                     ("Mod+Shift+T", "Open a local shell"),
                 ]),
                 ("CONNECTION LIBRARY & DIALOGS", &[

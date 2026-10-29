@@ -62,15 +62,15 @@ const COLUMN_GAP: f32 = 12.;
 
 impl App {
     /// Shows session `index`'s file browser below its header.
-    pub(super) fn files_pane(&mut self, ui: &mut egui::Ui, index: usize, pane: Pane) {
+    pub(super) fn files_pane(&mut self, ui: &mut egui::Ui, index: usize) {
         let covered = self.covered();
-        let main_browses = self
-            .active
+        let active = self.active();
+        let active_browses = active
             .and_then(|a| self.sessions.get(a))
             .is_some_and(|s| s.browsing);
-        // Files dropped without a pointer position go to the main pane, or to the pane beside
-        // it when the main one is not a browser.
-        let fallback = pane != Pane::Beside || !main_browses;
+        // Files dropped without a pointer position go to the side in front, or to the other
+        // side when the one in front is not a browser.
+        let fallback = active == Some(index) || !active_browses;
         let session = &mut self.sessions[index];
         let key = session.key;
         let mut actions = vec![];
