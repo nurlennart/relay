@@ -1338,6 +1338,8 @@ fn summary_of_names(names: &[&str]) -> String {
 /// that cannot be read leaves the system's monospace font in place and says why.
 fn set_fonts(ctx: &egui::Context, terminal_font: Option<&std::path::Path>) -> Result<(), String> {
     let mut fonts = egui::FontDefinitions::default();
+    // Every font is checked before egui gets it, as egui panics on one it cannot parse; a
+    // missing or damaged system font is passed over.
     // Prefer the system's own fonts; a real terminal font matters for SSH sessions.
     for (family, monospace) in [
         (egui::FontFamily::Proportional, false),
@@ -1345,7 +1347,7 @@ fn set_fonts(ctx: &egui::Context, terminal_font: Option<&std::path::Path>) -> Re
     ] {
         if let Some((path, bytes)) = platform::fonts(monospace)
             .iter()
-            .find_map(|path| Some((path, std::fs::read(path).ok()?)))
+            .find_map(|path| Some((path, crate::fonts::read(path.as_ref()).ok()?)))
         {
             let name = path.to_string();
             fonts
@@ -1357,7 +1359,7 @@ fn set_fonts(ctx: &egui::Context, terminal_font: Option<&std::path::Path>) -> Re
     // Symbols that no font before has, such as the ✻ and ⎿ in command-line tools' status
     // lines, come from the system's symbol fonts rather than showing as boxes.
     for path in platform::symbol_fonts() {
-        if let Ok(bytes) = std::fs::read(path) {
+        if let Ok(bytes) = crate::fonts::read(path.as_ref()) {
             let name = path.to_string();
             fonts
                 .font_data
