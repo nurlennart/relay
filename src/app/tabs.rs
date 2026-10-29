@@ -202,7 +202,7 @@ impl App {
                                     if joined {
                                         let colors = theme::palette(ui.ctx());
                                         let fill = if selected {
-                                            colors.surface
+                                            colors.selected
                                         } else {
                                             egui::Color32::TRANSPARENT
                                         };
@@ -216,6 +216,9 @@ impl App {
                                                 egui::StrokeKind::Inside,
                                             ),
                                         );
+                                        if selected {
+                                            selected_bar(ui, rect);
+                                        }
                                         if let [left, _] = sides[..] {
                                             ui.painter().vline(
                                                 left.right(),
@@ -322,21 +325,27 @@ impl App {
     }
 }
 
-/// The fill behind a tab: raised when selected, faint while hovered.
+/// The fill behind a tab: marked when selected, faint while hovered.
 fn tab_background(ui: &egui::Ui, rect: Rect, selected: bool, hovered: bool) {
     let colors = theme::palette(ui.ctx());
     if selected {
-        ui.painter().rect(
-            rect,
-            RADIUS,
-            colors.surface,
-            Stroke::new(1_f32, colors.line),
-            egui::StrokeKind::Inside,
-        );
+        ui.painter().rect_filled(rect, RADIUS, colors.selected);
+        selected_bar(ui, rect);
     } else if hovered {
         ui.painter()
             .rect_filled(rect, RADIUS, colors.hover.gamma_multiply(0.6));
     }
+}
+
+/// The accent bar along the selected tab's bottom edge. With the selection tint the sidebar
+/// uses, it sets the tab apart from the action buttons beside it and the tabs around it.
+fn selected_bar(ui: &egui::Ui, rect: Rect) {
+    let bar = Rect::from_x_y_ranges(
+        rect.x_range().shrink(f32::from(RADIUS)),
+        rect.bottom() - 2.0..=rect.bottom(),
+    );
+    ui.painter()
+        .rect_filled(bar, 1., theme::palette(ui.ctx()).accent);
 }
 
 /// The widest a session tab's name gets before it is shortened.

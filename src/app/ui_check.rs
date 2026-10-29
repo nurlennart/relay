@@ -352,6 +352,24 @@ git pull && ./deploy.sh",
             app.activate(None);
         }
     }
+    // Many sessions open with the second in front, to judge the selected tab among the rest.
+    if let Some(count) = std::env::var("RELAY_UI_SESSIONS")
+        .ok()
+        .and_then(|n| n.parse::<usize>().ok())
+    {
+        for i in 1..=count {
+            let mut connection = app.connections[1].clone();
+            connection.name = format!("Test {i}");
+            let terminal = crate::terminal::Terminal::demo(transcript());
+            app.sessions.push(session::Session::demo(
+                connection,
+                terminal,
+                app.ctx.clone(),
+            ));
+        }
+        app.sync_tabs();
+        app.select_tab(2);
+    }
     if std::env::var_os("RELAY_UI_FILES").is_some() {
         files(app);
     }
