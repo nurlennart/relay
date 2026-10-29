@@ -48,9 +48,9 @@ A file browser beside its terminal, with drag-and-drop uploads and a transfer qu
 
 ![An SSH terminal and the SFTP file browser side by side in split view, with a download in progress](assets/screenshot-files.png)
 
-A Windows remote desktop right in a tab:
+Remote desktops right in a tab, resizing as you go:
 
-![A Windows Server desktop open in a Relay tab, with the shortcut hints and Full screen above it](assets/screenshot-rdp.png)
+![Two Windows remote desktops side by side in one Relay tab; as the divider is dragged, each desktop resizes to fit its half](assets/remote-desktops.gif)
 
 ## Handy shortcuts
 

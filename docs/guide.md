@@ -120,7 +120,7 @@ A shared library reloads quietly every minute and when Relay's window regains fo
 
 ### Remote desktops on Windows
 
-![A Windows Server desktop open in a Relay tab, with the shortcut hints and Full screen above it](../assets/screenshot-rdp.png)
+![Two Windows remote desktops side by side in one Relay tab; as the divider is dragged, each desktop resizes to fit its half](../assets/remote-desktops.gif)
 
 RDP is hosted directly inside each tab using the Windows desktop RDP control. Relay does not launch `mstsc.exe` or generate RDP files. Windows asks for credentials and offers **Remember me**, which stores them in Windows Credential Manager (`TERMSRV/<host>`), exactly like Remote Desktop Connection; Relay never receives or stores passwords. **More actions (···) → Forget saved password**, also on a row's right-click menu, removes them. **Connect to admin session** in the same menus opens the server's administrative session in a new tab, as `mstsc /admin` does, without changing the saved connection; it is Windows-only for now. Windows authentication and certificate dialogs can appear outside the tab. Certificate verification and NLA remain enabled.
 
