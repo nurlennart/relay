@@ -37,14 +37,20 @@ impl Kind {
     }
 }
 
+/// A picker attached to `parent`, when there is one.
+fn dialog(parent: Option<Window>) -> rfd::FileDialog {
+    let dialog = rfd::FileDialog::new();
+    match &parent {
+        Some(parent) => dialog.set_parent(parent),
+        None => dialog,
+    }
+}
+
 /// Shows a picker and returns the chosen paths; an empty list means it was cancelled.
 pub fn choose(parent: Option<Window>, kind: Kind) -> Vec<PathBuf> {
-    let mut dialog = rfd::FileDialog::new();
+    let mut dialog = dialog(parent);
     if let Some((name, extensions)) = kind.filter() {
         dialog = dialog.add_filter(name, extensions);
-    }
-    if let Some(parent) = &parent {
-        dialog = dialog.set_parent(parent);
     }
     match kind {
         Kind::RdpFiles => dialog.pick_files().unwrap_or_default(),
@@ -71,10 +77,7 @@ pub fn choose(parent: Option<Window>, kind: Kind) -> Vec<PathBuf> {
 
 /// Asks for files to upload, or folders with `folders`.
 pub fn pick_uploads(parent: Option<Window>, folders: bool) -> Vec<PathBuf> {
-    let mut dialog = rfd::FileDialog::new();
-    if let Some(parent) = &parent {
-        dialog = dialog.set_parent(parent);
-    }
+    let dialog = dialog(parent);
     if folders {
         dialog.pick_folders().unwrap_or_default()
     } else {
@@ -84,10 +87,7 @@ pub fn pick_uploads(parent: Option<Window>, folders: bool) -> Vec<PathBuf> {
 
 /// Asks for a folder to download into, starting at `start`.
 pub fn pick_folder(parent: Option<Window>, start: Option<&Path>) -> Option<PathBuf> {
-    let mut dialog = rfd::FileDialog::new().set_title("Download to folder");
-    if let Some(parent) = &parent {
-        dialog = dialog.set_parent(parent);
-    }
+    let mut dialog = dialog(parent).set_title("Download to folder");
     if let Some(start) = start {
         dialog = dialog.set_directory(start);
     }
@@ -97,10 +97,7 @@ pub fn pick_folder(parent: Option<Window>, start: Option<&Path>) -> Option<PathB
 /// Asks where to save a download named `name`, starting at `start`. The dialog asks before
 /// replacing an existing file.
 pub fn save_as(parent: Option<Window>, name: &str, start: Option<&Path>) -> Option<PathBuf> {
-    let mut dialog = rfd::FileDialog::new().set_file_name(name);
-    if let Some(parent) = &parent {
-        dialog = dialog.set_parent(parent);
-    }
+    let mut dialog = dialog(parent).set_file_name(name);
     if let Some(start) = start {
         dialog = dialog.set_directory(start);
     }
