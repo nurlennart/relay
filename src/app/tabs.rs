@@ -35,8 +35,33 @@ impl App {
                         .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 );
                 let ui = &mut ui;
+                ui.spacing_mut().item_spacing.x = 4.;
+                // Room for the new connection and local shell buttons after the tabs.
+                let buttons = 2. * (26. + 4.);
+                let scroll = Rect::from_min_size(
+                    strip.min,
+                    Vec2::new((strip.width() - buttons).max(0.), strip.height()),
+                );
+                // The wheel scrolls the tabs sideways, as a trackpad or Shift+wheel does.
+                if ui.rect_contains_pointer(scroll) {
+                    ui.input_mut(|i| {
+                        let delta = &mut i.smooth_scroll_delta;
+                        if delta.x == 0. {
+                            (delta.x, delta.y) = (delta.y, 0.);
+                        }
+                    });
+                }
+                // The tab in front scrolls into view when it changes.
+                let front = (self.front, self.tabs.len());
+                let reveal = ui.ctx().data_mut(|d| {
+                    let last = d.get_temp_mut_or_default::<(Option<u64>, usize)>(egui::Id::new(
+                        "tabs-front",
+                    ));
+                    std::mem::replace(last, front) != front
+                });
                 egui::ScrollArea::horizontal()
                     .id_salt("tabs-scroll")
+                    .max_width(scroll.width())
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, |ui| {
                         ui.horizontal_centered(|ui| {
@@ -199,6 +224,9 @@ impl App {
                                             );
                                         }
                                     }
+                                    if selected && reveal {
+                                        ui.scroll_to_rect(rect, None);
+                                    }
                                     rects.push(rect);
                                 });
                             }
@@ -265,23 +293,22 @@ impl App {
                                     );
                                 }
                             }
-                            if icon_button(ui, Icon::Plus, 26., "Open a connection (Ctrl+T)")
-                                .clicked()
-                            {
-                                self.open_quick();
-                            }
-                            if icon_button(
-                                ui,
-                                Icon::Terminal,
-                                26.,
-                                &format!("Local shell on this computer ({LOCAL_SHELL_KEYS})"),
-                            )
-                            .clicked()
-                            {
-                                self.open_local_shell();
-                            }
                         });
                     });
+                // They follow the last tab, and stay in reach at the right once tabs overflow.
+                if icon_button(ui, Icon::Plus, 26., "Open a connection (Ctrl+T)").clicked() {
+                    self.open_quick();
+                }
+                if icon_button(
+                    ui,
+                    Icon::Terminal,
+                    26.,
+                    &format!("Local shell on this computer ({LOCAL_SHELL_KEYS})"),
+                )
+                .clicked()
+                {
+                    self.open_local_shell();
+                }
             });
     }
 

@@ -1654,6 +1654,83 @@ fn connected_tabs_offer_reconnect_from_their_menu() {
 }
 
 #[test]
+fn tabs_beyond_the_window_width_stay_reachable() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut app = test_app(&ctx);
+    for i in 0..12 {
+        let mut c = Connection::new();
+        c.name = format!("Server number {i}");
+        c.host = format!("s{i}.example");
+        app.sessions
+            .push(session::Session::restored(c, false, ctx.clone()));
+    }
+    app.sync_tabs();
+    let width = 600.;
+    let mut time = 0.;
+    // Where each labelled button in the bar lies, left to right edges.
+    let mut frame = |app: &mut App, events| {
+        time += 1. / 60.;
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(width, 800.),
+                )),
+                time: Some(time),
+                predicted_dt: 1. / 60.,
+                events,
+                ..Default::default()
+            },
+            |ctx| app.tabs(ctx),
+        );
+        let update = output.platform_output.accesskit_update.unwrap();
+        move |label: &str| {
+            let (_, node) = (update.nodes.iter())
+                .find(|(_, node)| node.label() == Some(label))
+                .unwrap_or_else(|| panic!("no {label} in the tab bar"));
+            let b = node.bounds().unwrap();
+            (b.x0 as f32, b.x1 as f32)
+        }
+    };
+    let visible = |(left, right): (f32, f32)| left >= 0. && right <= width;
+    // Choosing the last tab, as Ctrl+9 does, scrolls it into view.
+    app.select_tab(11);
+    for _ in 0..30 {
+        let _ = frame(&mut app, vec![]);
+    }
+    let bar = frame(&mut app, vec![]);
+    assert!(
+        visible(bar("Server number 11")),
+        "{:?}",
+        bar("Server number 11")
+    );
+    assert!(!visible(bar("Server number 0")));
+    // The new connection and local shell buttons stay in reach.
+    let local = format!("Local shell on this computer ({})", tabs::LOCAL_SHELL_KEYS);
+    assert!(visible(bar("Open a connection (Ctrl+T)")));
+    assert!(visible(bar(&local)));
+    // The wheel scrolls the tabs back.
+    let over = egui::pos2(200., 20.);
+    let _ = frame(&mut app, vec![egui::Event::PointerMoved(over)]);
+    let wheel = egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: Vec2::new(0., 5000.),
+        modifiers: egui::Modifiers::NONE,
+    };
+    let _ = frame(&mut app, vec![wheel]);
+    for _ in 0..60 {
+        let _ = frame(&mut app, vec![]);
+    }
+    let bar = frame(&mut app, vec![]);
+    assert!(
+        visible(bar("Server number 0")),
+        "{:?}",
+        bar("Server number 0")
+    );
+}
+
+#[test]
 fn saving_an_edit_keeps_changes_made_meanwhile() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);
