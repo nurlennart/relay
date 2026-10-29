@@ -1012,7 +1012,7 @@ fn row(
             let stem = text
                 .rfind('.')
                 .filter(|i| *i > 0 && !entry.dir)
-                .unwrap_or(text.chars().count());
+                .unwrap_or(text.len());
             let stem = text[..stem].chars().count();
             if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), field.id) {
                 state

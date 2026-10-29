@@ -1039,6 +1039,34 @@ fn file_browser_keys_select_ranges_and_ask_before_deleting() {
 }
 
 #[test]
+fn renaming_a_name_without_an_extension_selects_all_of_it() {
+    let ctx = egui::Context::default();
+    let mut app = files_app(&ctx);
+    let mut c = app.connections[0].clone();
+    c.protocol = Protocol::Ssh;
+    let entry = crate::sftp::Entry {
+        name: "日本語".into(),
+        dir: false,
+        link: false,
+        special: false,
+        size: 10,
+        modified: Some(1_700_000_000),
+        mode: Some(0o100_644),
+    };
+    let browser = crate::sftp::Browser::demo("/srv", vec![entry]);
+    app.sessions[0] = session::Session::demo_files(c, browser, ctx.clone());
+    let none = egui::Modifiers::NONE;
+    files_frame(&mut app, &ctx, vec![]);
+    files_frame(&mut app, &ctx, vec![key(egui::Key::End, none)]);
+    files_frame(&mut app, &ctx, vec![key(egui::Key::F2, none)]);
+    files_frame(&mut app, &ctx, vec![]);
+    files_frame(&mut app, &ctx, vec![egui::Event::Text("x".into())]);
+    files_frame(&mut app, &ctx, vec![key(egui::Key::Enter, none)]);
+    let selected: Vec<_> = files(&app).view.selected.iter().cloned().collect();
+    assert_eq!(selected, ["x"]);
+}
+
+#[test]
 fn f2_renames_in_place_and_keeps_the_extension() {
     let ctx = egui::Context::default();
     let mut app = files_app(&ctx);
