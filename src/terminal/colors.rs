@@ -1,10 +1,12 @@
 //! Terminal color schemes, chosen in Settings and shared by every terminal.
+use crate::theme::Theme;
 use eframe::egui::Color32;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Scheme {
-    /// Dark or light, following the workspace theme.
+    /// The workspace theme's surfaces, text and accent, around the dark or light basic
+    /// colors.
     Workspace,
     #[default]
     Dark,
@@ -35,16 +37,41 @@ impl Scheme {
         }
     }
 
-    /// The scheme's colors, in a workspace with a light theme or not.
-    pub fn colors(self, light_workspace: bool) -> Colors {
+    /// The scheme's colors, in a workspace with this theme.
+    pub fn colors(self, theme: Theme) -> Colors {
         match self {
-            Self::Workspace if light_workspace => Self::Light.colors(true),
-            Self::Workspace | Self::Dark => DARK,
+            Self::Workspace => workspace(theme),
+            Self::Dark => DARK,
             Self::Light => LIGHT,
             Self::SolarizedDark => SOLARIZED_DARK,
             Self::SolarizedLight => SOLARIZED_LIGHT,
             Self::Monokai => MONOKAI,
         }
+    }
+}
+
+/// A terminal dressed in the workspace theme. Programs keep the dark or light basic colors,
+/// so `ls`, git and editors look the same in every theme.
+fn workspace(theme: Theme) -> Colors {
+    let p = theme.colors();
+    let light = theme.is_light();
+    Colors {
+        // A shade below the workspace on dark themes, as the dark scheme sits, and the
+        // brightest surface on light ones.
+        background: if light {
+            p.panel
+        } else {
+            p.bg.lerp_to_gamma(Color32::BLACK, 0.25)
+        },
+        title: if light { p.bg } else { p.panel },
+        title_text: p.text,
+        title_muted: p.muted,
+        border: p.line,
+        foreground: p.text,
+        cursor: p.text,
+        selection: p.selected,
+        link: p.accent,
+        ..if light { LIGHT } else { DARK }
     }
 }
 
@@ -306,9 +333,9 @@ mod tests {
     #[test]
     fn every_scheme_keeps_its_text_readable() {
         for scheme in Scheme::ALL {
-            for light in [false, true] {
-                let c = scheme.colors(light);
-                let name = scheme.name();
+            for theme in Theme::ALL {
+                let c = scheme.colors(theme);
+                let name = format!("{} in {}", scheme.name(), theme.name());
                 // Solarized is low in contrast by design, just under 4.5 for its light text.
                 let solarized = matches!(scheme, Scheme::SolarizedDark | Scheme::SolarizedLight);
                 let text = if solarized { 4. } else { 4.5 };
@@ -335,7 +362,13 @@ mod tests {
                 }
             }
         }
-        assert_eq!(Scheme::Workspace.colors(true), LIGHT);
-        assert_eq!(Scheme::Workspace.colors(false), DARK);
+        for theme in Theme::ALL {
+            let c = Scheme::Workspace.colors(theme);
+            let base = if theme.is_light() { LIGHT } else { DARK };
+            assert_eq!(c.light, theme.is_light());
+            assert_eq!(c.ansi, base.ansi);
+            assert_eq!(c.link, theme.colors().accent);
+            assert_eq!(Scheme::Monokai.colors(theme), MONOKAI);
+        }
     }
 }

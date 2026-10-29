@@ -342,13 +342,18 @@ impl App {
         ui.add_space(6.);
         ui.label(RichText::new("Colors").color(colors.muted));
         ui.add_space(2.);
-        let light = theme::current(ui.ctx()).is_light();
+        let workspace = theme::current(ui.ctx());
         let schemes = crate::terminal::Scheme::ALL;
         for pair in schemes.chunks(2) {
             ui.columns(2, |columns| {
                 for (column, &scheme) in pair.iter().enumerate() {
-                    if scheme_option(&mut columns[column], scheme, light, next.scheme == scheme)
-                        .clicked()
+                    if scheme_option(
+                        &mut columns[column],
+                        scheme,
+                        workspace,
+                        next.scheme == scheme,
+                    )
+                    .clicked()
                     {
                         next.scheme = scheme;
                     }
@@ -356,7 +361,7 @@ impl App {
             });
         }
         ui.add_space(6.);
-        terminal_sample(ui, next.font_size, &next.scheme.colors(light));
+        terminal_sample(ui, next.font_size, &next.scheme.colors(workspace));
         if next.font != settings.font {
             match set_fonts(ui.ctx(), next.font.as_deref()) {
                 Ok(()) => self.error = None,
@@ -794,11 +799,11 @@ const ZOOM_RESET_KEY: &str = if cfg!(target_os = "macos") {
 fn scheme_option(
     ui: &mut egui::Ui,
     scheme: crate::terminal::Scheme,
-    light_workspace: bool,
+    workspace: theme::Theme,
     selected: bool,
 ) -> egui::Response {
     let colors = theme::palette(ui.ctx());
-    let pal = scheme.colors(light_workspace);
+    let pal = scheme.colors(workspace);
     let response = ui.add_sized(
         [ui.available_width(), 34.],
         egui::Button::new("").selected(selected),

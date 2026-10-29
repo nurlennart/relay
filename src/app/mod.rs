@@ -703,7 +703,7 @@ impl App {
         let settings = &self.state.terminal;
         crate::terminal::Look {
             font_size: settings.font_size,
-            colors: settings.scheme.colors(theme::current(ctx).is_light()),
+            colors: settings.scheme.colors(theme::current(ctx)),
         }
     }
 

@@ -33,7 +33,7 @@ impl Default for Look {
     fn default() -> Self {
         Self {
             font_size: FONT_SIZE,
-            colors: Scheme::default().colors(false),
+            colors: Scheme::default().colors(Default::default()),
         }
     }
 }
