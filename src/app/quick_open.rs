@@ -189,16 +189,25 @@ impl App {
                                     .layout(Layout::left_to_right(Align::Center)),
                             );
                             protocol_badge(&mut line, c.protocol);
-                            line.label(RichText::new(title).strong());
-                            line.add(
-                                egui::Label::new(
-                                    RichText::new(address)
-                                        .monospace()
-                                        .size(12.)
-                                        .color(colors.muted),
-                                )
-                                .truncate(),
-                            );
+                            // One layout keeps the title and address on a shared baseline,
+                            // which two labels of different fonts, centered apart, miss.
+                            let style = line.style().clone();
+                            let mut text = egui::text::LayoutJob::default();
+                            for part in [
+                                RichText::new(title + "  ").strong(),
+                                RichText::new(address)
+                                    .monospace()
+                                    .size(12.)
+                                    .color(colors.muted),
+                            ] {
+                                part.append_to(
+                                    &mut text,
+                                    &style,
+                                    egui::FontSelection::Default,
+                                    Align::BOTTOM,
+                                );
+                            }
+                            line.add(egui::Label::new(text).truncate());
                         }
                         ui.add_space(8.);
                         ui.label(
