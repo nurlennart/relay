@@ -12,6 +12,7 @@ Relay keeps your RDP and SSH connections in a searchable library and opens them 
 - **Find anything in a keystroke.** Search by name, host, user, group or notes with `Ctrl+K`, or jump straight to a recent connection with `Ctrl+T`.
 - **Works with what you already have.** SSH runs through your system's OpenSSH, so your config, keys, agent and jump hosts just work.
 - **Your passwords stay yours.** Relay never stores remote passwords.
+- **Quiet on the network.** Relay connects only to the servers and libraries you set up: no update checks, no telemetry, no accounts.
 - **Bring your connections along.** Import from `~/.ssh/config`, `.rdp` files, CSV or JSON.
 - **Share with your team.** Keep one library on SQL Server, MySQL or MariaDB, or a shared SQLite file.
 - **Make it yours.** Six color themes, plus terminal color schemes and fonts.
