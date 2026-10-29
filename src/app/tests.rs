@@ -5,6 +5,21 @@ use super::{
     *,
 };
 use egui::{Rect, Vec2};
+/// An app started from `state`, with the tabs it saved reopened.
+fn reopened(ctx: &egui::Context, state: state::State) -> App {
+    let mut app = App::with(
+        ctx.clone(),
+        PathBuf::from("unused.json"),
+        Ok(vec![]),
+        None,
+        None,
+        None,
+        state,
+    );
+    app.restore_tabs();
+    app
+}
+
 fn test_app(ctx: &egui::Context) -> App {
     let connections = ["Alpha", "Bravo", "Charlie"]
         .iter()
@@ -454,16 +469,7 @@ fn tabs_from_the_last_run_come_back_waiting() {
     quick.id = 0;
     state.open = vec![desk, quick];
     state.active_tab = Some(1);
-    let mut app = App::with(
-        ctx.clone(),
-        PathBuf::from("unused.json"),
-        Ok(vec![]),
-        None,
-        None,
-        None,
-        state,
-    );
-    app.restore_tabs();
+    let mut app = reopened(&ctx, state);
     assert_eq!(app.sessions.len(), 2);
     assert_eq!(app.active(), Some(1));
     assert!(
@@ -546,11 +552,7 @@ fn reconnecting_never_takes_settings_from_another_database_of_the_same_kind() {
 #[test]
 fn closing_the_tab_in_front_shows_another_tab_rather_than_the_library() {
     let ctx = egui::Context::default();
-    let mut app = test_app(&ctx);
-    for c in app.connections.clone() {
-        app.sessions
-            .push(session::Session::restored(c, false, ctx.clone()));
-    }
+    let (mut app, _) = app_with_tabs(&ctx);
     let name = |app: &App| {
         app.active()
             .map(|i| app.sessions[i].connection.name.clone())
@@ -760,20 +762,7 @@ fn pairs_come_back_with_their_order_width_and_side() {
             right_focused: true,
         }]
     );
-    let restore = |state: state::State| {
-        let mut app = App::with(
-            ctx.clone(),
-            PathBuf::from("unused.json"),
-            Ok(vec![]),
-            None,
-            None,
-            None,
-            state,
-        );
-        app.restore_tabs();
-        app
-    };
-    let restored = restore(app.state.clone());
+    let restored = reopened(&ctx, app.state.clone());
     let keys: Vec<u64> = restored.sessions.iter().map(|s| s.key).collect();
     assert_eq!(
         restored.tabs,
@@ -803,7 +792,7 @@ fn pairs_come_back_with_their_order_width_and_side() {
         },
     ];
     assert!(
-        restore(broken)
+        reopened(&ctx, broken)
             .tabs
             .iter()
             .all(|t| matches!(t, Tab::Single(_)))
@@ -1253,29 +1242,51 @@ fn admin_sessions_stay_with_their_tab() {
     let mut admin = session::Session::restored(c.clone(), false, ctx.clone());
     admin.admin = true;
     assert_eq!(admin.title(), format!("{} (admin)", c.name));
-    app.sessions
-        .push(session::Session::restored(c.clone(), false, ctx.clone()));
-    app.sessions.push(admin);
-    app.remember_tabs();
-    assert_eq!(app.state.admin_tabs, [1]);
-    // The saved connection is unchanged, so editing it from the tab cannot store admin.
-    assert_eq!(app.state.open[1], c);
-    let mut restored = App::with(
-        ctx.clone(),
-        PathBuf::from("unused.json"),
-        Ok(vec![]),
-        None,
-        None,
-        None,
-        app.state.clone(),
-    );
-    restored.restore_tabs();
-    let kinds: Vec<_> = restored.sessions.iter().map(|s| s.admin).collect();
-    assert_eq!(kinds, [false, true]);
 }
 
 #[test]
-fn file_tabs_are_remembered_as_browsers() {
+fn every_kind_of_tab_comes_back_as_itself() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let mut ssh = app.connections[0].clone();
+    ssh.protocol = Protocol::Ssh;
+    let mut rdp = app.connections[1].clone();
+    rdp.protocol = Protocol::Rdp;
+    let mut admin = session::Session::restored(rdp.clone(), false, ctx.clone());
+    admin.admin = true;
+    app.sessions.extend([
+        session::Session::restored(ssh.clone(), false, ctx.clone()),
+        session::Session::restored(ssh, true, ctx.clone()),
+        admin,
+        session::Session::restored_local(ctx.clone()),
+    ]);
+    app.remember_tabs();
+    let state = &app.state;
+    assert_eq!(
+        (&state.file_tabs, &state.admin_tabs, &state.local_tabs),
+        (&vec![1], &vec![2], &vec![3])
+    );
+    // The saved connection is unchanged, so editing it from the tab cannot store admin.
+    assert_eq!(state.open[2], rdp);
+    let restored = reopened(&ctx, app.state.clone());
+    let kinds: Vec<_> = (restored.sessions.iter())
+        .map(|s| (s.browsing, s.admin, s.local))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true)
+        ]
+    );
+    // Each starts when first shown.
+    assert!((restored.sessions.iter()).all(|s| s.tab_state() == session::TabState::Waiting));
+}
+
+#[test]
+fn the_files_button_pairs_a_terminal_with_its_open_browser() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);
     let mut c = app.connections[0].clone();
@@ -1284,50 +1295,19 @@ fn file_tabs_are_remembered_as_browsers() {
         .push(session::Session::restored(c.clone(), false, ctx.clone()));
     app.sessions
         .push(session::Session::restored(c.clone(), true, ctx.clone()));
-    app.remember_tabs();
-    assert_eq!(app.state.file_tabs, [1]);
-    let mut restored = App::with(
-        ctx.clone(),
-        PathBuf::from("unused.json"),
-        Ok(vec![]),
-        None,
-        None,
-        None,
-        app.state.clone(),
-    );
-    restored.restore_tabs();
-    let kinds: Vec<_> = restored.sessions.iter().map(|s| s.browsing).collect();
-    assert_eq!(kinds, [false, true]);
-
-    // A terminal's Files button pairs it with the open browser instead of opening another.
+    // It pairs with the open browser instead of opening another.
     app.activate_session(0);
     app.open_companion(0);
     let keys = (app.sessions[0].key, app.sessions[1].key);
     assert_eq!(app.sessions.len(), 2);
-    assert_eq!(
-        app.tabs,
-        [Tab::Pair(Pair {
-            left: keys.0,
-            right: keys.1,
-            fraction: SPLIT_MIDDLE,
-            focus: keys.0
-        })]
-    );
+    assert_eq!(app.tabs, [pair(keys.0, keys.1, keys.0)]);
     // From the pair, the button moves to the other side.
     app.open_companion(0);
     assert_eq!((app.active(), app.tabs.len()), (Some(1), 1));
     app.unsplit(0);
     app.open_companion(1);
     assert_eq!(app.active(), Some(1));
-    assert_eq!(
-        app.tabs,
-        [Tab::Pair(Pair {
-            left: keys.1,
-            right: keys.0,
-            fraction: SPLIT_MIDDLE,
-            focus: keys.1
-        })]
-    );
+    assert_eq!(app.tabs, [pair(keys.1, keys.0, keys.1)]);
 }
 
 #[test]
@@ -1355,11 +1335,7 @@ fn breadcrumbs_read_like_the_path() {
 #[test]
 fn ended_and_unconnected_tabs_close_without_asking() {
     let ctx = egui::Context::default();
-    let mut app = test_app(&ctx);
-    for c in app.connections.clone() {
-        app.sessions
-            .push(session::Session::restored(c, false, ctx.clone()));
-    }
+    let (mut app, _) = app_with_tabs(&ctx);
     app.activate_session(2);
     // Restored tabs that never connected close at once, keeping the selection.
     app.request_close(0);
@@ -1390,11 +1366,7 @@ fn ended_and_unconnected_tabs_close_without_asking() {
 #[test]
 fn turning_off_reopening_forgets_and_skips_tabs() {
     let ctx = egui::Context::default();
-    let mut app = test_app(&ctx);
-    for c in app.connections.clone() {
-        app.sessions
-            .push(session::Session::restored(c, false, ctx.clone()));
-    }
+    let (mut app, _) = app_with_tabs(&ctx);
     app.activate_session(1);
     app.remember_tabs();
     assert_eq!(app.state.open.len(), 3);
@@ -1404,16 +1376,7 @@ fn turning_off_reopening_forgets_and_skips_tabs() {
     // Even a state file that still lists tabs opens none.
     let mut state = app.state.clone();
     state.open = app.connections.clone();
-    let mut next = App::with(
-        ctx.clone(),
-        PathBuf::from("unused.json"),
-        Ok(vec![]),
-        None,
-        None,
-        None,
-        state,
-    );
-    next.restore_tabs();
+    let next = reopened(&ctx, state);
     assert!(next.sessions.is_empty());
 }
 
@@ -1574,11 +1537,7 @@ fn search_clear_button_empties_the_search() {
 #[test]
 fn number_shortcuts_switch_tabs_from_the_library() {
     let ctx = egui::Context::default();
-    let mut app = test_app(&ctx);
-    for c in app.connections.clone() {
-        app.sessions
-            .push(session::Session::restored(c, false, ctx.clone()));
-    }
+    let (mut app, _) = app_with_tabs(&ctx);
     app.sync_tabs();
     let frame = |app: &mut App, key| {
         let _ = ctx.run(
@@ -1812,37 +1771,6 @@ fn several_connections_are_chosen_and_changed_together() {
     app.connect_marked(&shown);
     let opening: Vec<_> = app.connect_many.iter().map(|c| c.id).collect();
     assert_eq!(opening, [2, 3]);
-}
-
-#[test]
-fn local_shells_are_remembered_as_local_shells() {
-    let ctx = egui::Context::default();
-    let mut app = test_app(&ctx);
-    let mut c = app.connections[0].clone();
-    c.protocol = Protocol::Ssh;
-    app.sessions
-        .push(session::Session::restored(c, false, ctx.clone()));
-    app.sessions
-        .push(session::Session::restored_local(ctx.clone()));
-    app.remember_tabs();
-    assert_eq!(app.state.local_tabs, [1]);
-    let mut restored = App::with(
-        ctx.clone(),
-        PathBuf::from("unused.json"),
-        Ok(vec![]),
-        None,
-        None,
-        None,
-        app.state.clone(),
-    );
-    restored.restore_tabs();
-    let local: Vec<_> = restored.sessions.iter().map(|s| s.local).collect();
-    assert_eq!(local, [false, true]);
-    assert_eq!(
-        restored.sessions[1].tab_state(),
-        session::TabState::Waiting,
-        "it starts when first shown, like other tabs"
-    );
 }
 
 #[test]
