@@ -1354,6 +1354,19 @@ fn set_fonts(ctx: &egui::Context, terminal_font: Option<&std::path::Path>) -> Re
             fonts.families.entry(family).or_default().insert(0, name);
         }
     }
+    // Symbols that no font before has, such as the ✻ and ⎿ in command-line tools' status
+    // lines, come from the system's symbol fonts rather than showing as boxes.
+    for path in platform::symbol_fonts() {
+        if let Ok(bytes) = std::fs::read(path) {
+            let name = path.to_string();
+            fonts
+                .font_data
+                .insert(name.clone(), egui::FontData::from_owned(bytes).into());
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                fonts.families.entry(family).or_default().push(name.clone());
+            }
+        }
+    }
     let mut result = Ok(());
     if let Some(path) = terminal_font {
         match crate::fonts::read(path) {

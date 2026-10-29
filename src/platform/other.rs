@@ -18,6 +18,8 @@ pub const MONOSPACE_FONTS: &[&str] = &[
     "/System/Library/Fonts/Menlo.ttc",
 ];
 #[cfg(target_os = "macos")]
+pub const SYMBOL_FONTS: &[&str] = &["/System/Library/Fonts/Apple Symbols.ttf"];
+#[cfg(target_os = "macos")]
 pub const EXTRA_PROGRAM_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
 
 #[cfg(not(target_os = "macos"))]
@@ -34,6 +36,20 @@ pub const MONOSPACE_FONTS: &[&str] = &[
     "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
     "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
     "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+];
+/// DejaVu Sans and Noto Sans Symbols 2 have the dingbats, Noto Sans Symbols the technical
+/// signs such as ⎿, wherever each distribution installs them.
+#[cfg(not(target_os = "macos"))]
+pub const SYMBOL_FONTS: &[&str] = &[
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSansSymbols-Regular.ttf",
+    "/usr/share/fonts/google-noto/NotoSansSymbols-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
+    "/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf",
 ];
 #[cfg(not(target_os = "macos"))]
 pub const EXTRA_PROGRAM_DIRS: &[&str] = &["/usr/local/bin", "/snap/bin"];

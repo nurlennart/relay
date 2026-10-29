@@ -16,6 +16,8 @@ pub const MONOSPACE_FONTS: &[&str] = &[
     r"C:\Windows\Fonts\CascadiaMono.ttf",
     r"C:\Windows\Fonts\consola.ttf",
 ];
+/// The symbol font Windows Terminal also falls back to, for dingbats and technical signs.
+pub const SYMBOL_FONTS: &[&str] = &[r"C:\Windows\Fonts\seguisym.ttf"];
 pub const EXTRA_PROGRAM_DIRS: &[&str] = &[];
 
 /// Keeps a console program such as ssh.exe from opening a console window of its own.

@@ -93,6 +93,11 @@ pub fn fonts(monospace: bool) -> &'static [&'static str] {
     }
 }
 
+/// Installed fonts with symbols the others lack, each used if present, as a last resort.
+pub fn symbol_fonts() -> &'static [&'static str] {
+    sys::SYMBOL_FONTS
+}
+
 /// Finds `name` on `PATH` or in well-known install folders that apps started from a desktop
 /// launcher may not have on their `PATH`, such as Homebrew's.
 pub fn find_program(name: &str) -> Option<PathBuf> {
