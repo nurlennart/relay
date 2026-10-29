@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 pub enum Scheme {
     /// The workspace theme's surfaces, text and accent, around the dark or light basic
     /// colors.
-    Workspace,
     #[default]
+    Workspace,
     Dark,
     Light,
     SolarizedDark,
