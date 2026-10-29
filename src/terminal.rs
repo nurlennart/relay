@@ -405,6 +405,11 @@ impl Terminal {
         self.focus_requested = true;
     }
 
+    /// Withdraws a request to focus the terminal, such as a new one's.
+    pub fn cancel_focus(&mut self) {
+        self.focus_requested = false;
+    }
+
     /// Shows the terminal in the rest of `ui`, painted as `look` says. Zooming in or out with
     /// the keyboard or Ctrl and the wheel changes `look`'s font size.
     pub fn show(&mut self, ui: &mut egui::Ui, look: &mut Look) {

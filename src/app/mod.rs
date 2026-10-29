@@ -199,6 +199,8 @@ struct App {
     /// The tab strip, in order: each tab one session or a pair side by side, by session key.
     /// Every session has exactly one tab; `sync_tabs` keeps it so.
     tabs: Vec<tabs::Tab>,
+    /// The sessions on screen that had the keyboard last frame, to notice one taking it.
+    keyboard: Vec<u64>,
     /// The open snippet palette, over the active SSH tab.
     palette: Option<Palette>,
     /// Quick open, from the tab bar's +: a library search that also connects to typed hosts.
@@ -323,6 +325,7 @@ impl App {
             detached: vec![],
             windows: vec![],
             tabs: vec![],
+            keyboard: vec![],
             palette: None,
             quick_open: None,
             snippet_draft: None,
@@ -418,6 +421,7 @@ impl App {
     /// Writes the open tabs into `state`, in strip order, without saving it.
     fn record_tabs(&mut self) {
         self.sync_tabs();
+        self.note_focus();
         let order = self.strip_order();
         let sessions: Vec<&Session> = order.iter().map(|&i| &self.sessions[i]).collect();
         let which = |test: fn(&Session) -> bool| {
@@ -472,7 +476,6 @@ impl App {
     /// Workspace and tab shortcuts, including those a remote desktop forwards through its hook.
     /// Returns whether a visible terminal or remote desktop has the keyboard.
     fn workspace_shortcuts(&mut self, ctx: &egui::Context) -> bool {
-        self.sync_tabs();
         // Either side of a pair can hold the focused terminal or remote desktop.
         let terminal_focused = (self.on_screen().into_iter())
             .filter_map(|i| self.sessions.get(i))
@@ -685,6 +688,7 @@ impl App {
         }
         self.sessions.push(session);
         self.active = Some(self.sessions.len() - 1);
+        self.sync_tabs();
         self.remember_tabs();
     }
 
@@ -805,6 +809,40 @@ impl App {
             self.active = index(partner).or(index(self.tab_trail.1)).or(index(left));
         }
         self.remember_tabs();
+    }
+
+    /// Settles which session is in front, giving it the keyboard when that changes. A side
+    /// chosen since the last frame, with its tab or a shortcut, stays chosen, as a side still
+    /// holding the keyboard from before must not undo the choice. Otherwise a side that takes
+    /// the keyboard by itself, such as a remote desktop clicked into, comes in front.
+    fn follow_focus(&mut self) {
+        let focused: Vec<u64> = (self.on_screen().into_iter())
+            .map(|i| &self.sessions[i])
+            .filter(|s| s.keyboard_focused())
+            .map(|s| s.key)
+            .collect();
+        let taken = (focused.iter())
+            .find(|key| !self.keyboard.contains(key))
+            .and_then(|&key| self.session_index(key));
+        if self.shown == self.active
+            && let Some(index) = taken
+        {
+            self.active = Some(index);
+        }
+        self.keyboard = focused;
+        self.note_focus();
+        if self.shown != self.active {
+            self.shown = self.active;
+            if let Some(session) = self.active.and_then(|i| self.sessions.get_mut(i)) {
+                session.focus();
+            }
+        }
+        // Only the side in front takes the keyboard when asked, such as a new terminal's.
+        for index in self.on_screen() {
+            if Some(index) != self.active {
+                self.sessions[index].cancel_focus();
+            }
+        }
     }
 
     /// Notes which session tab is shown, keeping the one before it to return to.
@@ -1183,6 +1221,8 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.quitting = true;
         }
+        self.sync_tabs();
+        self.note_focus();
         let terminal_focused = self.workspace_shortcuts(ctx);
         // Before the views behind it, so its keys never reach them.
         self.quick_open(ctx);
@@ -1197,21 +1237,7 @@ impl eframe::App for App {
             s.poll(self.parent);
         }
         self.take_copies(ctx);
-        self.sync_tabs();
         let on_screen = self.on_screen();
-        // The side of a pair that has the keyboard, such as a remote desktop clicked into, is
-        // the one in front.
-        let active_focused = self
-            .active
-            .and_then(|i| self.sessions.get(i))
-            .is_some_and(|s| s.keyboard_focused());
-        if !active_focused
-            && let Some(&focused) = (on_screen.iter())
-                .find(|&&i| Some(i) != self.active && self.sessions[i].keyboard_focused())
-        {
-            self.active = Some(focused);
-            self.sync_tabs();
-        }
         // Only sessions on screen wake the window with their output; the others catch up when
         // their tab is shown.
         for (index, session) in self.sessions.iter().enumerate() {
@@ -1226,18 +1252,8 @@ impl eframe::App for App {
                 self.error = Some(e);
             }
         }
+        self.follow_focus();
         self.note_tab();
-        if self.shown != self.active {
-            self.shown = self.active;
-            if let Some(session) = self.active.and_then(|i| self.sessions.get_mut(i)) {
-                if let Some(terminal) = &mut session.terminal {
-                    terminal.focus();
-                }
-                if let Some(files) = &mut session.files {
-                    files.view.focus_requested = true;
-                }
-            }
-        }
         // Hide native children before painting overlays; embedded remote desktops sit above GPU content.
         let covered = self.covered();
         for (i, s) in self.sessions.iter_mut().enumerate() {
@@ -1289,51 +1305,8 @@ impl eframe::App for App {
                     (Some(index), _) if self.is_detached(index) => {
                         self.detached_placeholder(ui, index)
                     }
-                    (Some(_), Some((place, mut fraction, left, right))) => {
-                        let area = ui.available_rect_before_wrap();
-                        let divider = split_divider(ui, area, &mut fraction);
-                        if let tabs::Tab::Pair(pair) = &mut self.tabs[place] {
-                            pair.fraction = fraction;
-                        }
-                        let sides = [
-                            (
-                                left,
-                                egui::Rect::from_min_max(
-                                    area.min,
-                                    egui::pos2(divider.left(), area.bottom()),
-                                ),
-                                Pane::Main,
-                            ),
-                            (
-                                right,
-                                egui::Rect::from_min_max(
-                                    egui::pos2(divider.right(), area.top()),
-                                    area.max,
-                                ),
-                                Pane::Beside,
-                            ),
-                        ];
-                        // A click into a side brings it in front.
-                        let pressed = ui.input(|i| {
-                            (i.pointer.any_pressed())
-                                .then(|| i.pointer.interact_pos())
-                                .flatten()
-                        });
-                        for (index, rect, pane) in sides {
-                            if pressed.is_some_and(|p| rect.contains(p)) {
-                                self.active = Some(index);
-                            }
-                            let mut pane_ui = ui.new_child(
-                                egui::UiBuilder::new()
-                                    .max_rect(rect)
-                                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
-                            );
-                            pane_ui.set_clip_rect(rect);
-                            if let Some(rect) = self.session_pane(&mut pane_ui, index, pane) {
-                                session_rects.push((index, rect));
-                            }
-                        }
-                        ui.allocate_rect(area, egui::Sense::hover());
+                    (Some(_), Some((place, fraction, left, right))) => {
+                        self.pair_panes(ui, place, fraction, [left, right], &mut session_rects);
                     }
                     (Some(index), None) => {
                         if let Some(rect) = self.session_pane(ui, index, Pane::Main) {

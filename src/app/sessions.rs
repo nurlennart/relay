@@ -156,6 +156,57 @@ impl App {
         placed
     }
 
+    /// Shows the pair at `place` side by side in `ui`, the `left` and `right` sessions either
+    /// side of a divider at `fraction` of the width. Adds where each remote desktop should
+    /// cover to `rects`.
+    pub(super) fn pair_panes(
+        &mut self,
+        ui: &mut egui::Ui,
+        place: usize,
+        mut fraction: f32,
+        [left, right]: [usize; 2],
+        rects: &mut Vec<(usize, egui::Rect)>,
+    ) {
+        let area = ui.available_rect_before_wrap();
+        let divider = split_divider(ui, area, &mut fraction);
+        if let Some(tabs::Tab::Pair(pair)) = self.tabs.get_mut(place) {
+            pair.fraction = fraction;
+        }
+        let sides = [
+            (
+                left,
+                egui::Rect::from_min_max(area.min, egui::pos2(divider.left(), area.bottom())),
+                Pane::Main,
+            ),
+            (
+                right,
+                egui::Rect::from_min_max(egui::pos2(divider.right(), area.top()), area.max),
+                Pane::Beside,
+            ),
+        ];
+        // A click into a side brings it in front.
+        let pressed = ui.input(|i| {
+            (i.pointer.any_pressed())
+                .then(|| i.pointer.interact_pos())
+                .flatten()
+        });
+        for (index, rect, pane) in sides {
+            if pressed.is_some_and(|p| rect.contains(p)) {
+                self.active = Some(index);
+            }
+            let mut pane_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
+            );
+            pane_ui.set_clip_rect(rect);
+            if let Some(rect) = self.session_pane(&mut pane_ui, index, pane) {
+                rects.push((index, rect));
+            }
+        }
+        ui.allocate_rect(area, egui::Sense::hover());
+    }
+
     /// Shows session `index` in `ui`: its header, then its terminal, status, or remote desktop.
     /// Returns the area a remote desktop should cover.
     pub(super) fn session_pane(

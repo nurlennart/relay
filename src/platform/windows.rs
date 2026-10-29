@@ -122,6 +122,39 @@ pub(crate) fn release_focus(window: HWND, parent: HWND) {
     }
 }
 
+/// Whether `window` or one of its children has keyboard focus, with Relay in front. The
+/// foreground thread's focus counts, whichever of Relay's threads owns the window.
+pub(crate) fn has_focus(window: HWND) -> bool {
+    unsafe {
+        let mut info: GUITHREADINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+        GetGUIThreadInfo(0, &mut info) != 0
+            && !info.hwndFocus.is_null()
+            && (info.hwndFocus == window || IsChild(window, info.hwndFocus) != 0)
+    }
+}
+
+/// Gives keyboard focus to the window inside `window` that takes a remote desktop's typing,
+/// the RDP control's input window, or to `window` itself when there is none.
+pub(crate) fn focus_input(window: HWND) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+    unsafe extern "system" fn find(child: HWND, found: LPARAM) -> windows_sys::core::BOOL {
+        let mut name = [0u16; 32];
+        let length = unsafe { GetClassNameW(child, name.as_mut_ptr(), name.len() as i32) };
+        // The class of the RDP control's window that receives keyboard input.
+        if String::from_utf16_lossy(&name[..length.max(0) as usize]) == "IHWindowClass" {
+            unsafe { *(found as *mut HWND) = child };
+            return 0;
+        }
+        1
+    }
+    let mut found: HWND = std::ptr::null_mut();
+    unsafe {
+        EnumChildWindows(window, Some(find), &mut found as *mut HWND as LPARAM);
+        SetFocus(if found.is_null() { window } else { found });
+    }
+}
+
 pub(crate) fn position(window: HWND, parent: HWND, rect: [i32; 4]) -> Result<(), String> {
     if bounds(window, parent)? != rect {
         let [x, y, w, h] = rect;
@@ -262,6 +295,31 @@ pub fn install_shortcuts(main: Window, ctx: eframe::egui::Context) {
     MAIN.store(main, std::sync::atomic::Ordering::Relaxed);
     unsafe {
         SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), std::ptr::null_mut(), 0);
+        // Focus moving into or between remote desktops sends Relay's window nothing; waking it
+        // lets it see which side of a pair has the keyboard.
+        windows_sys::Win32::UI::Accessibility::SetWinEventHook(
+            EVENT_OBJECT_FOCUS,
+            EVENT_OBJECT_FOCUS,
+            std::ptr::null_mut(),
+            Some(focus_moved),
+            std::process::id(),
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+    }
+}
+
+unsafe extern "system" fn focus_moved(
+    _hook: windows_sys::Win32::UI::Accessibility::HWINEVENTHOOK,
+    _event: u32,
+    _window: HWND,
+    _object: i32,
+    _child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    if let Some(ctx) = CONTEXT.get() {
+        ctx.request_repaint();
     }
 }
 

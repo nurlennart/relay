@@ -370,6 +370,32 @@ impl Session {
         self.terminal.as_ref().is_some_and(|t| t.focused)
             || self.rdp.as_ref().is_some_and(|r| r.focused())
     }
+    /// Gives the session the keyboard the next time it is shown: its terminal, file browser, or
+    /// remote desktop.
+    pub fn focus(&mut self) {
+        if let Some(terminal) = &mut self.terminal {
+            terminal.focus();
+        }
+        if let Some(files) = &mut self.files {
+            files.view.focus_requested = true;
+        }
+        if let Some(rdp) = &mut self.rdp {
+            rdp.focus();
+        }
+    }
+    /// Withdraws any request for the keyboard, such as a new session's, so a side of a pair
+    /// that is not in front takes it only when clicked.
+    pub fn cancel_focus(&mut self) {
+        if let Some(terminal) = &mut self.terminal {
+            terminal.cancel_focus();
+        }
+        if let Some(files) = &mut self.files {
+            files.view.focus_requested = false;
+        }
+        if let Some(rdp) = &mut self.rdp {
+            rdp.cancel_focus();
+        }
+    }
     /// Tells the session whether it is on screen, so a hidden one's output does not wake the
     /// window.
     pub fn set_shown(&self, shown: bool) {

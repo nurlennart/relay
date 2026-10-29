@@ -26,7 +26,6 @@ impl App {
                             }
                             // Tabs can be dragged; the drop position follows the pointer.
                             // A pair moves as one.
-                            self.sync_tabs();
                             let active_tab = self.active_tab();
                             let mut rects = vec![];
                             let mut beside = None;
@@ -520,10 +519,23 @@ impl Tab {
 }
 
 impl App {
-    /// Keeps the strip in step with the sessions. A closed session leaves its tab, the other
-    /// side of its pair staying as a tab of its own; a pair never holds a session in its own
-    /// window; and a session without a tab gets one at the end.
+    /// Keeps the strip in step with the sessions, after they are opened, closed or moved to
+    /// windows. A closed session leaves its tab, the other side of its pair staying as a tab of
+    /// its own; a pair never holds a session in its own window; and a session without a tab
+    /// gets one at the end. Checking costs no allocation, so it is cheap to do every frame.
     pub(super) fn sync_tabs(&mut self) {
+        let open = |key| self.sessions.iter().any(|s| s.key == key);
+        let kept = |key| open(key) && !self.detached.contains(&key);
+        let held: usize = self.tabs.iter().map(|t| t.keys().count()).sum();
+        let in_step = held == self.sessions.len()
+            && self.sessions.iter().all(|s| self.tab_of(s.key).is_some())
+            && self.tabs.iter().all(|t| match *t {
+                Tab::Single(key) => open(key),
+                Tab::Pair(p) => kept(p.left) && kept(p.right),
+            });
+        if in_step {
+            return;
+        }
         let open: Vec<u64> = self.sessions.iter().map(|s| s.key).collect();
         let kept = |key| open.contains(&key) && !self.detached.contains(&key);
         self.tabs = std::mem::take(&mut self.tabs)
@@ -546,18 +558,22 @@ impl App {
                 self.tabs.push(Tab::Single(key));
             }
         }
-        // The side in front is the one its pair returns to.
-        if let Some(key) = self
+    }
+
+    /// Notes the side in front as the one its pair returns to.
+    pub(super) fn note_focus(&mut self) {
+        let Some(key) = self
             .active
             .and_then(|i| self.sessions.get(i))
             .map(|s| s.key)
-        {
-            for tab in &mut self.tabs {
-                if let Tab::Pair(pair) = tab
-                    && (pair.left == key || pair.right == key)
-                {
-                    pair.focus = key;
-                }
+        else {
+            return;
+        };
+        for tab in &mut self.tabs {
+            if let Tab::Pair(pair) = tab
+                && (pair.left == key || pair.right == key)
+            {
+                pair.focus = key;
             }
         }
     }
@@ -653,7 +669,6 @@ impl App {
     /// Splits the tab in front with its neighbour, the next one or else the one before, or
     /// unsplits it when it is a pair.
     pub(super) fn toggle_split(&mut self) {
-        self.sync_tabs();
         let Some(place) = self.active_tab() else {
             return;
         };
@@ -700,7 +715,6 @@ impl App {
 
     /// Moves the tab at `from` to position `to`.
     pub(super) fn move_tab(&mut self, from: usize, to: usize) {
-        self.sync_tabs();
         if from >= self.tabs.len() || to >= self.tabs.len() || from == to {
             return;
         }
@@ -712,7 +726,7 @@ impl App {
     /// Selects tab `index`, where 0 is the connection library and 1.. are the tabs after it.
     /// A pair returns to the side that had the keyboard last.
     pub(super) fn select_tab(&mut self, index: usize) {
-        self.sync_tabs();
+        self.note_focus();
         self.active = (index.checked_sub(1))
             .and_then(|i| self.tabs.get(i))
             .and_then(|t| self.session_index(t.focus()));

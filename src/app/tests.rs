@@ -1442,6 +1442,7 @@ fn middle_clicking_a_tab_closes_it() {
     let c = app.connections[0].clone();
     app.sessions
         .push(session::Session::restored(c, false, ctx.clone()));
+    app.sync_tabs();
     let frame = |app: &mut App, events| {
         let _ = ctx.run(
             egui::RawInput {
@@ -1580,6 +1581,7 @@ fn number_shortcuts_switch_tabs_from_the_library() {
         app.sessions
             .push(session::Session::restored(c, false, ctx.clone()));
     }
+    app.sync_tabs();
     let frame = |app: &mut App, key| {
         let _ = ctx.run(
             egui::RawInput {
@@ -1621,6 +1623,7 @@ fn connected_tabs_offer_reconnect_from_their_menu() {
     let c = app.connections[1].clone();
     app.sessions
         .push(session::Session::restored(c, false, ctx.clone()));
+    app.sync_tabs();
     let frame = |app: &mut App, events| {
         let output = ctx.run(
             egui::RawInput {
@@ -1842,4 +1845,76 @@ fn local_shells_are_remembered_as_local_shells() {
         session::TabState::Waiting,
         "it starts when first shown, like other tabs"
     );
+}
+
+#[test]
+fn a_chosen_side_keeps_the_keyboard_and_a_click_moves_it() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let mut ssh = app.connections[0].clone();
+    ssh.protocol = Protocol::Ssh;
+    for _ in 0..2 {
+        app.sessions
+            .push(session::Session::scripted(ssh.clone(), "cat", ctx.clone()));
+    }
+    app.active = Some(0);
+    app.sync_tabs();
+    app.open_beside(1);
+    let mut time = 0.;
+    let mut frame = |app: &mut App, events: Vec<egui::Event>| {
+        time += 0.05;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1200., 800.),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                app.follow_focus();
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let (place, pair) = app.active_pair().unwrap();
+                    let sides = [pair.left, pair.right].map(|k| app.session_index(k).unwrap());
+                    app.pair_panes(ui, place, pair.fraction, sides, &mut vec![]);
+                });
+            },
+        );
+    };
+    let settle = |frame: &mut dyn FnMut(&mut App, Vec<egui::Event>), app: &mut App| {
+        for _ in 0..3 {
+            frame(app, vec![]);
+        }
+    };
+    let keyboard =
+        |app: &App| -> Vec<bool> { app.sessions.iter().map(|s| s.keyboard_focused()).collect() };
+    settle(&mut frame, &mut app);
+    assert_eq!(keyboard(&app), [true, false]);
+    // Choosing a side, as its tab does, is not undone by the side that still had the keyboard.
+    for side in [1, 0, 1] {
+        app.active = Some(side);
+        settle(&mut frame, &mut app);
+        assert_eq!(app.active, Some(side));
+        assert_eq!(keyboard(&app), [side == 0, side == 1]);
+    }
+    // A click into the other side's terminal brings it in front, and the pair remembers it.
+    let on_left = egui::pos2(300., 400.);
+    let button = |pressed| egui::Event::PointerButton {
+        pos: on_left,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame(
+        &mut app,
+        vec![egui::Event::PointerMoved(on_left), button(true)],
+    );
+    frame(&mut app, vec![button(false)]);
+    settle(&mut frame, &mut app);
+    assert_eq!(app.active, Some(0));
+    assert_eq!(keyboard(&app), [true, false]);
+    let left = app.sessions[0].key;
+    assert!(matches!(app.tabs[0], Tab::Pair(pair) if pair.focus == left));
 }
