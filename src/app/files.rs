@@ -1647,7 +1647,7 @@ fn os_drops(
     }
     let folder = target
         .filter(|_| pointer.is_some())
-        .unwrap_or(files.path.clone());
+        .unwrap_or_else(|| files.path.clone());
     if hovering {
         let painter = ui.ctx().layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
