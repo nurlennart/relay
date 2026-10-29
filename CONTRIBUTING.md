@@ -20,8 +20,8 @@ cargo run --release
 | `src/app/` | The `App` state and frame loop (`mod.rs`) and its screens: `sidebar`, `tabs`, `library`, `sessions`, `files` (the SFTP browser), `editor`, `settings`, `quick_open`, `storage`, plus shared `widgets` and `icons` and the UI tests. |
 | `src/platform/` | Everything that differs per OS: data folders, fonts, the ssh binary, and the Windows-only native window code (`windows.rs`); `other.rs` covers macOS and Linux. |
 | `src/rdp/` | Remote desktops: the Windows ActiveX control (`activex.rs`) and the IronRDP client used elsewhere (`ironrdp.rs`, with its connection thread, input mapping, frame bookkeeping, and clipboard in `ironrdp/`). Both expose the same `RdpClient` interface. |
-| `src/session.rs`, `src/terminal.rs` | Open tabs and the terminal SSH sessions run in. |
-| `src/sftp.rs`, `src/askpass.rs` | SFTP over the system's ssh (a worker thread running russh-sftp on ssh's standard input and output, and the transfer queue), and the `SSH_ASKPASS` helper that brings ssh's prompts into the window. |
+| `src/session.rs`, `src/terminal.rs` | Open tabs and the terminal SSH sessions run in: drawing and selection in `terminal.rs`, with the program's pseudo-terminal in `terminal/process.rs`, what typing sends in `terminal/input.rs`, and colors, links, mouse reporting, OSC handling and search beside them. |
+| `src/sftp.rs`, `src/askpass.rs` | SFTP over the system's ssh (a worker thread running russh-sftp on ssh's standard input and output, with the transfer queue in `sftp/transfer.rs`), and the `SSH_ASKPASS` helper that brings ssh's prompts into the window. |
 | `src/model.rs`, `src/database.rs`, `src/state.rs` | Connections, libraries (JSON, SQLite, MSSQL, MySQL), and saved workspace state. |
 | `src/csv_io.rs`, `src/import.rs` | CSV import and export, SSH config and `.rdp` import. |
 | `src/secret.rs`, `src/file_dialog.rs`, `src/theme.rs` | Credential store, file pickers, color themes. |
