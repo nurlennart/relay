@@ -160,7 +160,7 @@ impl App {
             (
                 left,
                 egui::Rect::from_min_max(area.min, egui::pos2(divider.left(), area.bottom())),
-                Pane::Main,
+                Pane::Left,
             ),
             (
                 right,
@@ -200,145 +200,54 @@ impl App {
         pane: Pane,
     ) -> Option<egui::Rect> {
         let colors = theme::palette(ui.ctx());
-        let mut full_screen = false;
-        let mut unsplit = false;
-        let mut attach = false;
-        let mut save = false;
-        let mut snippets = false;
-        let mut companion = false;
-        let s = &self.sessions[index];
-        ui.horizontal(|ui| {
-            ui.set_min_height(26.);
-            ui.spacing_mut().button_padding = Vec2::new(10., 3.);
-            let desktop = s.has_desktop();
-            // Quick connections are not in the library until saved.
-            let unsaved = s.connection.id == 0
-                && !s.local
-                && !self
-                    .connections
-                    .iter()
-                    .any(|c| c.same_target(&s.connection));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                match pane {
-                    Pane::Beside => {
-                        unsplit = ui
-                            .button("Unsplit")
-                            .on_hover_text("Show the two sessions as separate tabs again (Ctrl+\\)")
-                            .clicked();
+        // A tab of its own shows its actions in the tab bar. The sides of a pair and detached
+        // windows keep a header, naming each side of a pair to tell them apart.
+        if pane != Pane::Main {
+            let mut actions = Actions::default();
+            ui.horizontal(|ui| {
+                ui.set_min_height(22.);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    actions = self.session_actions(ui, index, pane);
+                    // The name takes the room the buttons leave, shortened to fit.
+                    if matches!(pane, Pane::Left | Pane::Beside) {
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            let s = &self.sessions[index];
+                            let (icon, _) =
+                                ui.allocate_exact_size(Vec2::splat(14.), egui::Sense::hover());
+                            icons::paint_sized(
+                                ui.painter(),
+                                if s.browsing {
+                                    Icon::Folder
+                                } else {
+                                    Icon::protocol(s.connection.protocol)
+                                },
+                                icon.center(),
+                                14.,
+                                match s.connection.protocol {
+                                    Protocol::Rdp => colors.rdp,
+                                    Protocol::Ssh => colors.accent,
+                                },
+                            );
+                            let title = RichText::new(s.title()).size(12.).color(colors.muted);
+                            ui.add(egui::Label::new(title).truncate())
+                                .on_hover_ui(|ui| {
+                                    ui.label(tabs::details(
+                                        &s.connection,
+                                        tabs::Kind::of(s),
+                                        s.tab_state(),
+                                    ));
+                                });
+                        });
                     }
-                    Pane::Window => {
-                        attach = ui
-                            .button("Back to tabs")
-                            .on_hover_text("Closing this window does the same")
-                            .clicked();
-                    }
-                    Pane::Main => {}
-                }
-                if unsaved {
-                    save = ui
-                        .button("Save to library")
-                        .on_hover_text("Keep this connection in the library")
-                        .clicked();
-                }
-                // A terminal and its files open side by side.
-                if s.browsing {
-                    companion = ui
-                        .button("Terminal")
-                        .on_hover_text("Open a terminal on this server beside the files")
-                        .clicked();
-                } else if s.connection.protocol == Protocol::Ssh && s.terminal.is_some() && !s.local
-                {
-                    companion = ui
-                        .button("Files")
-                        .on_hover_text("Browse this server's files over SFTP beside the terminal")
-                        .clicked();
-                }
-                // The snippet palette opens over the main window's active tab.
-                let ssh = s.connection.protocol == Protocol::Ssh;
-                if ssh && s.terminal.is_some() && s.is_running() && pane != Pane::Window {
-                    snippets = ui
-                        .button("Snippets")
-                        .on_hover_text("Saved commands · Ctrl+Shift+P")
-                        .clicked();
-                }
-                if desktop
-                    && s.can_full_screen()
-                    && s.is_running()
-                    && s.error.is_none()
-                    && !s.full_screen()
-                {
-                    full_screen = ui
-                        .button("Full screen")
-                        .on_hover_text("Ctrl+Alt+Break leaves and re-enters full screen")
-                        .clicked();
-                    ui.label(
-                        RichText::new(
-                            "Ctrl+Alt+PgUp/PgDn switch tabs · Ctrl+Alt+Home returns to Relay",
-                        )
-                        .size(11.)
-                        .color(colors.muted),
-                    );
-                }
-                // The name and address take the room the buttons leave, shortened to fit.
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let (icon, _) = ui.allocate_exact_size(Vec2::splat(16.), egui::Sense::hover());
-                    icons::paint(
-                        ui.painter(),
-                        if s.browsing {
-                            Icon::Folder
-                        } else {
-                            Icon::protocol(s.connection.protocol)
-                        },
-                        icon.center(),
-                        match s.connection.protocol {
-                            Protocol::Rdp => colors.rdp,
-                            Protocol::Ssh => colors.accent,
-                        },
-                    );
-                    ui.add(
-                        egui::Label::new(RichText::new(s.title()).size(14.).strong()).truncate(),
-                    );
-                    // A local shell names the program it runs.
-                    let address = if s.local {
-                        crate::terminal::local_shell().0.display().to_string()
-                    } else {
-                        s.connection.address()
-                    };
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(&address)
-                                .monospace()
-                                .size(12.)
-                                .color(colors.muted),
-                        )
-                        .truncate(),
-                    )
-                    .on_hover_text(&address);
                 });
             });
-        });
-        if full_screen && let Err(e) = self.sessions[index].enter_full_screen() {
-            self.error = Some(e);
-        }
-        if save {
-            self.edit(self.sessions[index].connection.clone());
-        }
-        if snippets {
-            self.palette = Some(Palette::default());
-        }
-        if unsplit && let Some(place) = self.tab_of(self.sessions[index].key) {
-            self.unsplit(place);
-        }
-        // The panes may have changed; they are laid out again next frame.
-        if companion {
-            self.open_companion(index);
-            return None;
-        }
-        if attach {
-            self.attach(self.sessions[index].key);
+            ui.add_space(4.);
+            // The panes may have changed; they are laid out again next frame.
+            if self.apply_actions(index, actions) {
+                return None;
+            }
         }
         let s = &self.sessions[index];
-        ui.add_space(6.);
         if s.browsing {
             self.files_pane(ui, index);
         } else if s.terminal.is_some() {
@@ -405,6 +314,121 @@ impl App {
     }
 }
 
+/// What a session's action buttons asked for this frame.
+#[derive(Default)]
+pub(super) struct Actions {
+    full_screen: bool,
+    unsplit: bool,
+    attach: bool,
+    save: bool,
+    snippets: bool,
+    companion: bool,
+}
+
+impl App {
+    /// Draws session `index`'s action buttons from right to left in `ui`: a pane's header, or
+    /// the tab bar for a tab of its own.
+    pub(super) fn session_actions(&self, ui: &mut egui::Ui, index: usize, pane: Pane) -> Actions {
+        let mut actions = Actions::default();
+        let s = &self.sessions[index];
+        ui.spacing_mut().button_padding = Vec2::new(8., 1.);
+        ui.spacing_mut().item_spacing.x = 6.;
+        match pane {
+            Pane::Beside => {
+                actions.unsplit = ui
+                    .button("Unsplit")
+                    .on_hover_text("Show the two sessions as separate tabs again (Ctrl+\\)")
+                    .clicked();
+            }
+            Pane::Window => {
+                actions.attach = ui
+                    .button("Back to tabs")
+                    .on_hover_text("Closing this window does the same")
+                    .clicked();
+            }
+            Pane::Main | Pane::Left => {}
+        }
+        // Quick connections are not in the library until saved.
+        let unsaved = s.connection.id == 0
+            && !s.local
+            && !self
+                .connections
+                .iter()
+                .any(|c| c.same_target(&s.connection));
+        if unsaved {
+            actions.save = ui
+                .button("Save to library")
+                .on_hover_text("Keep this connection in the library")
+                .clicked();
+        }
+        // A terminal and its files open side by side.
+        let shell = s.connection.protocol == Protocol::Ssh && s.terminal.is_some() && !s.local;
+        if s.browsing {
+            actions.companion = ui
+                .button("Terminal")
+                .on_hover_text("Open a terminal on this server beside the files")
+                .clicked();
+        } else if shell {
+            actions.companion = ui
+                .button("Files")
+                .on_hover_text("Browse this server's files over SFTP beside the terminal")
+                .clicked();
+        }
+        // The snippet palette opens over the main window's active tab.
+        if shell && s.is_running() && pane != Pane::Window {
+            actions.snippets = ui
+                .button("Snippets")
+                .on_hover_text("Saved commands · Ctrl+Shift+P")
+                .clicked();
+        }
+        if s.has_desktop()
+            && s.can_full_screen()
+            && s.is_running()
+            && s.error.is_none()
+            && !s.full_screen()
+        {
+            actions.full_screen = ui
+                .button("Full screen")
+                .on_hover_text(
+                    "Ctrl+Alt+Break leaves and re-enters full screen\n\
+                     Ctrl+Alt+PgUp/PgDn switch tabs\n\
+                     Ctrl+Alt+Home returns to Relay",
+                )
+                .clicked();
+        }
+        actions
+    }
+
+    /// Carries out what session `index`'s buttons asked. Returns whether the panes changed, so
+    /// they are laid out again next frame.
+    pub(super) fn apply_actions(&mut self, index: usize, actions: Actions) -> bool {
+        if actions.full_screen
+            && let Err(e) = self.sessions[index].enter_full_screen()
+        {
+            self.error = Some(e);
+        }
+        if actions.save {
+            self.edit(self.sessions[index].connection.clone());
+        }
+        if actions.snippets {
+            self.palette = Some(Palette::default());
+        }
+        if actions.unsplit
+            && let Some(place) = self.tab_of(self.sessions[index].key)
+        {
+            self.unsplit(place);
+        }
+        if actions.companion {
+            self.open_companion(index);
+            return true;
+        }
+        if actions.attach {
+            self.attach(self.sessions[index].key);
+        }
+        false
+    }
+}
+
 /// Screen areas of visible floating layers: toasts, tooltips, menus and popups.
 pub(super) fn overlays(ctx: &egui::Context) -> Vec<egui::Rect> {
     ctx.memory(|memory| {
@@ -450,8 +474,10 @@ pub(super) fn native_area(
 /// Where a session pane is shown, which decides its header actions.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Pane {
-    /// A tab of its own, or the left side of a pair.
+    /// A tab of its own.
     Main,
+    /// The left side of a pair.
+    Left,
     /// The right side of a pair.
     Beside,
     /// A detached session window.

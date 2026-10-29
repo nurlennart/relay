@@ -13,6 +13,28 @@ impl App {
                     .inner_margin(Margin::symmetric(8, 6)),
             )
             .show(ctx, |ui| {
+                // The tab in front shows its session's actions at the right, where they stay
+                // put; the tabs shrink or scroll in the room left of them.
+                let bar = ui.max_rect();
+                let mut strip = bar;
+                if let Some(index) = self.bar_session() {
+                    let mut right = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(bar)
+                            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                    );
+                    let actions = self.session_actions(&mut right, index, Pane::Main);
+                    if right.min_rect().width() > 0. {
+                        strip.max.x = right.min_rect().left() - 12.;
+                    }
+                    self.apply_actions(index, actions);
+                }
+                let mut ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(strip)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                let ui = &mut ui;
                 egui::ScrollArea::horizontal()
                     .id_salt("tabs-scroll")
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -262,6 +284,15 @@ impl App {
                     });
             });
     }
+
+    /// The session whose actions the tab bar shows: the tab in front, when it is a single
+    /// session in this window. A pair's sides and detached windows have their own headers.
+    fn bar_session(&self) -> Option<usize> {
+        match self.tabs.get(self.active_tab()?)? {
+            Tab::Single(key) if !self.detached.contains(key) => self.session_index(*key),
+            _ => None,
+        }
+    }
 }
 
 /// The fill behind a tab: raised when selected, faint while hovered.
@@ -341,7 +372,7 @@ pub(super) enum Kind {
 }
 
 impl Kind {
-    fn of(s: &Session) -> Self {
+    pub(super) fn of(s: &Session) -> Self {
         if s.local {
             Self::Local
         } else if s.browsing {
@@ -396,10 +427,10 @@ pub(super) fn session_tab(
         Look::Side { selected, .. } => tab_background(ui, rect, false, hovered && !selected),
     }
     // The protocol's icon carries the session state in its color.
-    let (status, state) = match state {
-        session::TabState::Open => (colors.accent, "open"),
-        session::TabState::Ended => (ui.visuals().error_fg_color, "ended"),
-        session::TabState::Waiting => (colors.muted, "connects when selected"),
+    let status = match state {
+        session::TabState::Open => colors.accent,
+        session::TabState::Ended => ui.visuals().error_fg_color,
+        session::TabState::Waiting => colors.muted,
     };
     icons::paint_sized(
         ui.painter(),
@@ -420,20 +451,8 @@ pub(super) fn session_tab(
     let select = ui
         .interact(select_rect, response.id.with("select"), Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(match kind {
-            Kind::Local => format!("Local shell · {state}"),
-            _ => format!(
-                "{} · {} · {}",
-                if browsing {
-                    "SFTP"
-                } else if admin {
-                    "RDP admin session"
-                } else {
-                    connection.protocol.label()
-                },
-                connection.address(),
-                state
-            ),
+        .on_hover_ui(|ui| {
+            ui.label(details(connection, kind, state));
         });
     select.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label)
@@ -470,6 +489,31 @@ pub(super) fn session_tab(
         inner: (select, close),
         response,
     }
+}
+
+/// What a session tab's tooltip says: what it is, where it connects, and its state. Session
+/// panes have no header of their own, so this is where the address shows.
+pub(super) fn details(connection: &Connection, kind: Kind, state: session::TabState) -> String {
+    let state = match state {
+        session::TabState::Open => "open",
+        session::TabState::Ended => "ended",
+        session::TabState::Waiting => "connects when selected",
+    };
+    if kind == Kind::Local {
+        // A local shell names the program it runs.
+        let program = crate::terminal::local_shell().0;
+        return format!("Local shell · {} · {state}", program.display());
+    }
+    let what = match kind {
+        Kind::Files => "SFTP",
+        Kind::Admin => "RDP admin session",
+        _ => connection.protocol.label(),
+    };
+    let user = match connection.username.as_str() {
+        "" => String::new(),
+        user => format!("{user}@"),
+    };
+    format!("{what} · {user}{} · {state}", connection.address())
 }
 
 /// The position a dragged tab takes when dropped at `x`: the number of other tabs left of it.
