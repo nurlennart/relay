@@ -1669,3 +1669,20 @@ fn local_shells_are_remembered_as_local_shells() {
         "it starts when first shown, like other tabs"
     );
 }
+
+#[test]
+fn a_library_worker_that_stops_mid_save_returns_the_edit() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let mut edited = app.connections[0].clone();
+    edited.name = "Alpha prime".into();
+    let (stopped, rx) = std::sync::mpsc::channel();
+    drop(stopped);
+    app.pending = Some(rx);
+    app.pending_save = true;
+    app.pending_editor = Some(edited.clone());
+    app.poll_storage();
+    assert!(matches!(&app.modal, Modal::Editor(c) if *c == edited));
+    assert!(!app.pending_save && app.pending.is_none());
+    assert!(app.error.as_deref().is_some_and(|e| e.contains("stopped")));
+}
