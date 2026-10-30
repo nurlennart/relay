@@ -2,6 +2,7 @@
 //! progress has a total, then streamed through a fixed buffer into a staged file that takes
 //! the destination's place only once complete.
 use super::*;
+use crate::platform::DownloadRoot;
 use std::hash::{DefaultHasher, Hasher};
 
 /// The largest file whose contents are compared before an edit replaces it; past this, its
@@ -162,21 +163,25 @@ async fn transfer(
                 files: plan.files.len() as u64,
                 skipped: plan.skipped,
             });
-            // Folders below the chosen one are Relay's to create; one already there must be a
-            // real folder, so a link inside cannot lead the download elsewhere.
             let chosen = local.parent().unwrap_or(local);
+            let destination = DownloadRoot::open(chosen)
+                .map_err(|e| error("Cannot open the download folder", &e))?;
             for folder in &plan.folders {
-                real_folder(chosen, folder, true)
+                destination
+                    .create_folder(folder)
                     .map_err(|e| error(&format!("Cannot create {}", folder.display()), &e))?;
             }
             let mut version = None;
             for (from, to, _) in &plan.files {
-                if !plan.folders.is_empty() {
-                    let folder = to.parent().unwrap_or(to);
-                    real_folder(chosen, folder, false)
-                        .map_err(|e| error(&format!("Cannot save {}", to.display()), &e))?;
-                }
-                version = download_file(session, from, to, *replace, cancel, &mut progress).await?;
+                version = download_file(
+                    session,
+                    from,
+                    to,
+                    (&destination, *replace),
+                    cancel,
+                    &mut progress,
+                )
+                .await?;
                 progress.file_done();
             }
             if plan.folders.is_empty() {
@@ -562,33 +567,6 @@ async fn replace(session: &SftpSession, temp: &str, path: &str) -> Result<(), St
     }
 }
 
-/// Makes sure local `folder`, inside `chosen`, is a real folder all the way down from
-/// `chosen`: no part of it may be a link, or a Windows junction, which could lead files
-/// outside. With `create`, missing parts are created.
-fn real_folder(chosen: &Path, folder: &Path, create: bool) -> std::io::Result<()> {
-    let below = folder
-        .strip_prefix(chosen)
-        .map_err(|_| std::io::Error::other("it is outside the chosen folder"))?;
-    let mut current = chosen.to_path_buf();
-    for part in below.components() {
-        current.push(part);
-        match std::fs::symlink_metadata(&current) {
-            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
-            Ok(_) => {
-                return Err(std::io::Error::other(format!(
-                    "{} is a link or a file, not a folder",
-                    current.display()
-                )));
-            }
-            Err(e) if create && e.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::create_dir(&current)?
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
-
 /// Downloads one file, returning the version it was: how it looked when it was opened, and a
 /// fingerprint of what was read. Unless `replace`, a file that appeared at `local` meanwhile
 /// stops it.
@@ -596,19 +574,18 @@ async fn download_file(
     session: &SftpSession,
     remote: &str,
     local: &Path,
-    replace: bool,
+    destination: (&DownloadRoot, bool),
     cancel: &CancellationToken,
     progress: &mut Progress<'_>,
 ) -> Result<Option<Version>, Failure> {
+    let (destination, replace) = destination;
     let fail = |e: &dyn std::fmt::Display| Failure::Error(format!("{}: {e}", file_name(remote)));
     let mut source = session.open(remote).await.map_err(|e| fail(&describe(e)))?;
     let meta = source.metadata().await.ok();
     let modified = meta.as_ref().and_then(|m| m.modified().ok());
     // The file appears under its own name only once it is complete.
-    let partial = partial_path(local);
-    let mut target = tokio::fs::File::create_new(&partial)
-        .await
-        .map_err(|e| fail(&e))?;
+    let (publication, file) = destination.create(local).map_err(|e| fail(&e))?;
+    let mut target = tokio::fs::File::from_std(file);
     let mut hash = DefaultHasher::new();
     let mut copied = copy(&mut source, &mut target, cancel, progress, &mut hash).await;
     if copied.is_ok() {
@@ -620,18 +597,19 @@ async fn download_file(
             let _ = target.set_modified(modified);
         }
         drop(target);
-        copied = if replace {
-            tokio::fs::rename(&partial, local)
-                .await
-                .map_err(|e| fail(&e))
-        } else {
-            publish_new(&partial, local).await
-        };
+        copied = publication.publish(replace).map_err(|e| {
+            if !replace && e.kind() == std::io::ErrorKind::AlreadyExists {
+                Failure::Exists(format!(
+                    "“{}” already exists in {}.",
+                    local.file_name().unwrap_or_default().to_string_lossy(),
+                    local.parent().unwrap_or(local).display()
+                ))
+            } else {
+                fail(&e)
+            }
+        });
     } else {
         drop(target);
-    }
-    if copied.is_err() {
-        let _ = tokio::fs::remove_file(&partial).await;
     }
     copied.map(|()| {
         meta.as_ref().map(|m| Version {
@@ -639,35 +617,6 @@ async fn download_file(
             contents: hash.finish(),
         })
     })
-}
-
-/// Gives the complete download `partial` the name `local` only if nothing has it: a hard
-/// link fails at once if the name is taken. Where links are not supported, as on FAT
-/// drives, it looks first and then renames.
-async fn publish_new(partial: &Path, local: &Path) -> Result<(), Failure> {
-    let name = local.file_name().unwrap_or_default().to_string_lossy();
-    let exists = || {
-        Failure::Exists(format!(
-            "“{name}” already exists in {}.",
-            local.parent().unwrap_or(local).display()
-        ))
-    };
-    let fail = |e: std::io::Error| Failure::Error(format!("{name}: {e}"));
-    match tokio::fs::hard_link(partial, local).await {
-        Ok(()) => {
-            let _ = tokio::fs::remove_file(partial).await;
-            Ok(())
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(exists()),
-        Err(_) if tokio::fs::symlink_metadata(local).await.is_ok() => Err(exists()),
-        Err(_) => tokio::fs::rename(partial, local).await.map_err(fail),
-    }
-}
-
-/// Where a download is written until it is complete: beside its destination.
-fn partial_path(local: &Path) -> PathBuf {
-    let name = local.file_name().unwrap_or_default().to_string_lossy();
-    local.with_file_name(crate::model::temp_name(&name))
 }
 
 /// Copies `reader` to `writer` through one buffer, stopping promptly when cancelled, and

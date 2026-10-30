@@ -6,6 +6,9 @@ use raw_window_handle::{
 };
 use std::path::{Path, PathBuf};
 
+mod download;
+pub use download::DownloadRoot;
+
 #[cfg(not(windows))]
 mod other;
 #[cfg(windows)]
