@@ -22,6 +22,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getrandom = "0.3"
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 keyring = "4.2"
+notify = "8.2.0"
 portable-pty = "0.9"
 raw-window-handle = "0.6.2"
 rfd = { version = "0.17", default-features = false }

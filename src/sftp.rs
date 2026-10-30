@@ -448,7 +448,9 @@ enum Event {
     Saved {
         id: u64,
         seen: Seen,
+        contents: u64,
     },
+    WatchError(String),
     Ended(String),
 }
 
@@ -802,7 +804,8 @@ impl Browser {
                 }
                 self.trim_transfers();
             }
-            Event::Saved { id, seen } => self.edit_saved(id, seen),
+            Event::Saved { id, seen, contents } => self.edit_saved(id, seen, contents),
+            Event::WatchError(error) => self.error = Some(error),
             Event::Ended(reason) => {
                 self.status = Status::Ended(reason);
                 self.loading = false;
@@ -2383,6 +2386,24 @@ mod tests {
             std::fs::read_to_string(root.join("notes.txt")).unwrap(),
             "two"
         );
+        assert_eq!(browser.unsaved_edits(), 0);
+
+        // Restoring a same-size save's mtime must not hide its changed contents.
+        let modified = std::fs::metadata(&local).unwrap().modified().unwrap();
+        std::fs::write(&local, "TWO").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&local)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        wait(&mut browser, "the save that preserves metadata", |b| {
+            b.active_transfers() == 0
+                && std::fs::read_to_string(root.join("notes.txt"))
+                    .ok()
+                    .as_deref()
+                    == Some("TWO")
+        });
         assert_eq!(browser.unsaved_edits(), 0);
 
         // Someone else saves on the server; the next save waits instead of overwriting.

@@ -6,6 +6,7 @@
 //! Saves are watched by a thread of the browser's own rather than the connection's, so
 //! saves made while disconnected are noticed too.
 use super::*;
+use notify::Watcher;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditState {
@@ -41,6 +42,8 @@ pub struct Edit {
     version: Option<Version>,
     /// The copy as last saved, so a watch started again reports only newer saves.
     seen: Option<Seen>,
+    /// Contents last reported by the save watcher, including offline saves.
+    seen_contents: Option<u64>,
     /// The copy as it was when it last matched the server's file.
     synced: Option<Seen>,
     /// A fingerprint of the contents the server's file and the copy last shared. Size and
@@ -62,7 +65,8 @@ impl Edit {
                     self.state,
                     EditState::Uploading | EditState::Failed(_) | EditState::Changed(_)
                 )
-                || seen(&self.local) != self.synced)
+                || seen(&self.local) != self.synced
+                || self.seen_contents != self.synced_contents)
     }
 
     /// Whether the copy surely holds nothing the server lacks: besides [`Self::unsaved`],
@@ -82,6 +86,7 @@ pub(super) enum Watch {
         id: u64,
         path: PathBuf,
         seen: Option<Seen>,
+        contents: Option<u64>,
     },
     Remove(u64),
 }
@@ -121,6 +126,7 @@ impl Browser {
             editor: editor.into(),
             version: None,
             seen: None,
+            seen_contents: None,
             synced: None,
             synced_contents: None,
             sending: None,
@@ -258,6 +264,7 @@ impl Browser {
                     id,
                     path: edit.local.clone(),
                     seen: edit.seen,
+                    contents: edit.seen_contents,
                 });
             }
             self.edits.push(edit);
@@ -281,11 +288,13 @@ impl Browser {
                 edit.synced = edit.seen;
                 // The editor is not open yet, so the copy is still what was downloaded.
                 edit.synced_contents = fingerprint(&edit.local).ok();
+                edit.seen_contents = edit.synced_contents;
                 edit.state = EditState::Open;
                 let watch = Watch::Add {
                     id,
                     path: edit.local.clone(),
                     seen: edit.seen,
+                    contents: edit.seen_contents,
                 };
                 self.watch(watch);
                 self.open_editor(index);
@@ -312,11 +321,12 @@ impl Browser {
     }
 
     /// Uploads a save of edit `id`'s copy, or once the upload under way finishes.
-    pub(super) fn edit_saved(&mut self, id: u64, seen: Seen) {
+    pub(super) fn edit_saved(&mut self, id: u64, seen: Seen, contents: u64) {
         let Some(edit) = self.edits.iter_mut().find(|e| e.id == id) else {
             return;
         };
         edit.seen = Some(seen);
+        edit.seen_contents = Some(contents);
         match edit.state {
             EditState::Opening => {}
             EditState::Uploading => edit.again = true,
@@ -340,6 +350,7 @@ impl Browser {
             editor: String::new(),
             version: None,
             seen: None,
+            seen_contents: None,
             synced: None,
             synced_contents: None,
             sending: None,
@@ -441,34 +452,85 @@ fn copy_folder() -> std::io::Result<PathBuf> {
 /// not uploaded half done.
 fn watcher(commands: std_mpsc::Receiver<Watch>, events: Events) {
     use std_mpsc::RecvTimeoutError;
+    // Coalesce native events; a busy editor must not create an unbounded event queue.
+    let changed = Arc::new(Mutex::new(Some(BTreeSet::<PathBuf>::new())));
+    let reported = changed.clone();
+    let mut native = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let mut paths = reported.lock().unwrap();
+        match event {
+            Ok(event) if matches!(event.kind, notify::EventKind::Access(_)) => {}
+            Ok(event) if !event.paths.is_empty() => {
+                if let Some(pending) = paths.as_mut() {
+                    pending.extend(event.paths);
+                    if pending.len() > 1024 {
+                        *paths = None;
+                    }
+                }
+            }
+            _ => *paths = None,
+        }
+    })
+    .ok();
     struct Watched {
         id: u64,
         path: PathBuf,
-        /// The last save reported.
         seen: Option<Seen>,
-        /// How the file looked at the last check.
+        contents: Option<u64>,
         last: Option<Seen>,
+        dirty: bool,
+        stable: bool,
+        native: bool,
+        checked: Instant,
     }
     let mut watched: Vec<Watched> = vec![];
     let mut next = Instant::now();
     loop {
-        // With nothing to watch, it sleeps until told otherwise.
         let command = if watched.is_empty() {
             commands.recv().map_err(|_| RecvTimeoutError::Disconnected)
         } else {
             commands.recv_timeout(next.saturating_duration_since(Instant::now()))
         };
         match command {
-            Ok(Watch::Add { id, path, seen }) => {
+            Ok(Watch::Add {
+                id,
+                path,
+                seen,
+                contents,
+            }) => {
+                let path = path.canonicalize().unwrap_or(path);
                 watched.retain(|w| w.id != id);
+                let watching = native.as_mut().map(|n| {
+                    n.watch(
+                        path.parent().unwrap_or(&path),
+                        notify::RecursiveMode::NonRecursive,
+                    )
+                });
+                let direct = matches!(watching, Some(Ok(())));
+                if !direct {
+                    events.send(Event::WatchError(format!(
+                        "Saves to {} will be checked every 5 seconds because file notifications are unavailable.", path.display()
+                    )));
+                }
                 watched.push(Watched {
                     id,
                     path,
                     seen,
+                    contents,
                     last: seen,
+                    dirty: true,
+                    stable: false,
+                    native: direct,
+                    checked: Instant::now(),
                 });
             }
-            Ok(Watch::Remove(id)) => watched.retain(|w| w.id != id),
+            Ok(Watch::Remove(id)) => {
+                if let Some(w) = watched.iter().find(|w| w.id == id)
+                    && let Some(native) = &mut native
+                {
+                    let _ = native.unwatch(w.path.parent().unwrap_or(&w.path));
+                }
+                watched.retain(|w| w.id != id);
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
@@ -476,17 +538,48 @@ fn watcher(commands: std_mpsc::Receiver<Watch>, events: Events) {
             continue;
         }
         next = Instant::now() + WATCH_INTERVAL;
+        let dirty = std::mem::replace(&mut *changed.lock().unwrap(), Some(BTreeSet::new()));
         for w in &mut watched {
-            // Editors that save by replacing the file leave a moment without one.
+            let signalled = dirty.as_ref().is_none_or(|paths| {
+                paths.iter().any(|path| {
+                    path == &w.path
+                        || Some(path.as_path()) == w.path.parent()
+                        || path.parent() == w.path.parent()
+                })
+            });
             let now = seen(&w.path);
-            if let Some(seen) = now
-                && now != w.seen
-                && now == w.last
-            {
-                w.seen = now;
-                events.send(Event::Saved { id: w.id, seen });
+            if signalled || now != w.last {
+                w.dirty = true;
+                w.stable = false;
+            } else {
+                w.stable = true;
             }
             w.last = now;
+            if !w.stable || now.is_none() {
+                continue;
+            }
+            if !w.dirty && (w.native || w.checked.elapsed() < Duration::from_secs(5)) {
+                continue;
+            }
+            let Ok(contents) = fingerprint(&w.path) else {
+                continue;
+            };
+            // A file replaced or still being written must settle again.
+            if seen(&w.path) != now {
+                w.stable = false;
+                continue;
+            }
+            if w.seen != now || w.contents != Some(contents) {
+                w.seen = now;
+                w.contents = Some(contents);
+                events.send(Event::Saved {
+                    id: w.id,
+                    seen: now.unwrap(),
+                    contents,
+                });
+            }
+            w.dirty = false;
+            w.checked = Instant::now();
         }
     }
 }
