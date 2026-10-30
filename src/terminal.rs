@@ -609,7 +609,8 @@ impl Terminal {
         let mut highlights = std::collections::HashMap::new();
         if let Some(search) = &self.search {
             let first = (search.matches).partition_point(|m| (m[m.len() - 1].0 as usize) < top);
-            for (i, m) in search.matches.iter().enumerate().skip(first) {
+            for i in first..search.matches.len() {
+                let m = &search.matches[i];
                 if m[0].0 as usize >= top + rows as usize {
                     break;
                 }
