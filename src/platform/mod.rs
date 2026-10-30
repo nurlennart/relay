@@ -79,6 +79,16 @@ pub fn downloads_dir() -> Option<PathBuf> {
     dirs::download_dir().or_else(dirs::home_dir)
 }
 
+/// What a file name is known as in local folders, where two names with the same key are one
+/// file: Windows and macOS volumes usually ignore case.
+pub fn name_key(name: &str) -> String {
+    if cfg!(any(windows, target_os = "macos")) {
+        name.to_lowercase()
+    } else {
+        name.into()
+    }
+}
+
 /// The OpenSSH client Relay runs for SSH sessions.
 pub fn ssh_program() -> PathBuf {
     sys::ssh_program()

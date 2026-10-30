@@ -1639,7 +1639,10 @@ fn transfers(ui: &mut egui::Ui, files: &mut Browser, max_height: f32) {
             matches!(
                 t.state,
                 TransferState::Stopped(
-                    Failure::Error(_) | Failure::Exists(_) | Failure::Changed(_)
+                    Failure::Error(_)
+                        | Failure::Exists(_)
+                        | Failure::Changed(_)
+                        | Failure::InPlace(_)
                 )
             )
         })
@@ -1694,6 +1697,7 @@ fn transfers(ui: &mut egui::Ui, files: &mut Browser, max_height: f32) {
             TransferAction::Cancel => files.cancel(id),
             TransferAction::Retry => files.retry(id, false),
             TransferAction::Replace => files.retry(id, true),
+            TransferAction::InPlace => files.retry_in_place(id),
         }
     }
 }
@@ -1702,6 +1706,7 @@ enum TransferAction {
     Cancel,
     Retry,
     Replace,
+    InPlace,
 }
 
 /// One transfer on two lines: the name with its status, a progress bar beneath while it
@@ -1717,7 +1722,7 @@ fn transfer_row(ui: &mut egui::Ui, t: &Transfer, actions: &mut Vec<(u64, Transfe
     let tint = match &t.state {
         TransferState::Done => colors.accent,
         TransferState::Stopped(Failure::Error(_)) => ui.visuals().error_fg_color,
-        TransferState::Stopped(Failure::Exists(_) | Failure::Changed(_)) => {
+        TransferState::Stopped(Failure::Exists(_) | Failure::Changed(_) | Failure::InPlace(_)) => {
             ui.visuals().warn_fg_color
         }
         _ => colors.muted,
@@ -1757,6 +1762,19 @@ fn transfer_row(ui: &mut egui::Ui, t: &Transfer, actions: &mut Vec<(u64, Transfe
                 .clicked()
             {
                 actions.push((t.id, TransferAction::Replace));
+            }
+        }
+        // Edits are never written over in place; their row offers Retry.
+        TransferState::Stopped(Failure::InPlace(_)) if t.edit.is_none() => {
+            if buttons
+                .small_button("Overwrite in place")
+                .on_hover_text(
+                    "Write over the file directly. If the upload is interrupted, the file \
+                     is left half written.",
+                )
+                .clicked()
+            {
+                actions.push((t.id, TransferAction::InPlace));
             }
         }
         TransferState::Stopped(_) => {
@@ -1895,7 +1913,7 @@ fn transfer_status(ui: &egui::Ui, t: &Transfer) -> (String, Color32) {
     }
     let color = match &t.state {
         TransferState::Stopped(Failure::Error(_)) => ui.visuals().error_fg_color,
-        TransferState::Stopped(Failure::Exists(_) | Failure::Changed(_)) => {
+        TransferState::Stopped(Failure::Exists(_) | Failure::Changed(_) | Failure::InPlace(_)) => {
             ui.visuals().warn_fg_color
         }
         _ => colors.muted,

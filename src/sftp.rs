@@ -172,7 +172,8 @@ pub enum Job {
         /// nobody else saved it in the meantime.
         unchanged: Option<Version>,
         /// Where the folder takes no new files, write over an existing file directly, which
-        /// an interrupted upload leaves half written. Edited files are never written so.
+        /// an interrupted upload leaves half written. Only when asked after such a refusal;
+        /// edited files are never written so.
         in_place: bool,
     },
     Download {
@@ -196,6 +197,15 @@ impl Job {
         }
         job
     }
+
+    /// The job again, writing over the file in place where its folder takes no new files.
+    fn in_place(&self) -> Self {
+        let mut job = self.replacing();
+        if let Self::Upload { in_place, .. } = &mut job {
+            *in_place = true;
+        }
+        job
+    }
 }
 
 /// Why a transfer stopped early.
@@ -207,6 +217,8 @@ pub enum Failure {
     /// The remote file changed since it was last read, so an edit would overwrite someone
     /// else's.
     Changed(String),
+    /// The folder takes no new files, so the file could only be written over in place.
+    InPlace(String),
     Error(String),
 }
 
@@ -214,7 +226,7 @@ impl Failure {
     pub fn message(&self) -> &str {
         match self {
             Self::Cancelled => "Cancelled.",
-            Self::Exists(m) | Self::Changed(m) | Self::Error(m) => m,
+            Self::Exists(m) | Self::Changed(m) | Self::InPlace(m) | Self::Error(m) => m,
         }
     }
 }
@@ -558,7 +570,7 @@ impl Browser {
                     remote: join(&self.path, name),
                     replace: false,
                     unchanged: None,
-                    in_place: true,
+                    in_place: false,
                 },
                 self.path.clone(),
             ),
@@ -945,7 +957,15 @@ impl Browser {
     /// Queues uploads of local files and folders into remote `folder`.
     pub fn upload(&mut self, local: Vec<PathBuf>, folder: &str, replace: bool) {
         for path in local {
-            let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            let Some(name) = path.file_name() else {
+                continue;
+            };
+            let Some(name) = name.to_str().map(String::from) else {
+                self.error = Some(format!(
+                    "“{}” has a name that is not valid text, so the server cannot be sent it \
+                     unchanged.",
+                    name.to_string_lossy()
+                ));
                 continue;
             };
             let job = Job::Upload {
@@ -953,7 +973,7 @@ impl Browser {
                 local: path,
                 replace,
                 unchanged: None,
-                in_place: true,
+                in_place: false,
             };
             self.queue(job, Direction::Upload, name, folder.into(), None);
         }
@@ -1057,6 +1077,21 @@ impl Browser {
         } else {
             old.job
         };
+        self.queue(job, old.direction, old.name, old.destination, None);
+    }
+
+    /// Queues a stopped upload again, writing over the file in place where its folder takes
+    /// no new files. An edited file is never written so.
+    pub fn retry_in_place(&mut self, id: u64) {
+        let Some(index) = self
+            .transfers
+            .iter()
+            .position(|t| t.id == id && t.edit.is_none())
+        else {
+            return;
+        };
+        let old = self.transfers.remove(index);
+        let job = old.job.in_place();
         self.queue(job, old.direction, old.name, old.destination, None);
     }
 
@@ -2052,6 +2087,49 @@ mod tests {
             std::fs::read_to_string(remote.join("up.txt")).unwrap(),
             "up"
         );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::{ffi::OsStrExt, fs::symlink};
+            // A link inside an existing download leads nowhere else, even when replacing.
+            let elsewhere = root.join("elsewhere");
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            std::fs::write(elsewhere.join("leaf.txt"), "victim").unwrap();
+            std::fs::remove_dir_all(local.join("tree/inner")).unwrap();
+            symlink(&elsewhere, local.join("tree/inner")).unwrap();
+            browser.clear_finished();
+            browser.download(&["tree".into()], &local);
+            wait(&mut browser, "the refusal", |b| b.active_transfers() == 0);
+            let id = browser.transfers[0].id;
+            browser.retry(id, true);
+            wait(&mut browser, "the link", |b| b.active_transfers() == 0);
+            let state = &browser.transfers[0].state;
+            assert!(
+                matches!(state, TransferState::Stopped(Failure::Error(m)) if m.contains("link")),
+                "{state:?}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(elsewhere.join("leaf.txt")).unwrap(),
+                "victim"
+            );
+
+            // Names that are not text are not changed into others, which could merge them.
+            let odd = local.join("odd");
+            std::fs::create_dir_all(&odd).unwrap();
+            for byte in [0xff, 0xfe] {
+                let name = [b'x', byte];
+                std::fs::write(odd.join(std::ffi::OsStr::from_bytes(&name)), [byte]).unwrap();
+            }
+            browser.clear_finished();
+            browser.upload(vec![odd], &folder, false);
+            wait(&mut browser, "the odd names", |b| b.active_transfers() == 0);
+            let state = &browser.transfers[0].state;
+            assert!(
+                matches!(state, TransferState::Stopped(Failure::Error(m)) if m.contains("not valid text")),
+                "{state:?}"
+            );
+            assert!(!remote.join("odd").exists(), "nothing is copied");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2111,6 +2189,15 @@ mod tests {
         wait(&mut browser, "the transfer to start", |b| {
             b.transfers[0].done > 0 || b.transfers[0].finished()
         });
+        // What is staged is readable by nobody else while it is written.
+        #[cfg(unix)]
+        for name in listing(&remote) {
+            use std::os::unix::fs::PermissionsExt;
+            if name.starts_with(".huge.bin.") {
+                let meta = std::fs::metadata(remote.join(&name)).unwrap();
+                assert_eq!(meta.permissions().mode() & 0o077, 0, "{name}");
+            }
+        }
         browser.cancel(id);
         wait(&mut browser, "the cancellation", |b| {
             b.active_transfers() == 0
@@ -2145,6 +2232,17 @@ mod tests {
             std::fs::read_to_string(remote.join("huge.bin.relay-part")).unwrap(),
             "unrelated"
         );
+
+        // A name as long as allowed still leaves room to stage its replacement.
+        let long = format!("{}.txt", "n".repeat(236));
+        std::fs::write(remote.join(&long), "old").unwrap();
+        std::fs::write(local.join(&long), "new").unwrap();
+        browser.clear_finished();
+        browser.upload(vec![local.join(&long)], &folder, true);
+        wait(&mut browser, "the long name", |b| b.active_transfers() == 0);
+        assert_eq!(browser.transfers[0].state, TransferState::Done);
+        assert_eq!(std::fs::read_to_string(remote.join(&long)).unwrap(), "new");
+        std::fs::remove_file(remote.join(&long)).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::{PermissionsExt, symlink};
@@ -2400,11 +2498,13 @@ mod tests {
         let root = scratch("edit-offline");
         std::fs::write(root.join("a.txt"), "a").unwrap();
         std::fs::write(root.join("b.txt"), "b").unwrap();
+        std::fs::write(root.join("c.txt"), "c").unwrap();
         let Some(mut browser) = local_browser(&root) else {
             return;
         };
         browser.edit("a.txt", NO_EDITOR);
         browser.edit("b.txt", NO_EDITOR);
+        browser.edit("c.txt", NO_EDITOR);
         wait(&mut browser, "the copies", |b| {
             b.edits.iter().all(|e| e.state == EditState::Open)
         });
@@ -2424,13 +2524,24 @@ mod tests {
         assert_eq!(browser.edits[1].state, EditState::Open);
         // A save just before closing, too quick to be reported.
         std::fs::write(&b, "b, at the last moment").unwrap();
+        // A save that keeps the size and time, which the copy's look cannot tell.
+        let c = browser.edits[2].local.clone();
+        let modified = std::fs::metadata(&c).unwrap().modified().unwrap();
+        std::fs::write(&c, "C").unwrap();
+        let file = std::fs::File::options().write(true).open(&c).unwrap();
+        file.set_modified(modified).unwrap();
+        drop(file);
+        let id = browser.edits[2].id;
+        browser.offer_stop_edit(id);
+        assert_eq!(browser.view.confirm, Some(Confirm::StopEditing(id)));
         drop(browser);
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "a, offline");
         assert_eq!(
             std::fs::read_to_string(&b).unwrap(),
             "b, at the last moment"
         );
-        for copy in [a, b] {
+        assert_eq!(std::fs::read_to_string(&c).unwrap(), "C");
+        for copy in [a, b, c] {
             let _ = std::fs::remove_dir_all(copy.parent().unwrap());
         }
         let _ = std::fs::remove_dir_all(&root);
@@ -2478,11 +2589,23 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&copy).unwrap(), "port = 8080");
         assert_eq!(listing(&remote), ["app.conf"]);
 
-        // An ordinary upload still replaces the file in place, as asked.
+        // An ordinary upload writes in place only once asked to.
         std::fs::write(local.join("app.conf"), "uploaded").unwrap();
         let folder = browser.path.clone();
         browser.upload(vec![local.join("app.conf")], &folder, true);
         wait(&mut browser, "the upload", |b| b.active_transfers() == 0);
+        let upload = browser.transfers.last().unwrap();
+        assert!(
+            matches!(upload.state, TransferState::Stopped(Failure::InPlace(_))),
+            "{:?}",
+            upload.state
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "port = 80");
+        browser.retry_in_place(upload.id);
+        wait(&mut browser, "the upload in place", |b| {
+            b.active_transfers() == 0
+        });
+        assert_eq!(browser.transfers.last().unwrap().state, TransferState::Done);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "uploaded");
 
         // Once the folder takes new files, Retry saves safely.

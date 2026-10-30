@@ -43,6 +43,9 @@ pub struct Edit {
     seen: Option<Seen>,
     /// The copy as it was when it last matched the server's file.
     synced: Option<Seen>,
+    /// A fingerprint of the contents the server's file and the copy last shared. Size and
+    /// time can stay the same through a save, so only this proves a copy has nothing new.
+    synced_contents: Option<u64>,
     /// The copy as it was when the upload under way started.
     sending: Option<Seen>,
     /// Saved again while uploading: upload once more when that finishes.
@@ -60,6 +63,15 @@ impl Edit {
                     EditState::Uploading | EditState::Failed(_) | EditState::Changed(_)
                 )
                 || seen(&self.local) != self.synced)
+    }
+
+    /// Whether the copy surely holds nothing the server lacks: besides [`Self::unsaved`],
+    /// its contents are compared, so a save that kept its size and time is not lost.
+    fn synced(&self) -> bool {
+        !self.opened
+            || (!self.unsaved()
+                && self.synced_contents.is_some()
+                && fingerprint(&self.local).ok() == self.synced_contents)
     }
 }
 
@@ -110,6 +122,7 @@ impl Browser {
             version: None,
             seen: None,
             synced: None,
+            synced_contents: None,
             sending: None,
             again: false,
         });
@@ -196,7 +209,7 @@ impl Browser {
     /// Stops editing `id`, first asking if its changes are not on the server.
     pub fn offer_stop_edit(&mut self, id: u64) {
         match self.edits.iter().find(|e| e.id == id) {
-            Some(edit) if edit.unsaved() => self.view.confirm = Some(Confirm::StopEditing(id)),
+            Some(edit) if !edit.synced() => self.view.confirm = Some(Confirm::StopEditing(id)),
             Some(_) => self.stop_edit(id),
             None => {}
         }
@@ -266,6 +279,8 @@ impl Browser {
                 edit.version = version;
                 edit.seen = seen(&edit.local);
                 edit.synced = edit.seen;
+                // The editor is not open yet, so the copy is still what was downloaded.
+                edit.synced_contents = fingerprint(&edit.local).ok();
                 edit.state = EditState::Open;
                 let watch = Watch::Add {
                     id,
@@ -278,6 +293,7 @@ impl Browser {
             Ok(version) => {
                 edit.version = version;
                 edit.synced = edit.sending.take();
+                edit.synced_contents = version.map(|v| v.contents);
                 edit.uploaded = Some(SystemTime::now());
                 edit.state = EditState::Open;
                 if edit.again {
@@ -325,6 +341,7 @@ impl Browser {
             version: None,
             seen: None,
             synced: None,
+            synced_contents: None,
             sending: None,
             again: false,
         });
@@ -361,7 +378,7 @@ pub(super) fn interrupted(edits: &mut [Edit], id: u64, failure: &Failure) {
 /// Removes the copies whose changes are all on the server, as a browser closes. The others
 /// stay where they are, so nothing typed is lost.
 pub(super) fn discard_saved(edits: &[Edit]) {
-    for edit in edits.iter().filter(|e| !e.unsaved()) {
+    for edit in edits.iter().filter(|e| e.synced()) {
         remove_copy(edit);
     }
 }
@@ -382,6 +399,20 @@ fn parent_folder(path: &Path) -> String {
 fn seen(path: &Path) -> Option<Seen> {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.len(), meta.modified().ok()))
+}
+
+/// A fingerprint of the local file at `path`, taken as transfers take theirs.
+fn fingerprint(path: &Path) -> std::io::Result<u64> {
+    use std::{hash::Hasher, io::Read};
+    let mut file = std::fs::File::open(path)?;
+    let mut hash = std::hash::DefaultHasher::new();
+    let mut buffer = vec![0u8; CHUNK];
+    loop {
+        match file.read(&mut buffer)? {
+            0 => return Ok(hash.finish()),
+            n => hash.write(&buffer[..n]),
+        }
+    }
 }
 
 /// Creates a new folder, readable only by this user, for one copy to edit. The copy keeps

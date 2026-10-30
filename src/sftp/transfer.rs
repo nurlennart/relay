@@ -112,7 +112,7 @@ async fn transfer(
             let plan = tokio::task::spawn_blocking(move || plan_upload(&from, &to))
                 .await
                 .map_err(|e| error("Cannot read the files", &e))?
-                .map_err(|e| error(&format!("Cannot read {}", local.display()), &e))?;
+                .map_err(|e| Failure::Error(format!("Cannot upload {}: {e}", local.display())))?;
             events.send(Event::Started {
                 id,
                 total: plan.total(),
@@ -130,6 +130,7 @@ async fn transfer(
             let mut contents = 0;
             for (from, to, _) in &plan.files {
                 let checks = Checks {
+                    replace: *replace,
                     unchanged: unchanged.as_ref(),
                     in_place: *in_place,
                 };
@@ -162,14 +163,21 @@ async fn transfer(
                 files: plan.files.len() as u64,
                 skipped: plan.skipped,
             });
+            // Folders below the chosen one are Relay's to create; one already there must be a
+            // real folder, so a link inside cannot lead the download elsewhere.
+            let chosen = local.parent().unwrap_or(local);
             for folder in &plan.folders {
-                tokio::fs::create_dir_all(folder)
-                    .await
+                real_folder(chosen, folder, true)
                     .map_err(|e| error(&format!("Cannot create {}", folder.display()), &e))?;
             }
             let mut version = None;
             for (from, to, _) in &plan.files {
-                version = download_file(session, from, to, cancel, &mut progress).await?;
+                if !plan.folders.is_empty() {
+                    let folder = to.parent().unwrap_or(to);
+                    real_folder(chosen, folder, false)
+                        .map_err(|e| error(&format!("Cannot save {}", to.display()), &e))?;
+                }
+                version = download_file(session, from, to, *replace, cancel, &mut progress).await?;
                 progress.file_done();
             }
             if plan.folders.is_empty() {
@@ -181,13 +189,15 @@ async fn transfer(
 }
 
 /// Lists a local file or folder for upload. Links to folders are skipped, since they can loop.
-fn plan_upload(local: &Path, remote: &str) -> std::io::Result<Plan<String, PathBuf>> {
+/// A name the server cannot be sent unchanged stops it before anything is copied.
+fn plan_upload(local: &Path, remote: &str) -> Result<Plan<String, PathBuf>, String> {
     let mut plan = Plan {
         folders: vec![],
         files: vec![],
         skipped: 0,
     };
-    let meta = std::fs::metadata(local)?;
+    let fail = |path: &Path, e: std::io::Error| format!("Cannot read {}: {e}", path.display());
+    let meta = std::fs::metadata(local).map_err(|e| fail(local, e))?;
     if !meta.is_dir() {
         plan.files.push((local.into(), remote.into(), meta.len()));
         return Ok(plan);
@@ -195,12 +205,22 @@ fn plan_upload(local: &Path, remote: &str) -> std::io::Result<Plan<String, PathB
     let mut pending = vec![(local.to_path_buf(), remote.to_string())];
     while let Some((folder, target)) = pending.pop() {
         plan.folders.push(target.clone());
-        let mut children: Vec<_> = std::fs::read_dir(&folder)?.collect::<Result<_, _>>()?;
+        let mut children: Vec<_> = std::fs::read_dir(&folder)
+            .and_then(|d| d.collect::<Result<_, _>>())
+            .map_err(|e| fail(&folder, e))?;
         children.sort_by_key(|c| c.file_name());
         for child in children {
             let path = child.path();
-            let name = child.file_name().to_string_lossy().into_owned();
-            let link = child.file_type()?.is_symlink();
+            let Some(name) = child.file_name().to_str().map(String::from) else {
+                // Replaced characters could merge two files into one on the server.
+                return Err(format!(
+                    "“{}” in {} has a name that is not valid text, so the server cannot \
+                     be sent it unchanged.",
+                    child.file_name().to_string_lossy(),
+                    folder.display()
+                ));
+            };
+            let link = child.file_type().map_err(|e| fail(&path, e))?.is_symlink();
             match std::fs::metadata(&path) {
                 Ok(meta) if meta.is_dir() && link => plan.skipped += 1,
                 Ok(meta) if meta.is_dir() => pending.push((path, join(&target, &name))),
@@ -241,12 +261,19 @@ async fn plan_download(
             .map_err(describe)?
             .collect();
         items.sort_by_key(|i| i.file_name());
+        // Names this computer cannot tell apart would be saved over one another.
+        let mut keys = std::collections::HashMap::new();
         for item in items {
             let name = item.file_name();
             // A server must not be able to write outside the chosen folder.
             let Some(local_name) = local_name(&name) else {
                 return Err(format!("“{name}” cannot be saved on this computer."));
             };
+            if let Some(other) = keys.insert(crate::platform::name_key(&name), name.clone()) {
+                return Err(format!(
+                    "“{other}” and “{name}” in {folder} would be the same file on this computer."
+                ));
+            }
             let path = join(&folder, &name);
             let meta = item.metadata();
             match file_type(&meta) {
@@ -325,6 +352,9 @@ async fn still(
 /// How carefully an upload replaces an existing file.
 #[derive(Clone, Copy)]
 struct Checks<'a> {
+    /// Replace a file already there; otherwise stop at one, even one that appears while the
+    /// transfer runs.
+    replace: bool,
     /// The version the file must still be when the upload takes its place.
     unchanged: Option<&'a Version>,
     /// Write over the file directly where its folder takes no new files.
@@ -342,83 +372,124 @@ async fn upload_file(
 ) -> Result<u64, Failure> {
     let unchanged = checks.unchanged;
     let fail = |e: &dyn std::fmt::Display| Failure::Error(format!("{}: {e}", file_name(remote)));
+    let taken = || {
+        Failure::Exists(format!(
+            "“{}” already exists on the server.",
+            file_name(remote)
+        ))
+    };
     let mut source = tokio::fs::File::open(local).await.map_err(|e| fail(&e))?;
-    // A file being replaced keeps its contents until its replacement is complete.
-    if let Ok(meta) = session.metadata(remote).await
-        && file_type(&meta) == TYPE_FILE
-    {
-        // Through a link, the file it points to is replaced and the link stays.
-        let real = session
-            .canonicalize(remote)
-            .await
-            .unwrap_or_else(|_| remote.into());
-        if let Some((temp, mut target)) = stage(session, &real).await {
+    let meta = match session.metadata(remote).await {
+        Ok(meta) => meta,
+        // A new file is created exclusively, so one that appeared meanwhile is never
+        // replaced, and only what this upload created is removed if it fails.
+        Err(SftpError::Status(s)) if s.status_code == StatusCode::NoSuchFile => {
+            let flags = OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE;
+            let mut target = match session.open_with_flags(remote, flags).await {
+                Ok(target) => target,
+                Err(e) => {
+                    if exists(session, remote).await.unwrap_or(false) {
+                        return Err(taken());
+                    }
+                    return Err(fail(&describe(e)));
+                }
+            };
             let mut hash = DefaultHasher::new();
-            let mut copied = match copy(&mut source, &mut target, cancel, progress, &mut hash).await
-            {
+            let copied = match copy(&mut source, &mut target, cancel, progress, &mut hash).await {
                 Ok(()) => target.shutdown().await.map_err(|e| fail(&e)),
                 Err(e) => Err(e),
             };
-            drop(target);
-            // Someone may have saved the file while it uploaded.
-            if copied.is_ok()
-                && let Some(expected) = unchanged
-            {
-                copied = still(session, &real, expected, true, cancel).await;
-            }
-            if copied.is_ok() {
-                let permissions = Metadata {
-                    permissions: meta.permissions.map(|p| p & 0o7777),
-                    ..Metadata::empty()
-                };
-                let _ = session.set_metadata(temp.clone(), permissions).await;
-                copied = replace(session, &temp, &real).await.map_err(|e| fail(&e));
-            } else {
-                let _ = session.remove_file(temp).await;
+            if copied.is_err() {
+                // Leave no partial file behind.
+                drop(target);
+                let _ = session.remove_file(remote).await;
             }
             return copied.map(|()| hash.finish());
         }
-        // A folder that takes no new files may still let its files be overwritten in place,
-        // though an interrupted upload then leaves the file half written.
-        if !checks.in_place {
-            return Err(Failure::Error(
-                "The folder on the server takes no new files, which saving safely needs. \
-                 Your changes stay in the copy."
-                    .into(),
-            ));
+        Err(e) => return Err(fail(&describe(e))),
+    };
+    if file_type(&meta) != TYPE_FILE {
+        return Err(fail(&"A folder or other item already has this name."));
+    }
+    if !checks.replace {
+        return Err(taken());
+    }
+    // A file being replaced keeps its contents until its replacement is complete.
+    // Through a link, the file it points to is replaced and the link stays.
+    let real = session
+        .canonicalize(remote)
+        .await
+        .unwrap_or_else(|_| remote.into());
+    if let Some((temp, mut target)) = stage(session, &real).await {
+        let mut hash = DefaultHasher::new();
+        let mut copied = match copy(&mut source, &mut target, cancel, progress, &mut hash).await {
+            Ok(()) => target.shutdown().await.map_err(|e| fail(&e)),
+            Err(e) => Err(e),
+        };
+        drop(target);
+        // Someone may have saved the file while it uploaded.
+        if copied.is_ok()
+            && let Some(expected) = unchanged
+        {
+            copied = still(session, &real, expected, true, cancel).await;
         }
-        if let Some(expected) = unchanged {
-            still(session, remote, expected, true, cancel).await?;
+        // The staged file is private until it takes the original's place, and then has
+        // its permissions; without them it does not take it.
+        if copied.is_ok()
+            && let Some(mode) = meta.permissions
+        {
+            let permissions = Metadata {
+                permissions: Some(mode & 0o7777),
+                ..Metadata::empty()
+            };
+            copied = session
+                .set_metadata(temp.clone(), permissions)
+                .await
+                .map_err(|e| fail(&format!("Cannot set its permissions: {}", describe(e))));
         }
+        if copied.is_ok() {
+            copied = replace(session, &temp, &real).await.map_err(|e| fail(&e));
+        } else {
+            let _ = session.remove_file(temp).await;
+        }
+        return copied.map(|()| hash.finish());
+    }
+    // A folder that takes no new files may still let its files be overwritten in place,
+    // though an interrupted upload then leaves the file half written, so only when asked.
+    if !checks.in_place {
+        return Err(Failure::InPlace(
+            "The folder takes no new files, which replacing it safely needs.".into(),
+        ));
+    }
+    if let Some(expected) = unchanged {
+        still(session, remote, expected, true, cancel).await?;
     }
     let mut hash = DefaultHasher::new();
     let mut target = session
-        .open_with_flags(
-            remote,
-            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
-        )
+        .open_with_flags(remote, OpenFlags::TRUNCATE | OpenFlags::WRITE)
         .await
         .map_err(|e| fail(&describe(e)))?;
-    let copied = match copy(&mut source, &mut target, cancel, progress, &mut hash).await {
-        Ok(()) => target.shutdown().await.map_err(|e| fail(&e)),
-        Err(e) => Err(e),
-    };
-    if copied.is_err() {
-        // Leave no partial file behind.
-        drop(target);
-        let _ = session.remove_file(remote).await;
+    // The file was there before, so a failure leaves it as far as it got, never removed.
+    match copy(&mut source, &mut target, cancel, progress, &mut hash).await {
+        Ok(()) => target.shutdown().await.map_err(|e| fail(&e))?,
+        Err(e) => return Err(e),
     }
-    copied.map(|()| hash.finish())
+    Ok(hash.finish())
 }
 
-/// Creates a new file beside `path` to write its replacement into, or `None` where the
-/// folder takes no new files.
+/// Creates a new file beside `path`, readable only by its owner, to write its replacement
+/// into, or `None` where the folder takes no new files.
 async fn stage(session: &SftpSession, path: &str) -> Option<(String, File)> {
     let temp = join(&parent(path)?, &crate::model::temp_name(file_name(path)));
+    let private = Metadata {
+        permissions: Some(0o600),
+        ..Metadata::empty()
+    };
     let file = session
-        .open_with_flags(
+        .open_with_flags_and_attributes(
             temp.clone(),
             OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+            private,
         )
         .await
         .ok()?;
@@ -426,35 +497,81 @@ async fn stage(session: &SftpSession, path: &str) -> Option<(String, File)> {
 }
 
 /// Moves the complete file `temp` over `path`. SFTP servers commonly refuse to rename onto an
-/// existing file, and then `path` is removed first. Once it is, `temp` holds the only copy,
-/// so it stays if the move still fails.
+/// existing file; then `path` is first moved aside to a backup, which takes its place again
+/// if the move still fails, and stays, with the original contents, if even that fails.
 async fn replace(session: &SftpSession, temp: &str, path: &str) -> Result<(), String> {
-    let removed = match session.rename(temp, path).await {
+    match session.rename(temp, path).await {
         Ok(()) => return Ok(()),
-        Err(SftpError::Status(s)) if s.status_code == StatusCode::Failure => {
-            session.remove_file(path).await
+        Err(SftpError::Status(s)) if s.status_code == StatusCode::Failure => {}
+        Err(e) => {
+            let _ = session.remove_file(temp).await;
+            return Err(format!("Cannot replace it: {}", describe(e)));
         }
-        Err(e) => Err(e),
-    };
-    if let Err(e) = removed {
+    }
+    let backup = join(
+        &parent(path).unwrap_or_default(),
+        &crate::model::temp_name(file_name(path)),
+    );
+    if let Err(e) = session.rename(path, backup.as_str()).await {
         let _ = session.remove_file(temp).await;
         return Err(format!("Cannot replace it: {}", describe(e)));
     }
-    session.rename(temp, path).await.map_err(|e| {
-        format!(
-            "Uploaded as {}, which cannot take its place: {}",
-            file_name(temp),
-            describe(e)
-        )
-    })
+    match session.rename(temp, path).await {
+        Ok(()) => {
+            let _ = session.remove_file(backup).await;
+            Ok(())
+        }
+        Err(e) => {
+            let reason = describe(e);
+            if session.rename(backup.as_str(), path).await.is_ok() {
+                let _ = session.remove_file(temp).await;
+                Err(format!("Cannot replace it: {reason}"))
+            } else {
+                Err(format!(
+                    "Cannot replace it: {reason} The original is kept as {}, the upload as {}.",
+                    file_name(&backup),
+                    file_name(temp)
+                ))
+            }
+        }
+    }
+}
+
+/// Makes sure local `folder`, inside `chosen`, is a real folder all the way down from
+/// `chosen`: no part of it may be a link, or a Windows junction, which could lead files
+/// outside. With `create`, missing parts are created.
+fn real_folder(chosen: &Path, folder: &Path, create: bool) -> std::io::Result<()> {
+    let below = folder
+        .strip_prefix(chosen)
+        .map_err(|_| std::io::Error::other("it is outside the chosen folder"))?;
+    let mut current = chosen.to_path_buf();
+    for part in below.components() {
+        current.push(part);
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(std::io::Error::other(format!(
+                    "{} is a link or a file, not a folder",
+                    current.display()
+                )));
+            }
+            Err(e) if create && e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&current)?
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 /// Downloads one file, returning the version it was: how it looked when it was opened, and a
-/// fingerprint of what was read.
+/// fingerprint of what was read. Unless `replace`, a file that appeared at `local` meanwhile
+/// stops it.
 async fn download_file(
     session: &SftpSession,
     remote: &str,
     local: &Path,
+    replace: bool,
     cancel: &CancellationToken,
     progress: &mut Progress<'_>,
 ) -> Result<Option<Version>, Failure> {
@@ -478,9 +595,13 @@ async fn download_file(
             let _ = target.set_modified(modified);
         }
         drop(target);
-        copied = tokio::fs::rename(&partial, local)
-            .await
-            .map_err(|e| fail(&e));
+        copied = if replace {
+            tokio::fs::rename(&partial, local)
+                .await
+                .map_err(|e| fail(&e))
+        } else {
+            publish_new(&partial, local).await
+        };
     } else {
         drop(target);
     }
@@ -493,6 +614,29 @@ async fn download_file(
             contents: hash.finish(),
         })
     })
+}
+
+/// Gives the complete download `partial` the name `local` only if nothing has it: a hard
+/// link fails at once if the name is taken. Where links are not supported, as on FAT
+/// drives, it looks first and then renames.
+async fn publish_new(partial: &Path, local: &Path) -> Result<(), Failure> {
+    let name = local.file_name().unwrap_or_default().to_string_lossy();
+    let exists = || {
+        Failure::Exists(format!(
+            "“{name}” already exists in {}.",
+            local.parent().unwrap_or(local).display()
+        ))
+    };
+    let fail = |e: std::io::Error| Failure::Error(format!("{name}: {e}"));
+    match tokio::fs::hard_link(partial, local).await {
+        Ok(()) => {
+            let _ = tokio::fs::remove_file(partial).await;
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(exists()),
+        Err(_) if tokio::fs::symlink_metadata(local).await.is_ok() => Err(exists()),
+        Err(_) => tokio::fs::rename(partial, local).await.map_err(fail),
+    }
 }
 
 /// Where a download is written until it is complete: beside its destination.
