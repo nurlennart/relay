@@ -80,17 +80,15 @@ impl DownloadTarget {
         if replace {
             return self.dir.rename(&self.partial, &self.dir, &self.name);
         }
-        match self.dir.hard_link(&self.partial, &self.dir, &self.name) {
-            Ok(()) => {
-                let _ = self.dir.remove_file(&self.partial);
-                Ok(())
-            }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(e),
-            Err(_) if self.dir.symlink_metadata(&self.name).is_ok() => {
-                Err(io::Error::from(io::ErrorKind::AlreadyExists))
-            }
-            Err(_) => self.dir.rename(&self.partial, &self.dir, &self.name),
-        }
+        // There must be no check-then-rename fallback: on filesystems without hard
+        // links, it could overwrite a file created after that check. Save as lets the
+        // user explicitly authorize replacement on those filesystems instead.
+        self.dir.hard_link(&self.partial, &self.dir, &self.name)
+            .map_err(|e| io::Error::new(e.kind(), format!(
+                "Cannot safely create this download: {e}. Use Save as to confirm its destination."
+            )))?;
+        let _ = self.dir.remove_file(&self.partial);
+        Ok(())
     }
 }
 
@@ -104,6 +102,27 @@ impl Drop for DownloadTarget {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn a_new_download_does_not_replace_a_racing_destination() {
+        let base = std::env::temp_dir().join(crate::model::temp_name("download-race"));
+        std::fs::create_dir(&base).unwrap();
+        let root = DownloadRoot::open(&base).unwrap();
+        let path = base.join("file");
+        let (target, mut file) = root.create(&path).unwrap();
+        file.write_all(b"download").unwrap();
+        drop(file);
+        std::fs::write(&path, b"another writer").unwrap();
+        assert_eq!(
+            target.publish(false).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"another writer");
+        drop(target);
+        assert_eq!(std::fs::read_dir(&base).unwrap().count(), 1);
+        drop(root);
+        std::fs::remove_dir_all(base).unwrap();
+    }
 
     #[test]
     fn publication_stays_with_the_open_parent() {
