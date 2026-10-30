@@ -2116,9 +2116,15 @@ mod tests {
             // Names that are not text are not changed into others, which could merge them.
             let odd = local.join("odd");
             std::fs::create_dir_all(&odd).unwrap();
-            for byte in [0xff, 0xfe] {
+            // File systems such as macOS's refuse such names, so there is nothing to merge.
+            let made = [0xff, 0xfe].into_iter().all(|byte| {
                 let name = [b'x', byte];
-                std::fs::write(odd.join(std::ffi::OsStr::from_bytes(&name)), [byte]).unwrap();
+                std::fs::write(odd.join(std::ffi::OsStr::from_bytes(&name)), [byte]).is_ok()
+            });
+            if !made {
+                eprintln!("skipping names that are not text: this file system refuses them");
+                let _ = std::fs::remove_dir_all(&root);
+                return;
             }
             browser.clear_finished();
             browser.upload(vec![odd], &folder, false);
