@@ -344,9 +344,14 @@ impl Session {
         self.rdp.as_ref().is_some_and(|r| r.full_screen())
     }
     pub fn enter_full_screen(&mut self) -> Result<(), String> {
-        match &self.rdp {
+        match &mut self.rdp {
             Some(rdp) => rdp.enter_full_screen(),
             None => Err("The remote desktop is not ready yet.".into()),
+        }
+    }
+    pub fn leave_full_screen(&mut self) {
+        if let Some(rdp) = &mut self.rdp {
+            rdp.leave_full_screen();
         }
     }
     /// Whether a remote desktop has been created for this session.

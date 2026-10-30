@@ -1558,6 +1558,51 @@ fn an_overdue_reload_waits_without_redrawing() {
 }
 
 #[test]
+fn the_window_follows_a_full_screen_desktop() {
+    let step = |state, wants, window| full_window_step(state, wants, window);
+    // Asked for: the window goes full screen, and is told once.
+    let (asked, command) = step(None, true, false);
+    assert_eq!(command, Some(true));
+    let (waiting, command) = step(asked, true, false);
+    assert_eq!((waiting, command), (asked, None), "waits for the window");
+    let (shown, command) = step(waiting, true, true);
+    assert!(shown.is_some_and(|s| s.confirmed) && command.is_none());
+    // Leaving restores the window.
+    assert_eq!(step(shown, false, true), (None, Some(false)));
+    // The window left on its own, such as with macOS's green button.
+    assert_eq!(step(shown, true, false), (None, None));
+    // A window that was full screen before stays that way.
+    let (already, command) = step(None, true, true);
+    assert!(command.is_none());
+    assert_eq!(step(already, false, true), (None, None));
+    assert_eq!(step(None, false, false), (None, None));
+}
+
+#[test]
+fn full_screen_never_becomes_the_remembered_window_size() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let rect = |w, h| {
+        Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(w, h),
+        ))
+    };
+    app.remember_window(rect(1000., 700.), Some(false), false, 1.);
+    assert_eq!(app.state.window, Some([1000., 700.]));
+    // In full screen, the monitor's size is not the window's.
+    app.remember_window(rect(2560., 1440.), Some(false), true, 1.);
+    // Leaving, the window reports its old size for a moment before returning to its own.
+    app.remember_window(rect(2560., 1440.), Some(false), false, 1.);
+    assert_eq!(app.state.window, Some([1000., 700.]));
+    assert!(!app.state.maximized);
+    // Once settled, its size is followed again.
+    app.full_screen_seen = Some(Instant::now() - FULL_SCREEN_SETTLE);
+    app.remember_window(rect(1100., 720.), Some(false), false, 1.);
+    assert_eq!(app.state.window, Some([1100., 720.]));
+}
+
+#[test]
 fn local_shells_offer_snippets_but_not_files() {
     let ctx = egui::Context::default();
     ctx.enable_accesskit();

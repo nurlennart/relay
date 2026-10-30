@@ -92,6 +92,11 @@ impl App {
                     ("Enter in snippets", "Send selected snippet"),
                     ("Esc in snippets", "Close snippets"),
                 ]),
+                #[cfg(not(windows))]
+                ("REMOTE DESKTOP", &[
+                    ("Ctrl+Alt+PageUp / PageDown", "Previous / next tab"),
+                    ("Ctrl+Alt+Enter", "Toggle remote desktop full screen"),
+                ]),
                 #[cfg(windows)]
                 ("WINDOWS REMOTE DESKTOP", &[
                     ("Ctrl+Alt+Home", "Return keyboard focus to Relay"),
