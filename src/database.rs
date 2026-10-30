@@ -79,6 +79,11 @@ pub struct Snapshot {
 const CONFLICT: &str = "Someone changed this library since your last refresh. \
     Your changes were not written. Export your unsaved changes, refresh, and apply them again.";
 
+/// Loads the personal library and the revision its next save must compare against.
+pub fn load_personal(path: &std::path::Path) -> Result<Snapshot, String> {
+    local(path, 0, Op::Read)?.ok_or_else(|| "The personal library did not answer.".into())
+}
+
 /// What a library worker does.
 enum Op {
     Read,

@@ -509,6 +509,7 @@ pub fn data_path() -> PathBuf {
     crate::platform::data_dir().join("connections.json")
 }
 
+#[cfg(test)]
 pub fn load(path: &Path) -> Result<Vec<Connection>, String> {
     match fs::read(path) {
         Ok(bytes) => decode(&bytes),

@@ -265,7 +265,7 @@ impl App {
             cc.egui_ctx.set_zoom_factor(zoom.clamp(0.2, 5.));
         }
         let path = model::data_path();
-        let loaded = model::load(&path);
+        let loaded = database::load_personal(&path);
         let parent = platform::Window::of(cc);
         if let Some(parent) = parent {
             parent.set_theme(theme::current(&cc.egui_ctx));
@@ -292,16 +292,16 @@ impl App {
     fn with(
         ctx: egui::Context,
         path: PathBuf,
-        loaded: Result<Vec<Connection>, String>,
+        loaded: Result<database::Snapshot, String>,
         saved_mssql: Option<String>,
         saved_mysql: Option<String>,
         parent: Option<platform::Window>,
         state: state::State,
     ) -> Self {
         let location = database::Location::Local(path.clone());
-        let (connections, error) = match loaded {
-            Ok(c) => (c, None),
-            Err(e) => (vec![], Some(e)),
+        let (connections, revision, error) = match loaded {
+            Ok(snapshot) => (snapshot.connections, snapshot.revision, None),
+            Err(e) => (vec![], 0, Some(e)),
         };
         Self {
             connections,
@@ -319,7 +319,7 @@ impl App {
             search_focus: false,
             ctx,
             location,
-            revision: 0,
+            revision,
             generation: 0,
             views: Default::default(),
             pending: None,

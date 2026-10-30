@@ -10,7 +10,10 @@ fn reopened(ctx: &egui::Context, state: state::State) -> App {
     let mut app = App::with(
         ctx.clone(),
         PathBuf::from("unused.json"),
-        Ok(vec![]),
+        Ok(database::Snapshot {
+            connections: vec![],
+            revision: 0,
+        }),
         None,
         None,
         None,
@@ -33,21 +36,50 @@ fn test_app(ctx: &egui::Context) -> App {
         })
         .collect();
     // Tests that save write here, never into the working directory.
-    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "relay-test-{}-{}.json",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+    let path = std::env::temp_dir().join(model::temp_name("relay-test.json"));
     App::with(
         ctx.clone(),
         path,
-        Ok(connections),
+        Ok(database::Snapshot {
+            connections,
+            revision: 0,
+        }),
         None,
         None,
         None,
         state::State::default(),
     )
+}
+
+#[test]
+fn an_existing_personal_library_can_save_after_startup() {
+    let ctx = egui::Context::default();
+    let original = test_app(&ctx);
+    let path = original.path.clone();
+    model::save(&path, &original.connections).unwrap();
+    let mut app = App::with(
+        ctx,
+        path.clone(),
+        database::load_personal(&path),
+        None,
+        None,
+        None,
+        state::State::default(),
+    );
+    let mut next = app.connections.clone();
+    next[0].notes = "Saved after restarting".into();
+    assert!(app.persist(next));
+    finish_saving(&mut app);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    assert_eq!(
+        model::load(&path).unwrap()[0].notes,
+        "Saved after restarting"
+    );
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_file_name(format!(
+        ".{}.lock",
+        path.file_name().unwrap().to_string_lossy()
+    )));
 }
 
 fn library_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
