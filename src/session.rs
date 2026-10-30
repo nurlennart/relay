@@ -304,7 +304,11 @@ impl Session {
                     .as_ref()
                     .map(|f| f.path.clone())
                     .filter(|p| !p.is_empty());
-                self.files = Some(Browser::open(&connection, self.ctx.clone(), folder));
+                // Files open in an editor carry on with the new connection.
+                let edits = self.files.as_mut().map(Browser::take_edits);
+                let mut files = Browser::open(&connection, self.ctx.clone(), folder);
+                files.adopt_edits(edits.unwrap_or_default());
+                self.files = Some(files);
             } else {
                 self.terminal = terminal_for(&connection, &self.ctx)?;
             }
@@ -366,6 +370,10 @@ impl Session {
     /// Transfers that are queued or running in the session's file browser.
     pub fn active_transfers(&self) -> usize {
         self.files.as_ref().map_or(0, Browser::active_transfers)
+    }
+    /// Files edited from the session's file browser with changes not on the server.
+    pub fn unsaved_edits(&self) -> usize {
+        self.files.as_ref().map_or(0, Browser::unsaved_edits)
     }
     /// Whether the session's terminal or desktop has the keyboard.
     pub fn keyboard_focused(&self) -> bool {

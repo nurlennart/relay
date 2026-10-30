@@ -378,6 +378,29 @@ impl App {
         }
         ui.add_space(14.);
         ui.separator();
+        section_label(ui, "FILE BROWSER");
+        let mut editor = self.state.editor.clone();
+        field(
+            ui,
+            "External editor",
+            &mut editor,
+            "The system's editor for each kind of file",
+        );
+        ui.label(
+            RichText::new(
+                "Opens files chosen with Edit in external editor, such as code, subl or \
+                 \"C:\\Program Files\\Notepad++\\notepad++.exe\". {file} stands for the file, \
+                 which otherwise goes last. Saving in the editor uploads the file.",
+            )
+            .size(12.)
+            .color(colors.muted),
+        );
+        if editor != self.state.editor {
+            self.state.editor = editor;
+            self.save_state();
+        }
+        ui.add_space(14.);
+        ui.separator();
         section_label(ui, "SESSIONS");
         let mut reopen = !self.state.forget_tabs;
         if ui.checkbox(&mut reopen, "Reopen tabs at startup").changed() {

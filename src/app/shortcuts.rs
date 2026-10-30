@@ -72,6 +72,7 @@ impl App {
                     ("Mod+A", "Select all listed items"),
                     ("Enter", "Open folder or download selected files"),
                     ("Mod+U", "Choose files to upload"),
+                    ("Mod+E", "Edit selected file in the external editor"),
                     ("Mod+Shift+N", "New folder"),
                     ("F2", "Rename selected item"),
                     ("Delete", "Delete selected items, with confirmation"),

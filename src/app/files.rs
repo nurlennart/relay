@@ -1,9 +1,10 @@
-//! The SFTP file browser in a tab: sign-in prompts, the path bar, the folder listing, and
-//! the transfer queue.
+//! The SFTP file browser in a tab: sign-in prompts, the path bar, the folder listing, files
+//! open in an external editor, and the transfer queue.
 use super::*;
 use crate::askpass;
 use crate::sftp::{
-    self, Browser, Confirm, Direction, Entry, Failure, Sort, Status, Transfer, TransferState,
+    self, Browser, Confirm, Direction, Edit, EditState, Entry, Failure, Sort, Status, Transfer,
+    TransferState,
 };
 use egui::{Align, Layout, Margin, Rect, Sense, UiBuilder};
 
@@ -19,6 +20,9 @@ const TRANSFER_ROW: f32 = 46.;
 /// Rows of the transfer queue shown before it scrolls, when the tab has room for them.
 const TRANSFER_ROWS: usize = 4;
 
+/// Rows of the list of edited files shown before it scrolls.
+const EDIT_ROWS: usize = 3;
+
 /// Items dragged in a listing, which can be dropped on a folder to move them there.
 #[derive(Clone)]
 struct Dragged {
@@ -30,7 +34,11 @@ struct Dragged {
 /// What the browser asks of the app, which owns file pickers and saved state.
 enum Action {
     Download(Vec<String>),
-    PickUpload { folders: bool },
+    /// Open this file in the current folder in the external editor.
+    Edit(String),
+    PickUpload {
+        folders: bool,
+    },
     Reconnect,
     Copy(String),
 }
@@ -105,6 +113,11 @@ impl App {
                     }
                 }
                 Action::Download(names) => self.download(index, names),
+                Action::Edit(name) => {
+                    if let Some(files) = &mut self.sessions[index].files {
+                        files.edit(&name, &self.state.editor);
+                    }
+                }
             }
         }
     }
@@ -185,6 +198,11 @@ fn browser(
             if ui.button("Reconnect").clicked() {
                 actions.push(Action::Reconnect);
             }
+            // Edits wait here for the connection, and carry on once it is back.
+            if !files.edits.is_empty() {
+                ui.add_space(20.);
+                edits(ui, files, TRANSFER_ROW * 4., false);
+            }
             if !files.transfers.is_empty() {
                 ui.add_space(20.);
                 let height = ui.available_height() - 60.;
@@ -244,6 +262,12 @@ fn browser(
             .layout(Layout::top_down(Align::LEFT)),
     );
     status_bar(&mut below, files, names);
+    if !files.edits.is_empty() {
+        below.add_space(2.);
+        // Like the transfer queue, it scrolls instead of crowding out the listing.
+        let height = (full.height() / 4.).max(TRANSFER_ROW * 1.5);
+        edits(&mut below, files, height, true);
+    }
     if !files.transfers.is_empty() {
         below.add_space(2.);
         // At most a third of the tab, so a long queue scrolls instead of crowding out the
@@ -737,6 +761,41 @@ fn banners(ui: &mut egui::Ui, files: &mut Browser) {
                 }
             }
         }
+        Some(Confirm::StopEditing(id)) => {
+            let Some(edit) = files.edits.iter().find(|e| e.id == id) else {
+                files.view.confirm = None;
+                return;
+            };
+            let name = edit.name.clone();
+            let (mut discard, mut cancel) = (false, escape);
+            bar(ui, &mut |ui| {
+                ui.label(RichText::new(format!("Stop editing “{name}”?")).strong());
+                let explain = egui::Label::new(
+                    RichText::new("Your latest changes are not on the server and will be lost.")
+                        .color(colors.muted),
+                )
+                .truncate();
+                ui.scope(|ui| {
+                    ui.set_max_width((ui.available_width() - 210.).max(0.));
+                    ui.add(explain);
+                });
+                discard = ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Discard changes").color(ui.visuals().error_fg_color),
+                        )
+                        .stroke(Stroke::new(1_f32, ui.visuals().error_fg_color)),
+                    )
+                    .clicked();
+                cancel |= ui.button("Keep editing").clicked();
+            });
+            if discard {
+                files.view.confirm = None;
+                files.stop_edit(id);
+            } else if cancel {
+                files.view.confirm = None;
+            }
+        }
         None => {}
     }
 }
@@ -1139,6 +1198,17 @@ fn row(
             actions.push(Action::Download(chosen.clone()));
             ui.close();
         }
+        if chosen.len() == 1
+            && !entry.dir
+            && !entry.special
+            && ui
+                .button("Edit in external editor")
+                .on_hover_text("Ctrl+E · saving uploads the file")
+                .clicked()
+        {
+            actions.push(Action::Edit(name.clone()));
+            ui.close();
+        }
         if chosen.len() == 1 && ui.button("Rename").clicked() {
             start_rename(files, name);
             ui.close();
@@ -1246,6 +1316,15 @@ fn keys(ui: &mut egui::Ui, files: &mut Browser, names: &[String], actions: &mut 
     }
     if press(ctrl, Key::U) {
         return actions.push(Action::PickUpload { folders: false });
+    }
+    if press(ctrl, Key::E)
+        && let Some(name) = files.view.cursor.clone()
+        && files
+            .entries
+            .iter()
+            .any(|e| e.name == name && !e.dir && !e.special)
+    {
+        return actions.push(Action::Edit(name));
     }
     if press(ctrl, Key::R) || press(Modifiers::NONE, Key::F5) {
         return files.refresh();
@@ -1355,6 +1434,200 @@ fn status_bar(ui: &mut egui::Ui, files: &mut Browser, names: &[String]) {
     });
 }
 
+/// Files open in an external editor, each with how its last save went, scrolling past
+/// `max_height` of rows. `connected` offers the actions that need the server.
+fn edits(ui: &mut egui::Ui, files: &mut Browser, max_height: f32, connected: bool) {
+    let colors = theme::palette(ui.ctx());
+    let unsaved = files.unsaved_edits();
+    let mut actions = vec![];
+    egui::Frame::new()
+        .fill(colors.panel)
+        .corner_radius(RADIUS_LARGE)
+        .stroke(Stroke::new(1_f32, colors.line))
+        .inner_margin(Margin::symmetric(10, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.set_min_height(28.);
+                ui.label(caption("EDITING").color(colors.muted));
+                let summary = match unsaved {
+                    0 => "Saving in your editor uploads the file".to_string(),
+                    1 => "1 file has changes not on the server".into(),
+                    n => format!("{n} files have changes not on the server"),
+                };
+                ui.add(
+                    egui::Label::new(RichText::new(summary).size(12.).color(colors.muted))
+                        .truncate(),
+                );
+            });
+            egui::ScrollArea::vertical()
+                .id_salt("files-edits")
+                .max_height((TRANSFER_ROW * EDIT_ROWS as f32).min(max_height))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.;
+                    for edit in &files.edits {
+                        edit_row(ui, edit, connected, &mut actions);
+                    }
+                });
+        });
+    for (id, action) in actions {
+        match action {
+            EditAction::Open => files.reopen_edit(id),
+            EditAction::Retry => files.retry_edit(id, false),
+            EditAction::Overwrite => files.retry_edit(id, true),
+            EditAction::Stop => files.offer_stop_edit(id),
+        }
+    }
+}
+
+enum EditAction {
+    Open,
+    Retry,
+    Overwrite,
+    Stop,
+}
+
+/// One edited file on two lines: its name with how its last save went, and where saves go.
+fn edit_row(ui: &mut egui::Ui, edit: &Edit, connected: bool, actions: &mut Vec<(u64, EditAction)>) {
+    let colors = theme::palette(ui.ctx());
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, TRANSFER_ROW), Sense::hover());
+    let (status, color) = edit_status(ui, edit);
+    icons::paint_sized(
+        ui.painter(),
+        Icon::File,
+        egui::pos2(rect.left() + 8., rect.center().y),
+        ICON_SIZE,
+        if edit.unsaved() { color } else { colors.accent },
+    );
+    let mut buttons = ui.new_child(
+        UiBuilder::new()
+            .max_rect(Rect::from_min_max(
+                egui::pos2(rect.right() - 180., rect.top()),
+                rect.max,
+            ))
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    if icon_button(&mut buttons, Icon::Close, 22., "Stop editing").clicked() {
+        actions.push((edit.id, EditAction::Stop));
+    }
+    if connected {
+        match &edit.state {
+            EditState::Failed(_) => {
+                if buttons.small_button("Retry").clicked() {
+                    actions.push((edit.id, EditAction::Retry));
+                }
+            }
+            EditState::Changed(_) => {
+                if buttons
+                    .small_button("Overwrite")
+                    .on_hover_text("Replace the server's version with yours")
+                    .clicked()
+                {
+                    actions.push((edit.id, EditAction::Overwrite));
+                }
+            }
+            EditState::Open | EditState::Uploading | EditState::Opening => {}
+        }
+    }
+    if edit.opened
+        && buttons
+            .small_button("Open")
+            .on_hover_text("Show it in the editor again")
+            .clicked()
+    {
+        actions.push((edit.id, EditAction::Open));
+    }
+    let right = buttons.min_rect().left() - 10.;
+    let column = Rect::from_min_max(
+        egui::pos2(rect.left() + 24., rect.top()),
+        egui::pos2(right, rect.bottom()),
+    );
+    if column.width() <= 0. {
+        return;
+    }
+    let line = |center: f32, height: f32| {
+        Rect::from_center_size(
+            egui::pos2(column.center().x, rect.top() + center),
+            Vec2::new(column.width(), height),
+        )
+    };
+    let (first, second) = (line(15., 18.), line(33., 14.));
+    let status_galley = egui::WidgetText::from(RichText::new(&status).size(12.).color(color))
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            column.width() * 0.6,
+            egui::TextStyle::Body,
+        );
+    let status_width = status_galley.size().x;
+    ui.painter().galley(
+        egui::pos2(
+            first.right() - status_width,
+            first.center().y - status_galley.size().y / 2.,
+        ),
+        status_galley,
+        colors.text,
+    );
+    cell_text(
+        ui,
+        first,
+        first.left(),
+        first.width() - status_width - 12.,
+        RichText::new(&edit.name).size(13.),
+        false,
+    );
+    let small = |text: String| RichText::new(text).size(11.5).color(colors.muted);
+    let folder = sftp::parent(&edit.remote).unwrap_or_default();
+    let destination = fit_path(ui, "Saves to", &folder, second.width(), small);
+    cell_text(
+        ui,
+        second,
+        second.left(),
+        second.width(),
+        destination,
+        false,
+    );
+    let mut tip = format!(
+        "{status}\n\nOn the server  {}\nCopy here  {}",
+        edit.remote,
+        edit.local.display()
+    );
+    if edit.unsaved() {
+        tip.push_str("\n\nThe copy keeps your changes until they are uploaded.");
+    }
+    response.on_hover_text(tip);
+}
+
+/// How an edited file stands, in words, and the color to show it in.
+fn edit_status(ui: &egui::Ui, edit: &Edit) -> (String, Color32) {
+    let colors = theme::palette(ui.ctx());
+    match &edit.state {
+        EditState::Opening => ("Downloading a copy…".into(), colors.muted),
+        EditState::Open => match edit.uploaded {
+            Some(at) => (
+                format!(
+                    "Uploaded at {}",
+                    chrono::DateTime::<chrono::Local>::from(at).format("%H:%M:%S")
+                ),
+                colors.muted,
+            ),
+            None => ("Open in your editor".into(), colors.muted),
+        },
+        EditState::Uploading => ("Uploading changes…".into(), colors.muted),
+        EditState::Failed(message) if edit.opened => (
+            format!("Not uploaded: {message}"),
+            ui.visuals().error_fg_color,
+        ),
+        EditState::Failed(message) => (
+            format!("Cannot open: {message}"),
+            ui.visuals().error_fg_color,
+        ),
+        EditState::Changed(message) => (message.clone(), ui.visuals().warn_fg_color),
+    }
+}
+
 /// The queue of uploads and downloads, newest last, scrolling past `max_height` of rows.
 fn transfers(ui: &mut egui::Ui, files: &mut Browser, max_height: f32) {
     let colors = theme::palette(ui.ctx());
@@ -1365,7 +1638,9 @@ fn transfers(ui: &mut egui::Ui, files: &mut Browser, max_height: f32) {
         .filter(|t| {
             matches!(
                 t.state,
-                TransferState::Stopped(Failure::Error(_) | Failure::Exists(_))
+                TransferState::Stopped(
+                    Failure::Error(_) | Failure::Exists(_) | Failure::Changed(_)
+                )
             )
         })
         .count();
@@ -1442,7 +1717,9 @@ fn transfer_row(ui: &mut egui::Ui, t: &Transfer, actions: &mut Vec<(u64, Transfe
     let tint = match &t.state {
         TransferState::Done => colors.accent,
         TransferState::Stopped(Failure::Error(_)) => ui.visuals().error_fg_color,
-        TransferState::Stopped(Failure::Exists(_)) => ui.visuals().warn_fg_color,
+        TransferState::Stopped(Failure::Exists(_) | Failure::Changed(_)) => {
+            ui.visuals().warn_fg_color
+        }
         _ => colors.muted,
     };
     icons::paint_sized(
@@ -1470,6 +1747,15 @@ fn transfer_row(ui: &mut egui::Ui, t: &Transfer, actions: &mut Vec<(u64, Transfe
         }
         TransferState::Stopped(Failure::Exists(_)) => {
             if buttons.small_button("Replace").clicked() {
+                actions.push((t.id, TransferAction::Replace));
+            }
+        }
+        TransferState::Stopped(Failure::Changed(_)) => {
+            if buttons
+                .small_button("Overwrite")
+                .on_hover_text("Replace the server's version with yours")
+                .clicked()
+            {
                 actions.push((t.id, TransferAction::Replace));
             }
         }
@@ -1602,16 +1888,16 @@ fn transfer_status(ui: &egui::Ui, t: &Transfer) -> (String, Color32) {
             n => format!("Done · {n} files, {}", sftp::size(t.done)),
         },
         TransferState::Stopped(Failure::Cancelled) => "Cancelled".into(),
-        TransferState::Stopped(Failure::Exists(message) | Failure::Error(message)) => {
-            message.clone()
-        }
+        TransferState::Stopped(failure) => failure.message().into(),
     };
     if t.skipped > 0 {
         text.push_str(&format!(" · {} skipped", t.skipped));
     }
     let color = match &t.state {
         TransferState::Stopped(Failure::Error(_)) => ui.visuals().error_fg_color,
-        TransferState::Stopped(Failure::Exists(_)) => ui.visuals().warn_fg_color,
+        TransferState::Stopped(Failure::Exists(_) | Failure::Changed(_)) => {
+            ui.visuals().warn_fg_color
+        }
         _ => colors.muted,
     };
     (text, color)

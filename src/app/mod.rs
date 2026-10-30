@@ -1149,6 +1149,10 @@ impl App {
                         format!("Unfinished file transfers ({transfers}) will be cancelled."),
                     );
                 }
+                let edits: usize = self.sessions.iter().map(Session::unsaved_edits).sum();
+                if edits > 0 {
+                    ui.colored_label(ui.visuals().warn_fg_color, unsaved_edits(edits));
+                }
                 if self.recovery.is_some() {
                     ui.colored_label(
                         ui.visuals().error_fg_color,
@@ -1270,6 +1274,7 @@ impl App {
                     .sessions
                     .get(index)
                     .map_or(0, Session::active_transfers);
+                let edits = self.sessions.get(index).map_or(0, Session::unsaved_edits);
                 dialog("close", ctx).show(ctx, |ui| {
                     ui.set_width(380.);
                     ui.heading(format!("Close {name}?"));
@@ -1286,6 +1291,9 @@ impl App {
                                 }
                             },
                         );
+                    }
+                    if edits > 0 {
+                        ui.colored_label(ui.visuals().warn_fg_color, unsaved_edits(edits));
                     }
                     ui.horizontal(|ui| {
                         if ui.button("Close session").clicked() {
@@ -1490,6 +1498,15 @@ fn summary_of_names(names: &[&str]) -> String {
         text.push_str(&format!(" and {} more", names.len() - SHOWN));
     }
     text
+}
+
+/// Warns that `count` edited files have changes not on the server, before closing.
+fn unsaved_edits(count: usize) -> String {
+    let what = match count {
+        1 => "1 edited file has changes".to_string(),
+        n => format!("{n} edited files have changes"),
+    };
+    format!("{what} not on the server. The copies stay in the temporary folder.")
 }
 
 /// Uses the system's own fonts, and `terminal_font` for terminals if given. A terminal font

@@ -5,7 +5,11 @@
 //!
 //! A worker thread owns the connection. The browser sends it commands and reads its events
 //! each frame; transfers stream through a fixed buffer and run one at a time in a queue.
+//! Files edited in an external editor go through the same queue (see [`edit`]).
+mod edit;
 mod transfer;
+
+pub use edit::{Edit, EditState};
 
 use crate::{askpass, model::Connection};
 use eframe::egui;
@@ -42,6 +46,8 @@ const CHUNK: usize = 256 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 /// Lines of ssh's error output kept to explain a failed connection.
 const LOG_LINES: usize = 20;
+/// How often copies open in an editor are checked for saves.
+const WATCH_INTERVAL: Duration = Duration::from_millis(500);
 
 /// One item in a remote folder.
 #[derive(Clone, Debug, PartialEq)]
@@ -67,6 +73,23 @@ const TYPE_LINK: u32 = 0o120_000;
 
 fn file_type(meta: &Metadata) -> u32 {
     meta.permissions.unwrap_or(TYPE_FILE) & TYPE_MASK
+}
+
+/// A remote file's size and modification time, which tell whether someone changed it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stamp {
+    size: u64,
+    /// Seconds since 1970.
+    modified: Option<u32>,
+}
+
+impl Stamp {
+    fn of(meta: &Metadata) -> Self {
+        Self {
+            size: meta.len(),
+            modified: meta.mtime,
+        }
+    }
 }
 
 impl Entry {
@@ -136,6 +159,9 @@ pub enum Job {
         local: PathBuf,
         remote: String,
         replace: bool,
+        /// Upload only if the remote file still looks like this, as an edited file does
+        /// when nobody else saved it in the meantime.
+        unchanged: Option<Stamp>,
     },
     Download {
         remote: String,
@@ -148,7 +174,13 @@ impl Job {
     fn replacing(&self) -> Self {
         let mut job = self.clone();
         match &mut job {
-            Self::Upload { replace, .. } | Self::Download { replace, .. } => *replace = true,
+            Self::Upload {
+                replace, unchanged, ..
+            } => {
+                *replace = true;
+                *unchanged = None;
+            }
+            Self::Download { replace, .. } => *replace = true,
         }
         job
     }
@@ -160,7 +192,19 @@ pub enum Failure {
     Cancelled,
     /// The destination exists and the transfer was not asked to replace it.
     Exists(String),
+    /// The remote file changed since it was last read, so an edit would overwrite someone
+    /// else's.
+    Changed(String),
     Error(String),
+}
+
+impl Failure {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Cancelled => "Cancelled.",
+            Self::Exists(m) | Self::Changed(m) | Self::Error(m) => m,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -185,6 +229,8 @@ pub struct Transfer {
     pub state: TransferState,
     /// Items skipped because they are links to folders, which could loop.
     pub skipped: u64,
+    /// The edited file it opens or saves, by [`Edit::id`].
+    pub edit: Option<u64>,
     started: Option<Instant>,
     job: Job,
     cancel: CancellationToken,
@@ -268,6 +314,8 @@ pub enum Confirm {
         folder: String,
         existing: Vec<String>,
     },
+    /// Stop editing a file whose latest changes are not on the server, by [`Edit::id`].
+    StopEditing(u64),
 }
 
 /// The browser's own state: selection, sorting, and what is being edited.
@@ -320,13 +368,29 @@ impl View {
 }
 
 enum Command {
-    List { seq: u64, path: String },
+    List {
+        seq: u64,
+        path: String,
+    },
     Mkdir(String),
-    Rename { from: String, to: String },
+    Rename {
+        from: String,
+        to: String,
+    },
     Delete(Vec<String>),
     Transfer(Queued),
+    /// Report saves to the local file `path` of edit `id` other than `seen`.
+    Watch {
+        id: u64,
+        path: PathBuf,
+        seen: Option<Seen>,
+    },
+    Unwatch(u64),
     Close,
 }
+
+/// A local file's size and modification time, which change when it is saved.
+type Seen = (u64, Option<SystemTime>);
 
 struct Queued {
     id: u64,
@@ -357,9 +421,15 @@ enum Event {
         done: u64,
         files_done: u64,
     },
+    /// A transfer ended. A single file's transfer says how the remote file looks now.
     Finished {
         id: u64,
-        result: Result<(), Failure>,
+        result: Result<Option<Stamp>, Failure>,
+    },
+    /// The copy of edit `id` was saved.
+    Saved {
+        id: u64,
+        seen: Seen,
     },
     Ended(String),
 }
@@ -390,6 +460,8 @@ pub struct Browser {
     pub notice: Option<(String, Instant)>,
     pub prompts: Vec<Prompt>,
     pub transfers: Vec<Transfer>,
+    /// Files open in an external editor.
+    pub edits: Vec<Edit>,
     pub view: View,
     /// Counts the listings received, so the shown order knows when to be worked out again.
     listed: u64,
@@ -481,11 +553,12 @@ impl Browser {
                     local: Path::new("~/Projects/relay").join(name),
                     remote: join(&self.path, name),
                     replace: false,
+                    unchanged: None,
                 },
                 self.path.clone(),
             ),
         };
-        let id = self.queue(job, direction, name.into(), destination);
+        let id = self.queue(job, direction, name.into(), destination, None);
         let transfer = self.transfers.iter_mut().find(|t| t.id == id).unwrap();
         transfer.total = Some(total);
         transfer.done = done;
@@ -531,6 +604,7 @@ impl Browser {
             notice: None,
             prompts: vec![],
             transfers: vec![],
+            edits: vec![],
             view: View {
                 focus_requested: true,
                 ..View::default()
@@ -675,32 +749,39 @@ impl Browser {
                 }
             }
             Event::Finished { id, result } => {
-                let mut upload = false;
+                let mut finished = None;
                 if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
-                    upload = t.direction == Direction::Upload;
-                    t.state = match result {
-                        Ok(()) => {
+                    t.state = match &result {
+                        Ok(_) => {
                             t.done = t.total.unwrap_or(t.done);
                             t.files_done = t.files;
                             TransferState::Done
                         }
-                        Err(failure) => TransferState::Stopped(failure),
+                        Err(failure) => TransferState::Stopped(failure.clone()),
                     };
+                    finished = Some((t.direction, t.edit));
+                }
+                if let Some((_, Some(edit))) = finished {
+                    self.edit_finished(edit, result);
                 }
                 // Uploads, finished or partly done, change remote folders.
-                if upload {
+                if let Some((Direction::Upload, _)) = finished {
                     self.refresh();
                 }
             }
+            Event::Saved { id, seen } => self.edit_saved(id, seen),
             Event::Ended(reason) => {
                 self.status = Status::Ended(reason);
                 self.loading = false;
                 self.busy = 0;
                 self.prompts.clear();
+                let ended = Failure::Error("The connection ended.".into());
                 for t in &mut self.transfers {
                     if !t.finished() {
-                        t.state =
-                            TransferState::Stopped(Failure::Error("The connection ended.".into()));
+                        t.state = TransferState::Stopped(ended.clone());
+                        if let Some(edit) = t.edit {
+                            edit::interrupted(&mut self.edits, edit, &ended);
+                        }
                     }
                 }
             }
@@ -863,8 +944,9 @@ impl Browser {
                 remote: join(folder, &name),
                 local: path,
                 replace,
+                unchanged: None,
             };
-            self.queue(job, Direction::Upload, name, folder.into());
+            self.queue(job, Direction::Upload, name, folder.into(), None);
         }
     }
 
@@ -883,6 +965,7 @@ impl Browser {
                         Direction::Download,
                         name.clone(),
                         folder.display().to_string(),
+                        None,
                     );
                 }
                 None => {
@@ -904,10 +987,17 @@ impl Browser {
             local,
             replace: true,
         };
-        self.queue(job, Direction::Download, name.into(), folder);
+        self.queue(job, Direction::Download, name.into(), folder, None);
     }
 
-    fn queue(&mut self, job: Job, direction: Direction, name: String, destination: String) -> u64 {
+    fn queue(
+        &mut self,
+        job: Job,
+        direction: Direction,
+        name: String,
+        destination: String,
+        edit: Option<u64>,
+    ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let cancel = CancellationToken::new();
@@ -922,6 +1012,7 @@ impl Browser {
             files: 0,
             state: TransferState::Queued,
             skipped: 0,
+            edit,
             started: None,
             job: job.clone(),
             cancel: cancel.clone(),
@@ -947,13 +1038,17 @@ impl Browser {
         let Some(index) = self.transfers.iter().position(|t| t.id == id) else {
             return;
         };
+        // An edited file's transfer is retried as the edit stands now.
+        if let Some(edit) = self.transfers[index].edit {
+            return self.retry_edit(edit, replace);
+        }
         let old = self.transfers.remove(index);
         let job = if replace {
             old.job.replacing()
         } else {
             old.job
         };
-        self.queue(job, old.direction, old.name, old.destination);
+        self.queue(job, old.direction, old.name, old.destination, None);
     }
 
     pub fn clear_finished(&mut self) {
@@ -1060,6 +1155,7 @@ impl Drop for Browser {
         // The worker ends, and with it ssh, when it reads this or the channel closes.
         self.cancel_all();
         let _ = self.commands.send(Command::Close);
+        edit::discard_saved(&self.edits);
     }
 }
 
@@ -1209,9 +1305,14 @@ async fn worker(
 
     let (queue, queued) = mpsc::unbounded_channel();
     tokio::spawn(transfer::transfers(session.clone(), queued, events.clone()));
+    let (watch, watched) = mpsc::unbounded_channel();
+    tokio::spawn(edit::watch(watched, events.clone()));
     let run = |command: Command| match command {
         Command::Transfer(job) => {
             let _ = queue.send(job);
+        }
+        command @ (Command::Watch { .. } | Command::Unwatch(_)) => {
+            let _ = watch.send(command);
         }
         Command::Close => {}
         command => {
@@ -1321,7 +1422,9 @@ async fn operation(session: Arc<SftpSession>, command: Command, events: Events) 
                 _ => Err(format!("Cannot delete {}", failed.join("; "))),
             }
         }
-        Command::Transfer(_) | Command::Close => return,
+        Command::Transfer(_) | Command::Watch { .. } | Command::Unwatch(_) | Command::Close => {
+            return;
+        }
     };
     events.send(Event::Changed(result));
 }
@@ -2062,6 +2165,158 @@ mod tests {
                 "via link"
             );
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An editor that opens nothing, for tests that save the copy themselves.
+    const NO_EDITOR: &str = if cfg!(windows) { "cmd /c rem" } else { "true" };
+
+    /// Waits for `browser`'s only edit to settle, and returns it.
+    fn settled<'a>(browser: &'a mut Browser, what: &str) -> &'a Edit {
+        wait(browser, what, |b| {
+            !matches!(b.edits[0].state, EditState::Opening | EditState::Uploading)
+                && b.active_transfers() == 0
+        });
+        &browser.edits[0]
+    }
+
+    #[test]
+    fn edits_upload_each_save_and_stop_at_changes_on_the_server() {
+        let root = scratch("edit");
+        std::fs::write(root.join("notes.txt"), "one").unwrap();
+        let Some(mut browser) = local_browser(&root) else {
+            return;
+        };
+        browser.edit("notes.txt", NO_EDITOR);
+        let edit = settled(&mut browser, "the copy");
+        assert_eq!(edit.state, EditState::Open);
+        let local = edit.local.clone();
+        assert_eq!(local.file_name().unwrap(), "notes.txt");
+        assert_eq!(std::fs::read_to_string(&local).unwrap(), "one");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let folder = std::fs::metadata(local.parent().unwrap()).unwrap();
+            assert_eq!(folder.permissions().mode() & 0o777, 0o700);
+        }
+        // Editing the same file again opens the same copy.
+        browser.edit("notes.txt", NO_EDITOR);
+        assert_eq!(browser.edits.len(), 1);
+
+        // A save is uploaded.
+        std::fs::write(&local, "two").unwrap();
+        wait(&mut browser, "the upload", |b| {
+            b.edits[0].uploaded.is_some()
+        });
+        let edit = settled(&mut browser, "the upload");
+        assert_eq!(edit.state, EditState::Open);
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "two"
+        );
+        assert_eq!(browser.unsaved_edits(), 0);
+
+        // Someone else saves on the server; the next save waits instead of overwriting.
+        std::fs::write(root.join("notes.txt"), "theirs, longer").unwrap();
+        std::fs::write(&local, "three").unwrap();
+        wait(&mut browser, "the conflict", |b| {
+            matches!(b.edits[0].state, EditState::Changed(_))
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "theirs, longer"
+        );
+        assert_eq!(std::fs::read_to_string(&local).unwrap(), "three");
+        assert_eq!(browser.unsaved_edits(), 1);
+        assert!(matches!(
+            browser.transfers.last().unwrap().state,
+            TransferState::Stopped(Failure::Changed(_))
+        ));
+
+        // Overwriting from the transfer queue goes through the edit.
+        let id = browser.transfers.last().unwrap().id;
+        browser.retry(id, true);
+        let edit = settled(&mut browser, "the overwrite");
+        assert_eq!(edit.state, EditState::Open);
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "three"
+        );
+        assert_eq!(
+            browser.transfers.len(),
+            1,
+            "earlier uploads leave the queue"
+        );
+
+        // Stopping removes the copy.
+        let id = browser.edits[0].id;
+        browser.offer_stop_edit(id);
+        assert!(browser.view.confirm.is_none(), "nothing to lose");
+        assert!(browser.edits.is_empty());
+        assert!(!local.parent().unwrap().exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_upload_keeps_the_changes_for_a_retry_after_reconnecting() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("edit-fail");
+        let remote = root.join("remote");
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::write(remote.join("app.conf"), "port = 80").unwrap();
+        let Some(mut browser) = local_browser(&remote) else {
+            return;
+        };
+        browser.edit("app.conf", NO_EDITOR);
+        let local = settled(&mut browser, "the copy").local.clone();
+
+        // A file and folder nobody may write make the upload fail.
+        let mode = |m| std::fs::Permissions::from_mode(m);
+        std::fs::set_permissions(remote.join("app.conf"), mode(0o444)).unwrap();
+        std::fs::set_permissions(&remote, mode(0o555)).unwrap();
+        if std::fs::write(remote.join("probe"), "").is_ok() {
+            eprintln!("skipping: permissions do not apply to this user");
+            std::fs::set_permissions(&remote, mode(0o755)).unwrap();
+            return;
+        }
+        std::fs::write(&local, "port = 8080").unwrap();
+        wait(&mut browser, "the failure", |b| {
+            matches!(b.edits[0].state, EditState::Failed(_))
+        });
+        assert_eq!(browser.unsaved_edits(), 1);
+        assert_eq!(std::fs::read_to_string(&local).unwrap(), "port = 8080");
+        // Stopping now asks first.
+        let id = browser.edits[0].id;
+        browser.offer_stop_edit(id);
+        assert_eq!(browser.view.confirm, Some(Confirm::StopEditing(id)));
+        browser.view.confirm = None;
+
+        // A new connection takes the edit over, and Retry uploads the kept changes.
+        std::fs::set_permissions(&remote, mode(0o755)).unwrap();
+        std::fs::set_permissions(remote.join("app.conf"), mode(0o644)).unwrap();
+        let edits = browser.take_edits();
+        drop(browser);
+        assert!(local.exists(), "an unsaved copy outlives its browser");
+        let mut browser = local_browser(&remote).unwrap();
+        browser.adopt_edits(edits);
+        let id = browser.edits[0].id;
+        browser.retry_edit(id, false);
+        let edit = settled(&mut browser, "the retry");
+        assert_eq!(edit.state, EditState::Open, "{:?}", edit.state);
+        assert_eq!(
+            std::fs::read_to_string(remote.join("app.conf")).unwrap(),
+            "port = 8080"
+        );
+
+        // Saves made after taking over are watched too.
+        std::fs::write(&local, "port = 9090").unwrap();
+        wait(&mut browser, "the next upload", |b| {
+            std::fs::read_to_string(remote.join("app.conf")).unwrap() == "port = 9090"
+                && b.edits[0].state == EditState::Open
+        });
+        drop(browser);
+        assert!(!local.exists(), "a saved copy goes with its browser");
         let _ = std::fs::remove_dir_all(&root);
     }
 

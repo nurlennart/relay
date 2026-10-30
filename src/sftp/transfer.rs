@@ -64,13 +64,15 @@ impl Progress<'_> {
     }
 }
 
+/// Copies what `job` names. A single file's transfer returns how the remote file looks
+/// afterwards, which an edit checks before its next upload.
 async fn transfer(
     session: &SftpSession,
     id: u64,
     job: &Job,
     cancel: &CancellationToken,
     events: &Events,
-) -> Result<(), Failure> {
+) -> Result<Option<Stamp>, Failure> {
     let error = |what: &str, e: &dyn std::fmt::Display| Failure::Error(format!("{what}: {e}"));
     let mut progress = Progress {
         id,
@@ -84,10 +86,26 @@ async fn transfer(
             local,
             remote,
             replace,
+            unchanged,
         } => {
             let existing = exists(session, remote)
                 .await
                 .map_err(|e| error("Cannot check the destination", &describe(e)))?;
+            if let Some(expected) = unchanged {
+                let now = match existing {
+                    true => session.metadata(remote).await.ok().map(|m| Stamp::of(&m)),
+                    false => None,
+                };
+                if now != Some(*expected) {
+                    return Err(Failure::Changed(match now {
+                        Some(_) => format!(
+                            "“{}” changed on the server since you opened it.",
+                            file_name(remote)
+                        ),
+                        None => format!("“{}” is no longer on the server.", file_name(remote)),
+                    }));
+                }
+            }
             if existing && !replace {
                 return Err(Failure::Exists(format!(
                     "“{}” already exists on the server.",
@@ -117,6 +135,9 @@ async fn transfer(
                 upload_file(session, from, to, cancel, &mut progress).await?;
                 progress.file_done();
             }
+            if plan.folders.is_empty() {
+                return Ok(session.metadata(remote).await.ok().map(|m| Stamp::of(&m)));
+            }
         }
         Job::Download {
             remote,
@@ -144,13 +165,17 @@ async fn transfer(
                     .await
                     .map_err(|e| error(&format!("Cannot create {}", folder.display()), &e))?;
             }
+            let mut stamp = None;
             for (from, to, _) in &plan.files {
-                download_file(session, from, to, cancel, &mut progress).await?;
+                stamp = download_file(session, from, to, cancel, &mut progress).await?;
                 progress.file_done();
+            }
+            if plan.folders.is_empty() {
+                return Ok(stamp);
             }
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Lists a local file or folder for upload. Links to folders are skipped, since they can loop.
@@ -334,16 +359,18 @@ async fn replace(session: &SftpSession, temp: &str, path: &str) -> Result<(), St
     })
 }
 
+/// Downloads one file, returning how it looked when it was opened.
 async fn download_file(
     session: &SftpSession,
     remote: &str,
     local: &Path,
     cancel: &CancellationToken,
     progress: &mut Progress<'_>,
-) -> Result<(), Failure> {
+) -> Result<Option<Stamp>, Failure> {
     let fail = |e: &dyn std::fmt::Display| Failure::Error(format!("{}: {e}", file_name(remote)));
     let mut source = session.open(remote).await.map_err(|e| fail(&describe(e)))?;
-    let modified = source.metadata().await.ok().and_then(|m| m.modified().ok());
+    let meta = source.metadata().await.ok();
+    let modified = meta.as_ref().and_then(|m| m.modified().ok());
     // The file appears under its own name only once it is complete.
     let partial = partial_path(local);
     let mut target = tokio::fs::File::create_new(&partial)
@@ -368,7 +395,7 @@ async fn download_file(
     if copied.is_err() {
         let _ = tokio::fs::remove_file(&partial).await;
     }
-    copied
+    copied.map(|()| meta.as_ref().map(Stamp::of))
 }
 
 /// Where a download is written until it is complete: beside its destination.
