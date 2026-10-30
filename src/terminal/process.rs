@@ -1,14 +1,15 @@
 //! The program a terminal runs: a pseudo-terminal, with threads of its own that read its
 //! output into the screen and wait for it to end.
 use super::Replies;
+mod queue;
 use eframe::egui;
 use portable_pty::{ChildKiller, CommandBuilder, ExitStatus, MasterPty, PtySize};
+use queue::InputQueue;
 use std::{
     io::{Read, Write},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc::{SyncSender, TrySendError},
     },
     time::{Duration, Instant},
 };
@@ -18,9 +19,6 @@ const TAIL: usize = 4096;
 /// Where the pseudo-terminal does not report the end of the output (as on Windows), the
 /// output of an exited process is complete once none has arrived for this long.
 const QUIET: Duration = Duration::from_millis(250);
-/// How many pieces of input, such as keystrokes or pastes, may wait for a program that is not
-/// reading. Past this, input is refused rather than blocking the window.
-const INPUT_QUEUE: usize = 256;
 
 pub struct Process {
     /// The screen the output is read into.
@@ -28,7 +26,7 @@ pub struct Process {
     master: Box<dyn MasterPty + Send>,
     /// Input for the program, which a thread of its own writes, so a program that stops
     /// reading never holds up the window.
-    input: SyncSender<Vec<u8>>,
+    input: Arc<InputQueue>,
     /// Why writing input failed, once it has.
     input_error: Arc<Mutex<Option<String>>>,
     /// Stops the process, which a thread of its own waits for.
@@ -95,15 +93,17 @@ impl Process {
             5000,
             Replies::default(),
         )));
-        let (input, queued) = std::sync::mpsc::sync_channel::<Vec<u8>>(INPUT_QUEUE);
+        let input = Arc::new(InputQueue::default());
+        let queued = input.clone();
         let input_error = Arc::new(Mutex::new(None));
         let (failed, wake) = (input_error.clone(), ctx.clone());
         // It ends once the terminal and its output thread are gone, or the program stops
         // taking input.
         std::thread::spawn(move || {
-            for bytes in queued {
+            while let Some(bytes) = queued.recv() {
                 if let Err(e) = writer.write_all(&bytes).and_then(|_| writer.flush()) {
                     *failed.lock().unwrap() = Some(e.to_string());
+                    queued.close();
                     if let Some(ctx) = wake {
                         ctx.request_repaint();
                     }
@@ -113,6 +113,7 @@ impl Process {
         });
         let output = parser.clone();
         let replies = input.clone();
+        let reply_error = input_error.clone();
         let tail = Arc::new(Mutex::new((Vec::new(), Instant::now())));
         let drained = Arc::new(AtomicBool::new(false));
         let output_bytes = Arc::new(AtomicU64::new(0));
@@ -152,8 +153,13 @@ impl Process {
                             let copied = parser.callbacks().1.copied.is_some();
                             drop(parser);
                             // Answers queue behind input typed before them.
-                            if !response.is_empty() && replies.send(response).is_err() {
-                                break;
+                            if !response.is_empty()
+                                && let Err(e) = replies.send(&response, true)
+                            {
+                                *reply_error.lock().unwrap() = Some(e);
+                                if let Some(ctx) = &ctx {
+                                    ctx.request_repaint();
+                                }
                             }
                             if let Some(ctx) = &ctx
                                 && (copied || visible.load(Ordering::Relaxed))
@@ -190,18 +196,7 @@ impl Process {
     /// Queues `bytes` for the program without waiting for it to read them. A failure to
     /// write them later is reported by [`Self::take_input_error`].
     pub fn write(&self, bytes: &[u8]) -> Result<(), String> {
-        match self.input.try_send(bytes.to_vec()) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => {
-                Err("the program is not reading input, so this was not sent".into())
-            }
-            Err(TrySendError::Disconnected(_)) => Err(self
-                .input_error
-                .lock()
-                .unwrap()
-                .clone()
-                .unwrap_or_else(|| "the program no longer takes input".into())),
-        }
+        self.input.send(bytes, false)
     }
 
     /// Why writing input to the program failed, once; `None` while it has not.
@@ -261,6 +256,7 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
+        self.input.close();
         // Its waiting thread collects it once it has stopped.
         let _ = self.killer.kill();
     }
@@ -362,6 +358,50 @@ pub fn shell(script: &str) -> CommandBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn full_input_does_not_block_output_that_requests_a_reply() {
+        let process = Process::spawn(
+            shell(
+                r#"stty raw -echo; printf 'READY\r\n'; sleep 0.3; printf '\033[6n';
+            i=0; while [ "$i" -lt 4096 ]; do
+                printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; i=$((i+1));
+            done; printf '\r\nOUTPUT_DONE\r\n'; sleep 30"#,
+            ),
+            None,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !process
+            .parser
+            .lock()
+            .unwrap()
+            .screen()
+            .contents()
+            .contains("READY")
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        process.write(&vec![b'x'; 1024 * 1024]).unwrap();
+        for _ in 0..300 {
+            if process.write(b"x").is_err() {
+                break;
+            }
+        }
+        while !process
+            .last_lines(2)
+            .iter()
+            .any(|line| line.contains("OUTPUT_DONE"))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "output stopped behind the full input queue"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 
     #[test]
     fn plain_lines_drop_escapes_and_overwritten_text() {
