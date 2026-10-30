@@ -25,7 +25,7 @@ pub(super) async fn transfers(
 }
 
 /// The files and folders one transfer creates, found before copying so progress has a total.
-struct Plan<F, P> {
+pub(super) struct Plan<F, P> {
     folders: Vec<F>,
     files: Vec<(P, F, u64)>,
     skipped: u64,
@@ -108,11 +108,12 @@ async fn transfer(
                     file_name(remote)
                 )));
             }
-            let (from, to) = (local.clone(), remote.clone());
-            let plan = tokio::task::spawn_blocking(move || plan_upload(&from, &to))
-                .await
-                .map_err(|e| error("Cannot read the files", &e))?
-                .map_err(|e| Failure::Error(format!("Cannot upload {}: {e}", local.display())))?;
+            let (from, to, stop) = (local.clone(), remote.clone(), cancel.clone());
+            let planning = tokio::task::spawn_blocking(move || plan_upload(&from, &to, &stop));
+            // Cancelling frees the queue at once; the listing stops at its next folder.
+            let plan = cancellable(cancel, planning)
+                .await?
+                .map_err(|e| error("Cannot read the files", &e))??;
             events.send(Event::Started {
                 id,
                 total: plan.total(),
@@ -154,9 +155,7 @@ async fn transfer(
                     local.parent().unwrap_or(local).display()
                 )));
             }
-            let plan = plan_download(session, remote, local)
-                .await
-                .map_err(|e| error(&format!("Cannot read {remote}"), &e))?;
+            let plan = plan_download(session, remote, local, cancel).await?;
             events.send(Event::Started {
                 id,
                 total: plan.total(),
@@ -188,15 +187,34 @@ async fn transfer(
     Ok(None)
 }
 
+/// Waits for `work` unless the transfer is cancelled first.
+async fn cancellable<T>(
+    cancel: &CancellationToken,
+    work: impl Future<Output = T>,
+) -> Result<T, Failure> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(Failure::Cancelled),
+        done = work => Ok(done),
+    }
+}
+
 /// Lists a local file or folder for upload. Links to folders are skipped, since they can loop.
-/// A name the server cannot be sent unchanged stops it before anything is copied.
-fn plan_upload(local: &Path, remote: &str) -> Result<Plan<String, PathBuf>, String> {
+/// A name the server cannot be sent unchanged stops it before anything is copied, and so
+/// does cancelling, checked at each folder.
+pub(super) fn plan_upload(
+    local: &Path,
+    remote: &str,
+    cancel: &CancellationToken,
+) -> Result<Plan<String, PathBuf>, Failure> {
     let mut plan = Plan {
         folders: vec![],
         files: vec![],
         skipped: 0,
     };
-    let fail = |path: &Path, e: std::io::Error| format!("Cannot read {}: {e}", path.display());
+    let fail = |path: &Path, e: std::io::Error| {
+        Failure::Error(format!("Cannot read {}: {e}", path.display()))
+    };
     let meta = std::fs::metadata(local).map_err(|e| fail(local, e))?;
     if !meta.is_dir() {
         plan.files.push((local.into(), remote.into(), meta.len()));
@@ -204,6 +222,9 @@ fn plan_upload(local: &Path, remote: &str) -> Result<Plan<String, PathBuf>, Stri
     }
     let mut pending = vec![(local.to_path_buf(), remote.to_string())];
     while let Some((folder, target)) = pending.pop() {
+        if cancel.is_cancelled() {
+            return Err(Failure::Cancelled);
+        }
         plan.folders.push(target.clone());
         let mut children: Vec<_> = std::fs::read_dir(&folder)
             .and_then(|d| d.collect::<Result<_, _>>())
@@ -213,12 +234,12 @@ fn plan_upload(local: &Path, remote: &str) -> Result<Plan<String, PathBuf>, Stri
             let path = child.path();
             let Some(name) = child.file_name().to_str().map(String::from) else {
                 // Replaced characters could merge two files into one on the server.
-                return Err(format!(
+                return Err(Failure::Error(format!(
                     "“{}” in {} has a name that is not valid text, so the server cannot \
                      be sent it unchanged.",
                     child.file_name().to_string_lossy(),
                     folder.display()
-                ));
+                )));
             };
             let link = child.file_type().map_err(|e| fail(&path, e))?.is_symlink();
             match std::fs::metadata(&path) {
@@ -236,18 +257,23 @@ fn plan_upload(local: &Path, remote: &str) -> Result<Plan<String, PathBuf>, Stri
 }
 
 /// Lists a remote file or folder for download. Links to folders inside it are skipped.
+/// Cancelling stops it at once, even while the server is slow to answer.
 async fn plan_download(
     session: &SftpSession,
     remote: &str,
     local: &Path,
-) -> Result<Plan<PathBuf, String>, String> {
+    cancel: &CancellationToken,
+) -> Result<Plan<PathBuf, String>, Failure> {
+    let fail = |e: &dyn std::fmt::Display| Failure::Error(format!("Cannot read {remote}: {e}"));
     let mut plan = Plan {
         folders: vec![],
         files: vec![],
         skipped: 0,
     };
     // The item that was chosen is followed if it is a link.
-    let meta = session.metadata(remote).await.map_err(describe)?;
+    let meta = cancellable(cancel, session.metadata(remote))
+        .await?
+        .map_err(|e| fail(&describe(e)))?;
     if file_type(&meta) != TYPE_DIR {
         plan.files.push((remote.into(), local.into(), meta.len()));
         return Ok(plan);
@@ -255,10 +281,9 @@ async fn plan_download(
     let mut pending = vec![(remote.to_string(), local.to_path_buf())];
     while let Some((folder, target)) = pending.pop() {
         plan.folders.push(target.clone());
-        let mut items: Vec<_> = session
-            .read_dir(folder.clone())
-            .await
-            .map_err(describe)?
+        let mut items: Vec<_> = cancellable(cancel, session.read_dir(folder.clone()))
+            .await?
+            .map_err(|e| fail(&describe(e)))?
             .collect();
         items.sort_by_key(|i| i.file_name());
         // Names this computer cannot tell apart would be saved over one another.
@@ -267,19 +292,19 @@ async fn plan_download(
             let name = item.file_name();
             // A server must not be able to write outside the chosen folder.
             let Some(local_name) = local_name(&name) else {
-                return Err(format!("“{name}” cannot be saved on this computer."));
+                return Err(fail(&format!("“{name}” cannot be saved on this computer.")));
             };
             if let Some(other) = keys.insert(crate::platform::name_key(&name), name.clone()) {
-                return Err(format!(
+                return Err(fail(&format!(
                     "“{other}” and “{name}” in {folder} would be the same file on this computer."
-                ));
+                )));
             }
             let path = join(&folder, &name);
             let meta = item.metadata();
             match file_type(&meta) {
                 TYPE_DIR => pending.push((path, target.join(local_name))),
                 TYPE_FILE => plan.files.push((path, target.join(local_name), meta.len())),
-                TYPE_LINK => match session.metadata(path.clone()).await {
+                TYPE_LINK => match cancellable(cancel, session.metadata(path.clone())).await? {
                     Ok(target_meta) if file_type(&target_meta) == TYPE_FILE => {
                         plan.files
                             .push((path, target.join(local_name), target_meta.len()))

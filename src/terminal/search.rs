@@ -9,21 +9,93 @@ pub struct Line {
     pub cells: Vec<(usize, u16)>,
 }
 
+/// A cell of the whole output: its row, counted from the oldest, and its column.
+pub type Cell = (u32, u16);
+
+/// The cells of every occurrence, oldest first, kept in one buffer rather than one per
+/// occurrence, since a short query can match millions of times in a long history.
+#[derive(Default)]
+pub struct Matches {
+    cells: Vec<Cell>,
+    /// Where each occurrence's cells start; each runs to the next one's start.
+    starts: Vec<u32>,
+}
+
+impl Matches {
+    pub fn len(&self) -> usize {
+        self.starts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.starts.is_empty()
+    }
+
+    pub fn get(&self, i: usize) -> Option<&[Cell]> {
+        let start = *self.starts.get(i)? as usize;
+        let end = self
+            .starts
+            .get(i + 1)
+            .map_or(self.cells.len(), |&end| end as usize);
+        Some(&self.cells[start..end])
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &[Cell]> {
+        (0..self.len()).filter_map(|i| self.get(i))
+    }
+
+    /// The number of occurrences, from the oldest, for which `before` holds, as with
+    /// [`slice::partition_point`].
+    pub fn partition_point(&self, before: impl Fn(&[Cell]) -> bool) -> usize {
+        let (mut low, mut high) = (0, self.len());
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if self.get(middle).is_some_and(&before) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        low
+    }
+
+    fn push(&mut self, cells: &[(usize, u16)]) {
+        self.starts.push(self.cells.len() as u32);
+        self.cells
+            .extend(cells.iter().map(|&(row, col)| (row as u32, col)));
+    }
+}
+
+impl std::ops::Index<usize> for Matches {
+    type Output = [Cell];
+
+    fn index(&self, i: usize) -> &[Cell] {
+        self.get(i).expect("no such match")
+    }
+}
+
 /// Finds a query in lines handed to it one at a time, ignoring case.
 pub struct Finder {
     query: Vec<char>,
     /// A line's text with case folded, kept to reuse its memory.
     folded: Vec<char>,
-    /// The cells of each occurrence, oldest first.
-    pub found: Vec<Vec<(usize, u16)>>,
+    pub found: Matches,
 }
 
 impl Finder {
+    #[cfg(test)]
     pub fn new(query: &str) -> Self {
+        Self::reusing(query, Matches::default())
+    }
+
+    /// A finder that fills `found`, emptied, so finding again as output streams in reuses
+    /// its memory.
+    pub fn reusing(query: &str, mut found: Matches) -> Self {
+        found.cells.clear();
+        found.starts.clear();
         Self {
             query: query.chars().map(fold).collect(),
             folded: vec![],
-            found: vec![],
+            found,
         }
     }
 
@@ -37,7 +109,7 @@ impl Finder {
         let mut i = 0;
         while i + n <= self.folded.len() {
             if self.folded[i..i + n] == self.query[..] {
-                self.found.push(line.cells[i..i + n].to_vec());
+                self.found.push(&line.cells[i..i + n]);
                 i += n;
             } else {
                 i += 1;
@@ -48,7 +120,7 @@ impl Finder {
 
 /// The cells of each occurrence of `query` in `lines`, oldest first, ignoring case.
 #[cfg(test)]
-pub fn find(lines: &[Line], query: &str) -> Vec<Vec<(usize, u16)>> {
+pub fn find(lines: &[Line], query: &str) -> Matches {
     let mut finder = Finder::new(query);
     lines.iter().for_each(|line| finder.line(line));
     finder.found
@@ -65,11 +137,13 @@ const REFRESH: Duration = Duration::from_millis(250);
 #[derive(Default)]
 pub struct Search {
     pub query: String,
-    pub matches: Vec<Vec<(usize, u16)>>,
+    pub matches: Matches,
     /// The selected match, an index into `matches`.
     pub current: Option<usize>,
     /// The query and amount of output the matches are for, and when they were found.
     found: Option<(String, u64, Instant)>,
+    /// Where the selected match started, while its matches are being found again.
+    selected: Option<Cell>,
     /// Focuses the search field the next time it is shown.
     pub focus: bool,
     /// The screen changed without output, as on a resize, so matches may be gone.
@@ -104,18 +178,25 @@ impl Search {
         }
     }
 
+    /// A finder for the query, filling the memory of the current matches.
+    pub fn finder(&mut self) -> Finder {
+        self.selected = self.current.and_then(|i| self.matches.get(i)).map(|m| m[0]);
+        Finder::reusing(&self.query, std::mem::take(&mut self.matches))
+    }
+
     /// Takes `matches` found for `output` bytes. A new query, or the first matches of one,
     /// selects the last match at or above `bottom`, the lowest row in view, so the search
     /// starts where the reader looks. Returns whether the selection moved to another match.
-    pub fn update(&mut self, matches: Vec<Vec<(usize, u16)>>, output: u64, bottom: usize) -> bool {
+    pub fn update(&mut self, matches: Matches, output: u64, bottom: usize) -> bool {
         let new_query =
             self.found.as_ref().is_none_or(|(q, _, _)| *q != self.query) || self.current.is_none();
         self.found = Some((self.query.clone(), output, Instant::now()));
         self.invalid = false;
-        let before = self.current.and_then(|i| self.matches.get(i)).map(|m| m[0]);
+        let before = (self.selected.take())
+            .or_else(|| self.current.and_then(|i| self.matches.get(i)).map(|m| m[0]));
         self.matches = matches;
         if new_query {
-            let above = self.matches.partition_point(|m| m[0].0 <= bottom);
+            let above = self.matches.partition_point(|m| m[0].0 as usize <= bottom);
             self.current = above
                 .checked_sub(1)
                 .or((!self.matches.is_empty()).then_some(0));
@@ -187,6 +268,19 @@ mod tests {
             find(&[wrapped], "refused")[0],
             [(5, 11), (5, 12), (6, 0), (6, 1), (6, 2), (6, 3), (6, 4)]
         );
+        // A one-letter query in a full history matches in every cell, which takes a few
+        // bytes each, and finding again reuses the memory.
+        let history: Vec<_> = (0..5000).map(|row| line(row, &"a".repeat(500))).collect();
+        let mut finder = Finder::new("a");
+        history.iter().for_each(|line| finder.line(line));
+        let found = finder.found;
+        assert_eq!(found.len(), 2_500_000);
+        let bytes = |m: &Matches| m.cells.capacity() * 8 + m.starts.capacity() * 4;
+        assert!(bytes(&found) <= 2_500_000 * 24, "{} bytes", bytes(&found));
+        let memory = found.cells.as_ptr();
+        let mut finder = Finder::reusing("a", found);
+        history.iter().for_each(|line| finder.line(line));
+        assert_eq!(finder.found.cells.as_ptr(), memory);
     }
 
     #[test]

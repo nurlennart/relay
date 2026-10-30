@@ -175,6 +175,9 @@ impl Terminal {
     }
 
     pub fn poll(&mut self) {
+        if let Some(e) = self.process.take_input_error() {
+            self.error = Some(format!("Cannot send terminal input: {e}"));
+        }
         if !self.ended {
             match self.process.take_exit() {
                 Some(Ok(status)) => {
@@ -388,7 +391,7 @@ impl Terminal {
         let mut reveal = false;
         if let Some(search) = &mut self.search {
             if search.stale(output) {
-                let mut finder = search::Finder::new(&search.query);
+                let mut finder = search.finder();
                 each_line(parser.screen_mut(), rows, cols, history, |line| {
                     finder.line(line)
                 });
@@ -405,7 +408,7 @@ impl Terminal {
             // Scroll the selected match into view, near the middle when it was out of view.
             if reveal && let Some(m) = search.current.and_then(|i| search.matches.get(i)) {
                 let top = history - parser.screen().scrollback();
-                let row = m[0].0;
+                let row = m[0].0 as usize;
                 if row < top || row >= top + rows as usize {
                     let top = row.saturating_sub(rows as usize / 2).min(history);
                     parser.screen_mut().set_scrollback(history - top);
@@ -605,13 +608,13 @@ impl Terminal {
         // The matches in view, by visible cell, and whether each is the selected one.
         let mut highlights = std::collections::HashMap::new();
         if let Some(search) = &self.search {
-            let first = search.matches.partition_point(|m| m[m.len() - 1].0 < top);
+            let first = (search.matches).partition_point(|m| (m[m.len() - 1].0 as usize) < top);
             for (i, m) in search.matches.iter().enumerate().skip(first) {
-                if m[0].0 >= top + rows as usize {
+                if m[0].0 as usize >= top + rows as usize {
                     break;
                 }
                 for (row, col) in m {
-                    if let Some(row) = row.checked_sub(top) {
+                    if let Some(row) = (*row as usize).checked_sub(top) {
                         highlights.insert((row as u16, *col), search.current == Some(i));
                     }
                 }

@@ -30,6 +30,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
 };
+use tokio_util::sync::{CancellationToken, DropGuard};
 
 /// Reconnection attempts after a connection that was up drops.
 const RETRIES: u32 = 5;
@@ -134,6 +135,9 @@ pub struct Worker {
     commands: UnboundedSender<Command>,
     events: mpsc::Receiver<Event>,
     pub frame: Arc<Mutex<Frame>>,
+    /// Stops the connection wherever it waits, which lets go of its socket, picture and
+    /// password even while the server does not answer.
+    _stop: DropGuard,
 }
 
 impl Worker {
@@ -145,6 +149,8 @@ impl Worker {
     ) -> Result<Self, String> {
         let (commands, receiver) = unbounded_channel();
         let (events, reports) = mpsc::channel();
+        let stop = CancellationToken::new();
+        let stopped = stop.clone();
         let frame = Arc::new(Mutex::new(Frame::default()));
         let link = Link {
             events,
@@ -159,7 +165,13 @@ impl Worker {
                     .enable_all()
                     .build()
                 {
-                    Ok(runtime) => runtime.block_on(run(settings, receiver, &link)),
+                    Ok(runtime) => runtime.block_on(async {
+                        tokio::select! {
+                            biased;
+                            () = stopped.cancelled() => {}
+                            () = run(settings, receiver, &link) => {}
+                        }
+                    }),
                     Err(e) => link.send(Event::Ended(Outcome::Failed(format!(
                         "Cannot start the connection: {e}"
                     )))),
@@ -170,6 +182,7 @@ impl Worker {
             commands,
             events: reports,
             frame,
+            _stop: stop.drop_guard(),
         })
     }
 
@@ -243,19 +256,17 @@ async fn run(mut settings: Settings, mut commands: UnboundedReceiver<Command>, l
                 offered.clone(),
             )
         });
-        let attempt = tokio::select! {
-            attempt = tokio::time::timeout(CONNECT_TIMEOUT, connect(&settings, &untrusted, backend)) => {
-                attempt.unwrap_or_else(|_| {
+        // A tab closed meanwhile stops this, as anything else here, through the worker.
+        let attempt =
+            tokio::time::timeout(CONNECT_TIMEOUT, connect(&settings, &untrusted, backend))
+                .await
+                .unwrap_or_else(|_| {
                     let silent = std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
                         "the server stopped answering",
                     );
                     Err(ironrdp_connector::custom_err!("connect", silent))
-                })
-            }
-            // A tab closed while connecting takes its connection, and the password, with it.
-            () = closed(&commands) => return,
-        };
+                });
         let error = match attempt {
             Ok((result, framed)) => {
                 link.send(Event::Connected);
@@ -300,17 +311,7 @@ async fn run(mut settings: Settings, mut commands: UnboundedReceiver<Command>, l
         }
         retries += 1;
         link.send(Event::Reconnecting);
-        tokio::select! {
-            () = tokio::time::sleep(Duration::from_secs(2 << retries.min(4))) => {}
-            () = closed(&commands) => return,
-        }
-    }
-}
-
-/// Finishes once the UI has closed the tab, without taking its commands.
-async fn closed(commands: &UnboundedReceiver<Command>) {
-    while !commands.is_closed() {
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(Duration::from_secs(2 << retries.min(4))).await;
     }
 }
 

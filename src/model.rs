@@ -84,7 +84,9 @@ impl SshOptions {
                     _ => return Err(invalid(item)),
                 };
                 let spec = spec.trim();
-                let parts = spec.split(':').count();
+                let Some(parts) = fields(spec) else {
+                    return Err(invalid(item));
+                };
                 let shape = if flag == "-D" {
                     parts <= 2
                 } else {
@@ -101,6 +103,22 @@ impl SshOptions {
             })
             .collect()
     }
+}
+
+/// How many fields a forward has: colons separate them, except inside the brackets around
+/// an IPv6 address such as `[::1]`. `None` if the brackets do not pair up.
+fn fields(spec: &str) -> Option<usize> {
+    let (mut count, mut bracketed) = (1, false);
+    for c in spec.chars() {
+        match c {
+            '[' if !bracketed => bracketed = true,
+            ']' if bracketed => bracketed = false,
+            '[' | ']' => return None,
+            ':' if !bracketed => count += 1,
+            _ => {}
+        }
+    }
+    (!bracketed).then_some(count)
 }
 
 /// Where remote audio plays.
@@ -728,7 +746,8 @@ mod tests {
         c.ssh = SshOptions {
             jump: " deploy@bastion.example:2222, hop2 ".into(),
             identity: "\"C:\\Keys\\id_ed25519\"".into(),
-            forwards: "L8080:localhost:80, r9000:127.0.0.1:9000 ,D1080, L127.0.0.1:5432:db:5432"
+            forwards: "L8080:localhost:80, r9000:127.0.0.1:9000 ,D1080, L127.0.0.1:5432:db:5432, \
+                       L8081:[::1]:80, L[::1]:8082:[fe80::1]:80, D[::]:1081"
                 .into(),
         };
         assert!(c.validate().is_ok());
@@ -740,6 +759,9 @@ mod tests {
                 ("-R", "9000:127.0.0.1:9000".into()),
                 ("-D", "1080".into()),
                 ("-L", "127.0.0.1:5432:db:5432".into()),
+                ("-L", "8081:[::1]:80".into()),
+                ("-L", "[::1]:8082:[fe80::1]:80".into()),
+                ("-D", "[::]:1081".into()),
             ]
         );
         for forwards in [
@@ -748,6 +770,9 @@ mod tests {
             "L-oProxyCommand=x:a:1",
             "D1:2:3",
             "L1:a b:2:3",
+            "L8080:::1:80",
+            "L8080:[::1:80",
+            "L8080:[[::1]]:80",
         ] {
             c.ssh.forwards = forwards.into();
             assert!(c.validate().is_err(), "{forwards}");

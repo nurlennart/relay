@@ -8,6 +8,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{SyncSender, TrySendError},
     },
     time::{Duration, Instant},
 };
@@ -17,12 +18,19 @@ const TAIL: usize = 4096;
 /// Where the pseudo-terminal does not report the end of the output (as on Windows), the
 /// output of an exited process is complete once none has arrived for this long.
 const QUIET: Duration = Duration::from_millis(250);
+/// How many pieces of input, such as keystrokes or pastes, may wait for a program that is not
+/// reading. Past this, input is refused rather than blocking the window.
+const INPUT_QUEUE: usize = 256;
 
 pub struct Process {
     /// The screen the output is read into.
     pub parser: Arc<Mutex<vt100::Parser<Replies>>>,
     master: Box<dyn MasterPty + Send>,
-    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Input for the program, which a thread of its own writes, so a program that stops
+    /// reading never holds up the window.
+    input: SyncSender<Vec<u8>>,
+    /// Why writing input failed, once it has.
+    input_error: Arc<Mutex<Option<String>>>,
     /// Stops the process, which a thread of its own waits for.
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// How the process ended, once it has, as its waiting thread saw.
@@ -62,9 +70,7 @@ impl Process {
             })
             .map_err(|e| e.to_string())?;
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-        let writer = Arc::new(Mutex::new(
-            pair.master.take_writer().map_err(|e| e.to_string())?,
-        ));
+        let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
         let mut child = pair
             .slave
             .spawn_command(command)
@@ -89,8 +95,24 @@ impl Process {
             5000,
             Replies::default(),
         )));
+        let (input, queued) = std::sync::mpsc::sync_channel::<Vec<u8>>(INPUT_QUEUE);
+        let input_error = Arc::new(Mutex::new(None));
+        let (failed, wake) = (input_error.clone(), ctx.clone());
+        // It ends once the terminal and its output thread are gone, or the program stops
+        // taking input.
+        std::thread::spawn(move || {
+            for bytes in queued {
+                if let Err(e) = writer.write_all(&bytes).and_then(|_| writer.flush()) {
+                    *failed.lock().unwrap() = Some(e.to_string());
+                    if let Some(ctx) = wake {
+                        ctx.request_repaint();
+                    }
+                    break;
+                }
+            }
+        });
         let output = parser.clone();
-        let replies = writer.clone();
+        let replies = input.clone();
         let tail = Arc::new(Mutex::new((Vec::new(), Instant::now())));
         let drained = Arc::new(AtomicBool::new(false));
         let output_bytes = Arc::new(AtomicU64::new(0));
@@ -129,15 +151,9 @@ impl Process {
                             // A program copying to the clipboard is announced from any tab.
                             let copied = parser.callbacks().1.copied.is_some();
                             drop(parser);
-                            if !response.is_empty() {
-                                let mut writer = replies.lock().unwrap();
-                                if writer
-                                    .write_all(&response)
-                                    .and_then(|_| writer.flush())
-                                    .is_err()
-                                {
-                                    break;
-                                }
+                            // Answers queue behind input typed before them.
+                            if !response.is_empty() && replies.send(response).is_err() {
+                                break;
                             }
                             if let Some(ctx) = &ctx
                                 && (copied || visible.load(Ordering::Relaxed))
@@ -158,7 +174,8 @@ impl Process {
         Ok(Self {
             parser,
             master: pair.master,
-            writer,
+            input,
+            input_error,
             killer,
             exit,
             started: Instant::now(),
@@ -170,10 +187,26 @@ impl Process {
         })
     }
 
-    /// Sends `bytes` to the program.
-    pub fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
-        let mut writer = self.writer.lock().unwrap();
-        writer.write_all(bytes).and_then(|_| writer.flush())
+    /// Queues `bytes` for the program without waiting for it to read them. A failure to
+    /// write them later is reported by [`Self::take_input_error`].
+    pub fn write(&self, bytes: &[u8]) -> Result<(), String> {
+        match self.input.try_send(bytes.to_vec()) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                Err("the program is not reading input, so this was not sent".into())
+            }
+            Err(TrySendError::Disconnected(_)) => Err(self
+                .input_error
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| "the program no longer takes input".into())),
+        }
+    }
+
+    /// Why writing input to the program failed, once; `None` while it has not.
+    pub fn take_input_error(&self) -> Option<String> {
+        self.input_error.lock().unwrap().take()
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<(), String> {
@@ -389,5 +422,14 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
         process.resize(30, 100).unwrap();
+        // A program that does not read never holds up whoever sends it input.
+        if cfg!(unix) {
+            process.write(b"sleep 30\r").unwrap();
+            let sent = std::time::Instant::now();
+            for _ in 0..4 {
+                let _ = process.write(&vec![b'x'; 1024 * 1024]);
+            }
+            assert!(sent.elapsed() < std::time::Duration::from_secs(1));
+        }
     }
 }

@@ -2138,6 +2138,13 @@ mod tests {
         let root = scratch("cancel");
         let local = root.join("local");
         std::fs::create_dir_all(&local).unwrap();
+        // Listing what to upload stops when cancelled, however large the tree.
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            transfer::plan_upload(&root, "/up", &cancelled).err(),
+            Some(Failure::Cancelled)
+        );
         std::fs::write(root.join("huge.bin"), vec![1u8; 64 * 1024 * 1024]).unwrap();
         let Some(mut browser) = local_browser(&root) else {
             return;
