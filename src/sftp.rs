@@ -560,6 +560,7 @@ impl Browser {
             sender,
             ctx: None,
             shown: Default::default(),
+            progress: Default::default(),
         };
         let mut browser = Self::with(commands, events, events_out, None);
         browser.demo_inbox = Some(inbox);
@@ -666,6 +667,7 @@ impl Browser {
             sender,
             ctx: ctx.clone(),
             shown: Arc::new(AtomicBool::new(true)),
+            progress: Default::default(),
         };
         let spawned = std::thread::Builder::new()
             .name("relay-sftp".into())
@@ -690,6 +692,14 @@ impl Browser {
     pub fn poll(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             self.apply(event);
+        }
+        let progress = std::mem::take(&mut *self.events_out.progress.lock().unwrap());
+        for (id, (done, files_done)) in progress {
+            self.apply(Event::Progress {
+                id,
+                done,
+                files_done,
+            });
         }
         if self
             .notice
@@ -817,6 +827,7 @@ impl Browser {
                 }
             }
             Event::Ended(reason) => {
+                self.events_out.progress.lock().unwrap().clear();
                 self.status = Status::Ended(reason);
                 self.loading = false;
                 self.busy = 0;
@@ -1279,12 +1290,37 @@ struct Events {
     /// Whether the browser is on screen. Progress in a hidden one does not wake the window;
     /// everything else, such as a transfer ending or a prompt, still does.
     shown: Arc<AtomicBool>,
+    /// Only the latest counters per transfer are kept while the UI sleeps.
+    progress: Arc<Mutex<std::collections::BTreeMap<u64, (u64, u64)>>>,
 }
 
 impl Events {
     fn send(&self, event: Event) {
         let progress = matches!(event, Event::Started { .. } | Event::Progress { .. });
-        let _ = self.sender.send(event);
+        if let Event::Progress {
+            id,
+            done,
+            files_done,
+        } = event
+        {
+            self.progress.lock().unwrap().insert(id, (done, files_done));
+        } else {
+            if let Event::Finished { id, .. } = &event
+                && let Some((done, files_done)) = self.progress.lock().unwrap().remove(id)
+            {
+                // Preserve the last counters before success, cancellation or failure,
+                // and prevent an older cached counter from following completion.
+                let _ = self.sender.send(Event::Progress {
+                    id: *id,
+                    done,
+                    files_done,
+                });
+            }
+            if matches!(event, Event::Ended(_)) {
+                self.progress.lock().unwrap().clear();
+            }
+            let _ = self.sender.send(event);
+        }
         if let Some(ctx) = &self.ctx
             && (!progress || self.shown.load(Ordering::Relaxed))
         {
@@ -2741,11 +2777,12 @@ mod tests {
         let wakes = Arc::new(Mutex::new(0));
         let seen = wakes.clone();
         ctx.set_request_repaint_callback(move |_| *seen.lock().unwrap() += 1);
-        let (sender, _events) = std_mpsc::channel();
+        let (sender, incoming) = std_mpsc::channel();
         let events = Events {
             sender,
             ctx: Some(ctx.clone()),
             shown: Arc::new(AtomicBool::new(false)),
+            progress: Default::default(),
         };
         // egui reports a wake only when sooner than one already due, so frames pass first.
         let woke = |event| {
@@ -2766,6 +2803,35 @@ mod tests {
         assert!(woke(Event::Finished { id: 1, result }));
         events.shown.store(true, Ordering::Relaxed);
         assert!(woke(progress()));
+        // A sleeping window keeps one snapshot, not every intermediate update.
+        while incoming.try_recv().is_ok() {}
+        events.shown.store(false, Ordering::Relaxed);
+        for done in 0..100_000 {
+            events.send(Event::Progress {
+                id: 1,
+                done,
+                files_done: 2,
+            });
+        }
+        assert_eq!(events.progress.lock().unwrap().len(), 1);
+        assert!(incoming.try_recv().is_err());
+        events.send(Event::Finished {
+            id: 1,
+            result: Err(Failure::Cancelled),
+        });
+        assert!(events.progress.lock().unwrap().is_empty());
+        assert!(matches!(
+            incoming.try_recv().unwrap(),
+            Event::Progress {
+                done: 99_999,
+                files_done: 2,
+                ..
+            }
+        ));
+        assert!(matches!(
+            incoming.try_recv().unwrap(),
+            Event::Finished { .. }
+        ));
     }
 
     #[test]
