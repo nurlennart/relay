@@ -171,6 +171,9 @@ pub enum Job {
         /// Upload only if the remote file is still this version, as an edited file is when
         /// nobody else saved it in the meantime.
         unchanged: Option<Version>,
+        /// Where the folder takes no new files, write over an existing file directly, which
+        /// an interrupted upload leaves half written. Edited files are never written so.
+        in_place: bool,
     },
     Download {
         remote: String,
@@ -555,6 +558,7 @@ impl Browser {
                     remote: join(&self.path, name),
                     replace: false,
                     unchanged: None,
+                    in_place: true,
                 },
                 self.path.clone(),
             ),
@@ -949,6 +953,7 @@ impl Browser {
                 local: path,
                 replace,
                 unchanged: None,
+                in_place: true,
             };
             self.queue(job, Direction::Upload, name, folder.into(), None);
         }
@@ -2428,6 +2433,65 @@ mod tests {
         for copy in [a, b] {
             let _ = std::fs::remove_dir_all(copy.parent().unwrap());
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A folder that takes no new files leaves nowhere to stage a save, and an edited file is
+    /// never written over in place, where an interrupted upload would leave it half written.
+    #[cfg(unix)]
+    #[test]
+    fn edits_are_not_written_over_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("edit-in-place");
+        let remote = root.join("remote");
+        let local = root.join("local");
+        std::fs::create_dir_all(&remote).unwrap();
+        std::fs::create_dir_all(&local).unwrap();
+        let file = remote.join("app.conf");
+        std::fs::write(&file, "port = 80").unwrap();
+        let Some(mut browser) = local_browser(&remote) else {
+            return;
+        };
+        browser.edit("app.conf", NO_EDITOR);
+        let copy = settled(&mut browser, "the copy").local.clone();
+        let mode = |m| std::fs::Permissions::from_mode(m);
+        std::fs::set_permissions(&remote, mode(0o555)).unwrap();
+        if std::fs::write(remote.join("probe"), "").is_ok() {
+            eprintln!("skipping: permissions do not apply to this user");
+            std::fs::set_permissions(&remote, mode(0o755)).unwrap();
+            return;
+        }
+        std::fs::write(&copy, "port = 8080").unwrap();
+        wait(&mut browser, "the refusal", |b| {
+            matches!(b.edits[0].state, EditState::Failed(_))
+        });
+        let EditState::Failed(message) = &browser.edits[0].state else {
+            unreachable!()
+        };
+        assert!(message.contains("takes no new files"), "{message}");
+        // Overwriting does not write in place either.
+        let id = browser.edits[0].id;
+        browser.retry_edit(id, true);
+        settled(&mut browser, "the second refusal");
+        assert!(matches!(browser.edits[0].state, EditState::Failed(_)));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "port = 80");
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "port = 8080");
+        assert_eq!(listing(&remote), ["app.conf"]);
+
+        // An ordinary upload still replaces the file in place, as asked.
+        std::fs::write(local.join("app.conf"), "uploaded").unwrap();
+        let folder = browser.path.clone();
+        browser.upload(vec![local.join("app.conf")], &folder, true);
+        wait(&mut browser, "the upload", |b| b.active_transfers() == 0);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "uploaded");
+
+        // Once the folder takes new files, Retry saves safely.
+        std::fs::set_permissions(&remote, mode(0o755)).unwrap();
+        browser.retry_edit(id, true);
+        let edit = settled(&mut browser, "the retry");
+        assert_eq!(edit.state, EditState::Open, "{:?}", edit.state);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "port = 8080");
+        let _ = std::fs::remove_dir_all(copy.parent().unwrap());
         let _ = std::fs::remove_dir_all(&root);
     }
 

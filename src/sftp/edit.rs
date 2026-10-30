@@ -170,6 +170,7 @@ impl Browser {
             remote: edit.remote.clone(),
             replace: true,
             unchanged: if overwrite { None } else { edit.version },
+            in_place: false,
         };
         let (name, folder) = (edit.name.clone(), parent(&edit.remote).unwrap_or_default());
         self.forget_transfers(id);
@@ -392,6 +393,7 @@ fn copy_folder() -> std::io::Result<PathBuf> {
         getrandom::fill(&mut bytes).map_err(std::io::Error::other)?;
         let suffix: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         let folder = base.join(format!("relay-edit-{suffix}"));
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);

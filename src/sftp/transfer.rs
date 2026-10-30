@@ -92,6 +92,7 @@ async fn transfer(
             remote,
             replace,
             unchanged,
+            in_place,
         } => {
             let existing = exists(session, remote)
                 .await
@@ -128,9 +129,11 @@ async fn transfer(
             }
             let mut contents = 0;
             for (from, to, _) in &plan.files {
-                contents =
-                    upload_file(session, from, to, unchanged.as_ref(), cancel, &mut progress)
-                        .await?;
+                let checks = Checks {
+                    unchanged: unchanged.as_ref(),
+                    in_place: *in_place,
+                };
+                contents = upload_file(session, from, to, checks, cancel, &mut progress).await?;
                 progress.file_done();
             }
             if plan.folders.is_empty() {
@@ -319,16 +322,25 @@ async fn still(
     Ok(())
 }
 
-/// Uploads one file, returning a fingerprint of what it sent. With `unchanged`, the file it
-/// replaces must still be that version when the upload takes its place.
+/// How carefully an upload replaces an existing file.
+#[derive(Clone, Copy)]
+struct Checks<'a> {
+    /// The version the file must still be when the upload takes its place.
+    unchanged: Option<&'a Version>,
+    /// Write over the file directly where its folder takes no new files.
+    in_place: bool,
+}
+
+/// Uploads one file, returning a fingerprint of what it sent.
 async fn upload_file(
     session: &SftpSession,
     local: &Path,
     remote: &str,
-    unchanged: Option<&Version>,
+    checks: Checks<'_>,
     cancel: &CancellationToken,
     progress: &mut Progress<'_>,
 ) -> Result<u64, Failure> {
+    let unchanged = checks.unchanged;
     let fail = |e: &dyn std::fmt::Display| Failure::Error(format!("{}: {e}", file_name(remote)));
     let mut source = tokio::fs::File::open(local).await.map_err(|e| fail(&e))?;
     // A file being replaced keeps its contents until its replacement is complete.
@@ -366,8 +378,15 @@ async fn upload_file(
             }
             return copied.map(|()| hash.finish());
         }
-        // A folder that takes no new files still lets its files be overwritten in place, once
-        // it is clear nobody changed it.
+        // A folder that takes no new files may still let its files be overwritten in place,
+        // though an interrupted upload then leaves the file half written.
+        if !checks.in_place {
+            return Err(Failure::Error(
+                "The folder on the server takes no new files, which saving safely needs. \
+                 Your changes stay in the copy."
+                    .into(),
+            ));
+        }
         if let Some(expected) = unchanged {
             still(session, remote, expected, true, cancel).await?;
         }
