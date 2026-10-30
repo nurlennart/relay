@@ -587,6 +587,7 @@ async fn download_file(
     let (publication, file) = destination.create(local).map_err(|e| fail(&e))?;
     let mut target = tokio::fs::File::from_std(file);
     let mut hash = DefaultHasher::new();
+    let started_at = progress.done;
     let mut copied = copy(&mut source, &mut target, cancel, progress, &mut hash).await;
     if copied.is_ok() {
         copied = target.flush().await.map_err(|e| fail(&e));
@@ -612,8 +613,11 @@ async fn download_file(
         drop(target);
     }
     copied.map(|()| {
-        meta.as_ref().map(|m| Version {
-            stamp: Stamp::of(m),
+        Some(Version {
+            stamp: meta.as_ref().map(Stamp::of).unwrap_or(Stamp {
+                size: progress.done - started_at,
+                modified: None,
+            }),
             contents: hash.finish(),
         })
     })

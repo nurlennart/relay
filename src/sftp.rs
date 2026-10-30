@@ -451,6 +451,11 @@ enum Event {
         contents: u64,
     },
     WatchError(String),
+    EditStopChecked {
+        id: u64,
+        clean: bool,
+        cancel: CancellationToken,
+    },
     Ended(String),
 }
 
@@ -806,6 +811,11 @@ impl Browser {
             }
             Event::Saved { id, seen, contents } => self.edit_saved(id, seen, contents),
             Event::WatchError(error) => self.error = Some(error),
+            Event::EditStopChecked { id, clean, cancel } => {
+                if !cancel.is_cancelled() {
+                    self.edit_stop_checked(id, clean);
+                }
+            }
             Event::Ended(reason) => {
                 self.status = Status::Ended(reason);
                 self.loading = false;
@@ -1239,7 +1249,7 @@ impl Drop for Browser {
         // The worker ends, and with it ssh, when it reads this or the channel closes.
         self.cancel_all();
         let _ = self.commands.send(Command::Close);
-        edit::discard_saved(&self.edits);
+        self.finish_edits();
     }
 }
 
@@ -2441,6 +2451,13 @@ mod tests {
         // Stopping removes the copy.
         let id = browser.edits[0].id;
         browser.offer_stop_edit(id);
+        assert!(
+            browser.edits[0].checking(),
+            "closing is checked off the GUI thread"
+        );
+        wait(&mut browser, "the saved copy to close", |b| {
+            b.edits.is_empty()
+        });
         assert!(browser.view.confirm.is_none(), "nothing to lose");
         assert!(browser.edits.is_empty());
         assert!(!local.parent().unwrap().exists());
@@ -2506,7 +2523,14 @@ mod tests {
                 && b.edits[0].state == EditState::Open
         });
         drop(browser);
-        assert!(!local.exists(), "a saved copy goes with its browser");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while local.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "a saved copy goes with its browser"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2623,6 +2647,9 @@ mod tests {
         drop(file);
         let id = browser.edits[2].id;
         browser.offer_stop_edit(id);
+        wait(&mut browser, "the content check", |b| {
+            b.view.confirm.is_some()
+        });
         assert_eq!(browser.view.confirm, Some(Confirm::StopEditing(id)));
         drop(browser);
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "a, offline");

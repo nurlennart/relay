@@ -1603,6 +1603,9 @@ fn edit_row(ui: &mut egui::Ui, edit: &Edit, connected: bool, actions: &mut Vec<(
 /// How an edited file stands, in words, and the color to show it in.
 fn edit_status(ui: &egui::Ui, edit: &Edit) -> (String, Color32) {
     let colors = theme::palette(ui.ctx());
+    if edit.checking() {
+        return ("Checking the saved copy…".into(), colors.muted);
+    }
     match &edit.state {
         EditState::Opening => ("Downloading a copy…".into(), colors.muted),
         EditState::Open => match edit.uploaded {

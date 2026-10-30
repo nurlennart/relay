@@ -53,9 +53,14 @@ pub struct Edit {
     sending: Option<Seen>,
     /// Saved again while uploading: upload once more when that finishes.
     again: bool,
+    /// A close check runs on the watcher, never the GUI thread.
+    stop_check: Option<CancellationToken>,
 }
 
 impl Edit {
+    pub fn checking(&self) -> bool {
+        self.stop_check.is_some()
+    }
     /// Whether the copy holds changes the server does not have. The copy itself is checked,
     /// so a save not reported yet counts too.
     pub fn unsaved(&self) -> bool {
@@ -89,6 +94,13 @@ pub(super) enum Watch {
         contents: Option<u64>,
     },
     Remove(u64),
+    CheckStop {
+        id: u64,
+        path: PathBuf,
+        expected: Option<u64>,
+        cancel: CancellationToken,
+    },
+    Finish(Vec<Edit>),
 }
 
 impl Browser {
@@ -131,6 +143,7 @@ impl Browser {
             synced_contents: None,
             sending: None,
             again: false,
+            stop_check: None,
         });
         self.download_copy(id);
     }
@@ -214,24 +227,68 @@ impl Browser {
 
     /// Stops editing `id`, first asking if its changes are not on the server.
     pub fn offer_stop_edit(&mut self, id: u64) {
-        match self.edits.iter().find(|e| e.id == id) {
-            Some(edit) if !edit.synced() => self.view.confirm = Some(Confirm::StopEditing(id)),
-            Some(_) => self.stop_edit(id),
-            None => {}
+        let Some(edit) = self.edits.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        if edit.checking() {
+            return;
+        }
+        if edit.unsaved() {
+            self.view.confirm = Some(Confirm::StopEditing(id));
+        } else if !edit.opened {
+            self.stop_edit(id);
+        } else {
+            let cancel = CancellationToken::new();
+            edit.stop_check = Some(cancel.clone());
+            let check = Watch::CheckStop {
+                id,
+                path: edit.local.clone(),
+                expected: edit.synced_contents,
+                cancel,
+            };
+            if !self.watch(check) {
+                self.edits
+                    .iter_mut()
+                    .find(|e| e.id == id)
+                    .unwrap()
+                    .stop_check = None;
+                self.view.confirm = Some(Confirm::StopEditing(id));
+            }
+        }
+    }
+
+    pub(super) fn edit_stop_checked(&mut self, id: u64, clean: bool) {
+        let Some(edit) = self.edits.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
+        edit.stop_check = None;
+        if clean {
+            self.forget_edit(id, false);
+        } else {
+            self.view.confirm = Some(Confirm::StopEditing(id));
         }
     }
 
     /// Stops watching edit `id` and removes its copy, with any changes not uploaded.
     pub fn stop_edit(&mut self, id: u64) {
+        self.forget_edit(id, true);
+    }
+
+    fn forget_edit(&mut self, id: u64, discard: bool) {
         let Some(index) = self.edits.iter().position(|e| e.id == id) else {
             return;
         };
         let edit = self.edits.remove(index);
+        if let Some(cancel) = &edit.stop_check {
+            cancel.cancel();
+        }
         self.watch(Watch::Remove(id));
         for t in self.transfers.iter().filter(|t| t.edit == Some(id)) {
             t.cancel.cancel();
         }
-        remove_copy(&edit);
+        if discard {
+            remove_copy(&edit);
+        }
     }
 
     /// Edits whose changes are not on the server.
@@ -241,8 +298,11 @@ impl Browser {
 
     /// Hands over the edits, as a browser that reconnects does to the next one.
     pub fn take_edits(&mut self) -> Vec<Edit> {
-        let edits = std::mem::take(&mut self.edits);
-        for edit in &edits {
+        let mut edits = std::mem::take(&mut self.edits);
+        for edit in &mut edits {
+            if let Some(cancel) = edit.stop_check.take() {
+                cancel.cancel();
+            }
             self.watch(Watch::Remove(edit.id));
         }
         edits
@@ -286,8 +346,7 @@ impl Browser {
                 edit.version = version;
                 edit.seen = seen(&edit.local);
                 edit.synced = edit.seen;
-                // The editor is not open yet, so the copy is still what was downloaded.
-                edit.synced_contents = fingerprint(&edit.local).ok();
+                edit.synced_contents = version.map(|v| v.contents);
                 edit.seen_contents = edit.synced_contents;
                 edit.state = EditState::Open;
                 let watch = Watch::Add {
@@ -355,11 +414,12 @@ impl Browser {
             synced_contents: None,
             sending: None,
             again: false,
+            stop_check: None,
         });
     }
 
     /// Tells the watcher, starting it with the first copy to watch.
-    fn watch(&mut self, watch: Watch) {
+    fn watch(&mut self, watch: Watch) -> bool {
         if self.watcher.is_none() {
             let (sender, commands) = std_mpsc::channel();
             let events = self.events_out.clone();
@@ -368,12 +428,30 @@ impl Browser {
                 .spawn(move || watcher(commands, events));
             if let Err(e) = spawned {
                 self.error = Some(format!("Cannot watch for saves: {e}"));
-                return;
+                return false;
             }
             self.watcher = Some(sender);
         }
-        if let Some(watcher) = &self.watcher {
-            let _ = watcher.send(watch);
+        self.watcher
+            .as_ref()
+            .is_some_and(|watcher| watcher.send(watch).is_ok())
+    }
+
+    /// Reuse the watcher for cleanup, which can read large copies after the UI closes.
+    pub(super) fn finish_edits(&mut self) {
+        let mut edits = std::mem::take(&mut self.edits);
+        for edit in &mut edits {
+            if let Some(cancel) = edit.stop_check.take() {
+                cancel.cancel();
+            }
+        }
+        if let Some(watcher) = self.watcher.take() {
+            // If the worker has failed, keep the copies rather than deleting unverified data.
+            let _ = watcher.send(Watch::Finish(edits));
+        } else {
+            for edit in edits.iter().filter(|e| !e.opened) {
+                remove_copy(edit);
+            }
         }
     }
 }
@@ -388,7 +466,7 @@ pub(super) fn interrupted(edits: &mut [Edit], id: u64, failure: &Failure) {
 
 /// Removes the copies whose changes are all on the server, as a browser closes. The others
 /// stay where they are, so nothing typed is lost.
-pub(super) fn discard_saved(edits: &[Edit]) {
+fn discard_saved(edits: &[Edit]) {
     for edit in edits.iter().filter(|e| e.synced()) {
         remove_copy(edit);
     }
@@ -531,6 +609,34 @@ fn watcher(commands: std_mpsc::Receiver<Watch>, events: Events) {
                 }
                 watched.retain(|w| w.id != id);
             }
+            Ok(Watch::CheckStop {
+                id,
+                path,
+                expected,
+                cancel,
+            }) => {
+                if cancel.is_cancelled() {
+                    continue;
+                }
+                let clean = expected.is_some() && fingerprint(&path).ok() == expected;
+                if !cancel.is_cancelled() {
+                    if clean {
+                        if let Some(folder) = path.parent() {
+                            let _ = std::fs::remove_dir_all(folder);
+                        }
+                        watched.retain(|w| w.id != id);
+                        if let Some(native) = &mut native {
+                            let _ = native.unwatch(path.parent().unwrap_or(&path));
+                        }
+                    }
+                    events.send(Event::EditStopChecked { id, clean, cancel });
+                }
+            }
+            Ok(Watch::Finish(edits)) => {
+                drop(native);
+                discard_saved(&edits);
+                return;
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
@@ -538,7 +644,7 @@ fn watcher(commands: std_mpsc::Receiver<Watch>, events: Events) {
             continue;
         }
         next = Instant::now() + WATCH_INTERVAL;
-        let dirty = std::mem::replace(&mut *changed.lock().unwrap(), Some(BTreeSet::new()));
+        let dirty = changed.lock().unwrap().replace(BTreeSet::new());
         for w in &mut watched {
             let signalled = dirty.as_ref().is_none_or(|paths| {
                 paths.iter().any(|path| {
