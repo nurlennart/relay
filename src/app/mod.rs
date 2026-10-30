@@ -707,7 +707,6 @@ impl App {
         }
     }
 
-    /// Opens a shell on this computer in a new tab.
     /// Remembers the restored window size; a maximized window keeps the size it returns to.
     /// Sizes from full screen, and from the moments entering and leaving it, are not the
     /// window's own. The window opens at its size before zooming, which the zoomed points are
@@ -878,6 +877,7 @@ impl App {
         }
     }
 
+    /// Opens a shell on this computer in a new tab.
     fn open_local_shell(&mut self) {
         match Session::local(self.ctx.clone()) {
             Ok(session) => self.add_session(session),
