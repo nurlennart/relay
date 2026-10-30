@@ -621,12 +621,16 @@ fn watcher(commands: std_mpsc::Receiver<Watch>, events: Events) {
                 let clean = expected.is_some() && fingerprint(&path).ok() == expected;
                 if !cancel.is_cancelled() {
                     if clean {
-                        if let Some(folder) = path.parent() {
-                            let _ = std::fs::remove_dir_all(folder);
+                        // Use the registered (canonical) path while it still exists;
+                        // macOS may have reached this copy through /var -> /private/var.
+                        if let Some(watched) = watched.iter().find(|w| w.id == id)
+                            && let Some(native) = &mut native
+                        {
+                            let _ = native.unwatch(watched.path.parent().unwrap_or(&watched.path));
                         }
                         watched.retain(|w| w.id != id);
-                        if let Some(native) = &mut native {
-                            let _ = native.unwatch(path.parent().unwrap_or(&path));
+                        if let Some(folder) = path.parent() {
+                            let _ = std::fs::remove_dir_all(folder);
                         }
                     }
                     events.send(Event::EditStopChecked { id, clean, cancel });
