@@ -136,7 +136,9 @@ The remote desktop is drawn inside the tab by Relay's built-in client. The tab a
 
 Click the desktop to give it the keyboard; click elsewhere in Relay to take it back. Keys are sent by their position, so the remote computer's keyboard layout applies, and on macOS `Cmd` acts as `Ctrl`. `Ctrl+Alt+PageUp`/`PageDown` (or `Ctrl+Tab`) still switch tabs. **Fit to tab** changes the remote resolution as the tab is resized (through the display control channel; servers without it are scaled instead, with a warning), and **Fixed** scales a fixed resolution to the tab. Clipboard text is shared in both directions. Sessions reconnect after network drops (up to 5 attempts); when one ends, **Reconnect** asks for the password again.
 
-Some options are not available here and are listed in the connection editor when selected: local drives, printers, smart cards, microphone, remote audio (sound is turned off), and sending system key combinations such as `Alt+Tab` to the remote computer. There is no full-screen mode and no Kerberos sign-in.
+Some options are not available here and are listed in the connection editor when selected: local drives, printers, smart cards, microphone, remote audio (sound is turned off), and sending system key combinations such as `Alt+Tab` to the remote computer. There is no Kerberos sign-in.
+
+**Full screen** (at the right of the tab bar, or `Ctrl+Alt+Enter`) fills the screen with the desktop alone, and with **Fit to tab** the remote resolution follows. `Ctrl+Alt+Enter` again, **Leave full screen** in the bar that appears when the pointer touches the top edge, or switching tabs with `Ctrl+Alt+PageUp`/`PageDown` returns to Relay.
 
 ### Remote desktop options
 

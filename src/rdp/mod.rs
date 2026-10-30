@@ -9,9 +9,11 @@ mod ironrdp;
 
 #[cfg(windows)]
 pub use activex::{
-    ADMIN_SESSIONS, RdpClient, SAVES_PASSWORDS, SIGN_IN_HELP, forget_credentials, unsupported,
+    ADMIN_SESSIONS, FULL_SCREEN_HELP, FULL_SCREEN_IN_WINDOW, RdpClient, SAVES_PASSWORDS,
+    SIGN_IN_HELP, forget_credentials, unsupported,
 };
 #[cfg(not(windows))]
 pub use ironrdp::{
-    ADMIN_SESSIONS, RdpClient, SAVES_PASSWORDS, SIGN_IN_HELP, forget_credentials, unsupported,
+    ADMIN_SESSIONS, FULL_SCREEN_HELP, FULL_SCREEN_IN_WINDOW, RdpClient, SAVES_PASSWORDS,
+    SIGN_IN_HELP, forget_credentials, unsupported,
 };

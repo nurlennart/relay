@@ -27,6 +27,13 @@ pub const SAVES_PASSWORDS: bool = false;
 /// IronRDP cannot ask for a server's administrative session yet.
 pub const ADMIN_SESSIONS: bool = false;
 
+/// Full screen fills Relay's own window with the desktop, which Relay shows alone.
+pub const FULL_SCREEN_IN_WINDOW: bool = true;
+
+/// How to leave full screen, for the Full screen button.
+pub const FULL_SCREEN_HELP: &str = "Ctrl+Alt+Enter or the bar at the top edge leaves full \
+    screen\nCtrl+Alt+PgUp/PgDn switch tabs";
+
 /// How signing in works, for the connection editor.
 pub const SIGN_IN_HELP: &str = "The tab asks for the password each time it connects and keeps it \
     only while the session is open.\nCertificates your system does not trust are shown for you \
@@ -100,6 +107,8 @@ pub struct RdpClient {
     translator: input::Translator,
     keys: ironrdp_input::Database,
     focused: bool,
+    /// Whether the desktop fills the window in full screen.
+    full_screen: bool,
     /// Take the keyboard the next time the desktop is drawn.
     focus_requested: bool,
     warning: Option<String>,
@@ -137,6 +146,7 @@ impl RdpClient {
             translator: input::Translator::default(),
             keys: ironrdp_input::Database::new(),
             focused: false,
+            full_screen: false,
             focus_requested: false,
             warning: None,
             clipboard: None,
@@ -213,6 +223,7 @@ impl RdpClient {
             self.stage = next;
             self.texture = None;
             self.focused = false;
+            self.full_screen = false;
             self.translator.reset();
             self.keys = ironrdp_input::Database::new();
         }
@@ -236,14 +247,30 @@ impl RdpClient {
             }
         )
     }
+    /// Full screen needs a desktop to show.
     pub fn can_full_screen(&self) -> bool {
-        false
+        matches!(
+            self.stage,
+            Stage::Running {
+                connected: true,
+                ..
+            }
+        )
     }
     pub fn full_screen(&self) -> bool {
-        false
+        self.full_screen
     }
-    pub fn enter_full_screen(&self) -> Result<(), String> {
-        Err("Full screen is not available for this remote desktop.".into())
+    /// Asks to fill the window, giving the desktop the keyboard; Relay's window follows.
+    pub fn enter_full_screen(&mut self) -> Result<(), String> {
+        if !self.can_full_screen() {
+            return Err("The remote desktop is not connected yet.".into());
+        }
+        self.full_screen = true;
+        self.focus_requested = true;
+        Ok(())
+    }
+    pub fn leave_full_screen(&mut self) {
+        self.full_screen = false;
     }
     pub fn display_warning(&self) -> Option<&str> {
         self.warning.as_deref()
@@ -659,6 +686,15 @@ mod tests {
             ("alex@corp.example".into(), None)
         );
         assert_eq!(split_user(r"\alex"), (r"\alex".into(), None));
+    }
+
+    #[test]
+    fn full_screen_waits_for_a_desktop() {
+        let mut client =
+            RdpClient::new(None, &Connection::new(), false, egui::Context::default()).unwrap();
+        assert!(!client.can_full_screen());
+        assert!(client.enter_full_screen().is_err());
+        assert!(!client.full_screen());
     }
 
     #[test]

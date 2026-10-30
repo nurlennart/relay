@@ -382,19 +382,17 @@ impl App {
                 .on_hover_text("Saved commands · Ctrl+Shift+P")
                 .clicked();
         }
+        // A desktop drawn by Relay fills the main window, not a detached one.
         if s.has_desktop()
             && s.can_full_screen()
             && s.is_running()
             && s.error.is_none()
             && !s.full_screen()
+            && !(rdp::FULL_SCREEN_IN_WINDOW && pane == Pane::Window)
         {
             actions.full_screen = ui
                 .button("Full screen")
-                .on_hover_text(
-                    "Ctrl+Alt+Break leaves and re-enters full screen\n\
-                     Ctrl+Alt+PgUp/PgDn switch tabs\n\
-                     Ctrl+Alt+Home returns to Relay",
-                )
+                .on_hover_text(rdp::FULL_SCREEN_HELP)
                 .clicked();
         }
         actions
@@ -403,10 +401,8 @@ impl App {
     /// Carries out what session `index`'s buttons asked. Returns whether the panes changed, so
     /// they are laid out again next frame.
     pub(super) fn apply_actions(&mut self, index: usize, actions: Actions) -> bool {
-        if actions.full_screen
-            && let Err(e) = self.sessions[index].enter_full_screen()
-        {
-            self.error = Some(e);
+        if actions.full_screen {
+            self.enter_full_screen(index);
         }
         if actions.save {
             self.edit(self.sessions[index].connection.clone());

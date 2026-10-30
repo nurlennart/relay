@@ -1558,6 +1558,27 @@ fn an_overdue_reload_waits_without_redrawing() {
 }
 
 #[test]
+fn the_window_follows_a_full_screen_desktop() {
+    let step = |state, wants, window| full_window_step(state, wants, window);
+    // Asked for: the window goes full screen, and is told once.
+    let (asked, command) = step(None, true, false);
+    assert_eq!(command, Some(true));
+    let (waiting, command) = step(asked, true, false);
+    assert_eq!((waiting, command), (asked, None), "waits for the window");
+    let (shown, command) = step(waiting, true, true);
+    assert!(shown.is_some_and(|s| s.confirmed) && command.is_none());
+    // Leaving restores the window.
+    assert_eq!(step(shown, false, true), (None, Some(false)));
+    // The window left on its own, such as with macOS's green button.
+    assert_eq!(step(shown, true, false), (None, None));
+    // A window that was full screen before stays that way.
+    let (already, command) = step(None, true, true);
+    assert!(command.is_none());
+    assert_eq!(step(already, false, true), (None, None));
+    assert_eq!(step(None, false, false), (None, None));
+}
+
+#[test]
 fn local_shells_offer_snippets_but_not_files() {
     let ctx = egui::Context::default();
     ctx.enable_accesskit();

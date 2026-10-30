@@ -198,6 +198,10 @@ struct App {
     tab_trail: (Option<u64>, Option<u64>),
     /// Sessions shown in their own windows, by session key.
     detached: Vec<u64>,
+    /// The main window while a remote desktop fills it in full screen.
+    full_window: Option<FullWindow>,
+    /// Whether the bar for leaving full screen shows, from the pointer reaching the top edge.
+    full_screen_bar: bool,
     /// Native windows found for detached sessions, which remote desktops are moved into.
     windows: Vec<(u64, platform::Window)>,
     /// The tab strip, in order: each tab one session or a pair side by side, by session key,
@@ -332,6 +336,8 @@ impl App {
             chosen: false,
             tab_trail: (None, None),
             detached: vec![],
+            full_window: None,
+            full_screen_bar: false,
             windows: vec![],
             tabs: vec![],
             keyboard: vec![],
@@ -505,6 +511,22 @@ impl App {
                 .is_some_and(|s| s.connection.protocol == Protocol::Ssh && s.terminal.is_some());
             if ssh && shortcut(ctrl | egui::Modifiers::SHIFT, egui::Key::P) {
                 self.palette = Some(Palette::default());
+            }
+            // Ctrl+Alt+Enter, as in FreeRDP: macOS and laptop keyboards often lack Break.
+            let desktop =
+                (self.active()).filter(|&i| !self.is_detached(i) && self.sessions[i].has_desktop());
+            if rdp::FULL_SCREEN_IN_WINDOW
+                && let Some(index) = desktop
+                && shortcut(
+                    egui::Modifiers::CTRL | egui::Modifiers::ALT,
+                    egui::Key::Enter,
+                )
+            {
+                if self.sessions[index].full_screen() {
+                    self.sessions[index].leave_full_screen();
+                } else {
+                    self.enter_full_screen(index);
+                }
             }
             // Tab switching, including Ctrl+1–9, also works from a focused terminal, which has no use
             // for these keys.
@@ -680,6 +702,147 @@ impl App {
     }
 
     /// Opens a shell on this computer in a new tab.
+    /// Shows session `index`'s remote desktop full screen.
+    fn enter_full_screen(&mut self, index: usize) {
+        match self.sessions[index].enter_full_screen() {
+            Ok(()) if rdp::FULL_SCREEN_IN_WINDOW => {
+                self.notify("Ctrl+Alt+Enter or the top edge of the screen leaves full screen");
+            }
+            Ok(()) => {}
+            Err(e) => self.error = Some(e),
+        }
+    }
+
+    /// Fills the window for the remote desktop in front that asked for full screen, and
+    /// returns it; others in the background leave full screen.
+    fn sync_full_screen(&mut self, ctx: &egui::Context) -> Option<usize> {
+        if !rdp::FULL_SCREEN_IN_WINDOW {
+            return None;
+        }
+        let active = self.active().filter(|&i| !self.is_detached(i));
+        for (i, s) in self.sessions.iter_mut().enumerate() {
+            if Some(i) != active && s.full_screen() {
+                s.leave_full_screen();
+            }
+        }
+        let shown = active.filter(|&i| self.sessions[i].full_screen());
+        let window = ctx.input(|i| i.viewport().fullscreen) == Some(true);
+        let (state, command) = full_window_step(self.full_window, shown.is_some(), window);
+        self.full_window = state;
+        if let Some(on) = command {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+        }
+        if state.is_none() {
+            self.full_screen_bar = false;
+            // Left through the window itself, such as macOS's green button.
+            if let Some(index) = shown {
+                self.sessions[index].leave_full_screen();
+            }
+            return None;
+        }
+        shown
+    }
+
+    /// The library or the sessions in front, below the tab bar, noting in `session_rects`
+    /// the area each remote desktop covers.
+    fn workspace_panel(
+        &mut self,
+        ctx: &egui::Context,
+        session_rects: &mut Vec<(usize, egui::Rect)>,
+    ) {
+        let colors = theme::palette(ctx);
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(colors.bg).inner_margin(16.))
+            .show(ctx, |ui| {
+                if let Some(error) = self.error.clone() {
+                    egui::Frame::new()
+                        .fill(colors.error_bg)
+                        .inner_margin(egui::Margin::symmetric(12, 8))
+                        .corner_radius(RADIUS)
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.colored_label(ui.visuals().error_fg_color, error);
+                                if ui.small_button("Dismiss").clicked() {
+                                    self.error = None;
+                                }
+                            });
+                        });
+                    ui.add_space(12.);
+                }
+                if self.recovery.is_some() && self.pending.is_none() {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            "Unsaved changes are held in memory.",
+                        );
+                        if ui.button("Export unsaved changes").clicked() {
+                            self.export(file_dialog::Kind::ExportJson, true);
+                        }
+                    });
+                    ui.add_space(10.);
+                }
+                let pair = (self.active_pair()).and_then(|(place, pair)| {
+                    let left = self.session_index(pair.left)?;
+                    let right = self.session_index(pair.right)?;
+                    Some((place, pair.fraction, left, right))
+                });
+                match (self.active(), pair) {
+                    (Some(index), _) if self.is_detached(index) => {
+                        self.detached_placeholder(ui, index)
+                    }
+                    (Some(_), Some((place, fraction, left, right))) => {
+                        self.pair_panes(ui, place, fraction, [left, right], session_rects);
+                    }
+                    (Some(index), None) => {
+                        if let Some(rect) = self.session_pane(ui, index, Pane::Main) {
+                            session_rects.push((index, rect));
+                        }
+                    }
+                    (None, _) => self.workspace(ui),
+                }
+            });
+    }
+
+    /// Session `index`'s remote desktop alone in the window, with a bar to leave full screen
+    /// while the pointer is at the top edge, as in Remote Desktop Connection.
+    fn full_screen_desktop(&mut self, ctx: &egui::Context, index: usize) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(egui::Color32::BLACK))
+            .show(ctx, |ui| {
+                self.sessions[index].show_desktop(ui);
+            });
+        let pointer = ctx.input(|i| i.pointer.hover_pos());
+        let at_edge = |p: egui::Pos2| p.y <= 2.;
+        if pointer.is_some_and(at_edge) {
+            self.full_screen_bar = true;
+        }
+        if !self.full_screen_bar {
+            return;
+        }
+        let mut leave = false;
+        let bar = egui::Area::new(egui::Id::new("full screen bar"))
+            .anchor(egui::Align2::CENTER_TOP, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.label(self.sessions[index].title());
+                        leave = ui
+                            .button("Leave full screen")
+                            .on_hover_text("Ctrl+Alt+Enter")
+                            .clicked();
+                    });
+                });
+            })
+            .response;
+        if leave {
+            self.sessions[index].leave_full_screen();
+        }
+        if leave || !pointer.is_some_and(|p| at_edge(p) || bar.rect.expand(12.).contains(p)) {
+            self.full_screen_bar = false;
+        }
+    }
+
     fn open_local_shell(&mut self) {
         match Session::local(self.ctx.clone()) {
             Ok(session) => self.add_session(session),
@@ -1156,7 +1319,6 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let colors = theme::palette(ctx);
         self.poll_storage();
         self.sync_library(ctx);
         if let Some(connection) = self.connect_request.take() {
@@ -1236,60 +1398,16 @@ impl eframe::App for App {
                 s.place(None);
             }
         }
-        self.sidebar(ctx);
-        self.tabs(ctx);
+        let full_screen = self.sync_full_screen(ctx);
         // Sessions on screen, with the area each remote desktop should cover.
         let mut session_rects: Vec<(usize, egui::Rect)> = vec![];
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(colors.bg).inner_margin(16.))
-            .show(ctx, |ui| {
-                if let Some(error) = self.error.clone() {
-                    egui::Frame::new()
-                        .fill(colors.error_bg)
-                        .inner_margin(egui::Margin::symmetric(12, 8))
-                        .corner_radius(RADIUS)
-                        .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.colored_label(ui.visuals().error_fg_color, error);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.error = None;
-                                }
-                            });
-                        });
-                    ui.add_space(12.);
-                }
-                if self.recovery.is_some() && self.pending.is_none() {
-                    ui.horizontal(|ui| {
-                        ui.colored_label(
-                            ui.visuals().warn_fg_color,
-                            "Unsaved changes are held in memory.",
-                        );
-                        if ui.button("Export unsaved changes").clicked() {
-                            self.export(file_dialog::Kind::ExportJson, true);
-                        }
-                    });
-                    ui.add_space(10.);
-                }
-                let pair = (self.active_pair()).and_then(|(place, pair)| {
-                    let left = self.session_index(pair.left)?;
-                    let right = self.session_index(pair.right)?;
-                    Some((place, pair.fraction, left, right))
-                });
-                match (self.active(), pair) {
-                    (Some(index), _) if self.is_detached(index) => {
-                        self.detached_placeholder(ui, index)
-                    }
-                    (Some(_), Some((place, fraction, left, right))) => {
-                        self.pair_panes(ui, place, fraction, [left, right], &mut session_rects);
-                    }
-                    (Some(index), None) => {
-                        if let Some(rect) = self.session_pane(ui, index, Pane::Main) {
-                            session_rects.push((index, rect));
-                        }
-                    }
-                    (None, _) => self.workspace(ui),
-                }
-            });
+        if let Some(index) = full_screen {
+            self.full_screen_desktop(ctx, index);
+        } else {
+            self.sidebar(ctx);
+            self.tabs(ctx);
+            self.workspace_panel(ctx, &mut session_rects);
+        }
         self.editor(ctx);
         self.confirmations(ctx);
         self.settings(ctx);
@@ -1316,6 +1434,46 @@ impl eframe::App for App {
                 None => s.place(None),
             }
         }
+    }
+}
+
+/// The main window while a remote desktop fills it in full screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FullWindow {
+    /// The window has reported being full screen since the desktop asked for it.
+    confirmed: bool,
+    /// The window was full screen before, so it stays that way afterwards.
+    was_full_screen: bool,
+}
+
+/// The next full-screen state of the main window, given whether a desktop in front `wants`
+/// it and whether the `window` reports being full screen, and the command to send it.
+/// `None` while a desktop wants it means the window left full screen on its own.
+fn full_window_step(
+    state: Option<FullWindow>,
+    wants: bool,
+    window: bool,
+) -> (Option<FullWindow>, Option<bool>) {
+    match (state, wants) {
+        (None, false) => (None, None),
+        (None, true) => {
+            let state = FullWindow {
+                confirmed: window,
+                was_full_screen: window,
+            };
+            (Some(state), (!window).then_some(true))
+        }
+        (Some(state), true) if window => (
+            Some(FullWindow {
+                confirmed: true,
+                ..state
+            }),
+            None,
+        ),
+        (Some(state), true) if state.confirmed => (None, None),
+        // Some window managers take a moment, and some never go full screen.
+        (Some(state), true) => (Some(state), None),
+        (Some(state), false) => (None, (!state.was_full_screen).then_some(false)),
     }
 }
 

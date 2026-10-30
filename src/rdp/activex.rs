@@ -480,6 +480,9 @@ impl RdpClient {
     pub fn enter_full_screen(&self) -> Result<(), String> {
         self.set("FullScreen", &VARIANT::from(true))
     }
+    pub fn leave_full_screen(&mut self) {
+        let _ = self.set("FullScreen", &VARIANT::from(false));
+    }
     pub fn can_full_screen(&self) -> bool {
         true
     }
@@ -697,6 +700,13 @@ fn device_scale(scale: u32) -> u32 {
 
 /// Windows offers to remember credentials in Credential Manager.
 pub const SAVES_PASSWORDS: bool = true;
+
+/// The control shows full screen in a window of its own, with its own connection bar.
+pub const FULL_SCREEN_IN_WINDOW: bool = false;
+
+/// How to leave full screen, for the Full screen button.
+pub const FULL_SCREEN_HELP: &str = "Ctrl+Alt+Break leaves and re-enters full screen\n\
+    Ctrl+Alt+PgUp/PgDn switch tabs\nCtrl+Alt+Home returns to Relay";
 
 /// The control can connect to a server's administrative session, as mstsc /admin does.
 pub const ADMIN_SESSIONS: bool = true;
