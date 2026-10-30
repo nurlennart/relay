@@ -517,19 +517,28 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Connection>, String> {
     Ok(connections)
 }
 
-pub fn save(path: &Path, connections: &[Connection]) -> Result<(), String> {
+/// Saves `connections` to `path`, returning the bytes written.
+pub fn save(path: &Path, connections: &[Connection]) -> Result<Vec<u8>, String> {
     let bytes = serde_json::to_vec_pretty(connections).map_err(|e| e.to_string())?;
-    atomic_write(path, &bytes)
+    atomic_write(path, &bytes)?;
+    Ok(bytes)
 }
 
 /// A hidden name beside `name` for a file written before it takes `name`'s place. It is
 /// random, and callers create it exclusively, so it never replaces anything already there.
+/// It fits wherever `name` does: a long name is shortened so the whole stays within the 255
+/// bytes most file systems allow.
 pub fn temp_name(name: &str) -> String {
+    const ADDED: usize = ".".len() + ".".len() + 12 + ".relay-part".len();
     let mut bytes = [0u8; 6];
     // Without randomness the name repeats, and creating it exclusively fails instead.
     let _ = getrandom::fill(&mut bytes);
     let suffix: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!(".{name}.{suffix}.relay-part")
+    let mut end = name.len().min(255 - ADDED);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(".{}.{suffix}.relay-part", &name[..end])
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {

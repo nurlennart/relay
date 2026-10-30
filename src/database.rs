@@ -124,17 +124,7 @@ fn spawn<T: Send + 'static>(
     std::thread::spawn(move || {
         run(&ctx, tx, || {
             let result = match &location {
-                Location::Local(path) => match op {
-                    Op::Write(connections) => model::save(path, &connections).map(|_| Snapshot {
-                        connections,
-                        revision: revision + 1,
-                    }),
-                    Op::Read | Op::ReadChanged => model::load(path).map(|connections| Snapshot {
-                        connections,
-                        revision: 0,
-                    }),
-                }
-                .map(Some),
+                Location::Local(path) => local(path, revision, op),
                 Location::Sqlite(path) => sqlite(path, revision, op),
                 Location::Mssql(server) => mssql(server, revision, op),
                 Location::Mysql(server) => mysql(server, revision, op),
@@ -179,6 +169,76 @@ fn snapshot(revision: i64, payload: Option<&str>) -> Result<Option<Snapshot>, St
             })
         })
         .transpose()
+}
+
+/// The personal library, a JSON file. Its revision is a fingerprint of the file, so a save
+/// made from a stale copy, as by a second Relay window, is refused instead of dropping the
+/// other's changes. Saves hold a lock beside the file while they check and replace it.
+fn local(path: &std::path::Path, revision: i64, op: Op) -> Result<Option<Snapshot>, String> {
+    let read = || match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("Cannot open connections: {e}")),
+    };
+    match op {
+        Op::Write(connections) => {
+            let _lock = lock_beside(path)?;
+            if fingerprint(read()?.as_deref()) != revision {
+                return Err(CONFLICT.into());
+            }
+            let bytes = model::save(path, &connections)?;
+            Ok(Some(Snapshot {
+                connections,
+                revision: fingerprint(Some(&bytes)),
+            }))
+        }
+        Op::Read | Op::ReadChanged => {
+            let bytes = read()?;
+            let current = fingerprint(bytes.as_deref());
+            if matches!(op, Op::ReadChanged) && current == revision {
+                return Ok(None);
+            }
+            let connections = match &bytes {
+                Some(bytes) => model::decode(bytes)?,
+                None => vec![],
+            };
+            Ok(Some(Snapshot {
+                connections,
+                revision: current,
+            }))
+        }
+    }
+}
+
+/// Holds an exclusive lock on a file beside `path` until dropped. The library itself cannot
+/// carry the lock, since each save replaces it with a new file.
+fn lock_beside(path: &std::path::Path) -> Result<std::fs::File, String> {
+    let name = path.file_name().ok_or("Invalid storage filename")?;
+    let lock = path.with_file_name(format!(".{}.lock", name.to_string_lossy()));
+    std::fs::create_dir_all(path.parent().ok_or("Invalid storage path")?)
+        .map_err(|e| e.to_string())?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock)
+        .map_err(|e| format!("Cannot lock the library: {e}"))?;
+    file.lock()
+        .map_err(|e| format!("Cannot lock the library: {e}"))?;
+    Ok(file)
+}
+
+/// A fingerprint of a library file's bytes (FNV-1a), the same in every Relay version; a
+/// missing file is 0, as an empty library starts.
+fn fingerprint(bytes: Option<&[u8]>) -> i64 {
+    let Some(bytes) = bytes else {
+        return 0;
+    };
+    let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, b| {
+        (hash ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    // Never 0, which stands for no file.
+    hash.max(1) as i64
 }
 
 fn sqlite(path: &std::path::Path, revision: i64, op: Op) -> Result<Option<Snapshot>, String> {
@@ -465,27 +525,47 @@ mod tests {
         );
     }
     #[test]
-    fn sqlite_rejects_stale_writes_and_roundtrips() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    fn files_reject_stale_writes_and_roundtrips() {
+        type Library = fn(&std::path::Path, i64, Op) -> Result<Option<Snapshot>, String>;
+        let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
-            .join(format!("team-test-{}.sqlite", std::process::id()));
-        let original = sqlite(&path, 0, Op::Read).unwrap().unwrap();
-        assert_eq!(original.revision, 0);
-        let mut c = Connection::new();
-        c.id = 1;
-        c.name = "Test".into();
-        c.host = "localhost".into();
-        let first = sqlite(&path, 0, Op::Write(vec![c])).unwrap().unwrap();
-        assert_eq!(first.revision, 1);
-        assert!(sqlite(&path, 0, Op::Write(vec![])).is_err());
-        let read = sqlite(&path, 0, Op::Read).unwrap().unwrap();
-        assert_eq!(read.connections.len(), 1);
-        assert_eq!(read.revision, 1);
-        // A background reload downloads the library only when its revision moved on.
-        assert!(sqlite(&path, 1, Op::ReadChanged).unwrap().is_none());
-        let changed = sqlite(&path, 0, Op::ReadChanged).unwrap().unwrap();
-        assert_eq!((changed.revision, changed.connections.len()), (1, 1));
-        std::fs::remove_file(path).unwrap();
+            .join(format!("library-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        let libraries: [(Library, &str); 2] =
+            [(sqlite, "team.sqlite"), (local, "connections.json")];
+        for (library, name) in libraries {
+            let path = folder.join(name);
+            std::fs::create_dir_all(&folder).unwrap();
+            let original = library(&path, 0, Op::Read).unwrap().unwrap();
+            assert_eq!(original.revision, 0);
+            let mut c = Connection::new();
+            c.id = 1;
+            c.name = "Test".into();
+            c.host = "localhost".into();
+            // Two windows read the same library; one saves, then the other's older copy
+            // is refused rather than dropping that save.
+            let first = library(&path, 0, Op::Write(vec![c])).unwrap().unwrap();
+            assert_ne!(first.revision, 0);
+            assert_eq!(
+                library(&path, 0, Op::Write(vec![])).err().as_deref(),
+                Some(CONFLICT)
+            );
+            let read = library(&path, 0, Op::Read).unwrap().unwrap();
+            assert_eq!(read.connections.len(), 1);
+            assert_eq!(read.revision, first.revision);
+            // A background reload downloads the library only when its revision moved on.
+            assert!(
+                library(&path, first.revision, Op::ReadChanged)
+                    .unwrap()
+                    .is_none()
+            );
+            let changed = library(&path, 0, Op::ReadChanged).unwrap().unwrap();
+            assert_eq!(
+                (changed.revision, changed.connections.len()),
+                (first.revision, 1)
+            );
+        }
+        std::fs::remove_dir_all(folder).unwrap();
     }
     #[test]
     fn mssql_config_supports_sql_and_integrated_auth() {

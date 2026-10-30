@@ -111,8 +111,8 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
-        // The personal library has no other writers. Unsaved changes after a rejected save
-        // stay on screen until the user deals with them.
+        // The personal library reloads only when asked; a save from a stale copy is refused.
+        // Unsaved changes after a rejected save stay on screen until the user deals with them.
         if matches!(self.location, database::Location::Local(_))
             || !self.storage_ok
             || self.recovery.is_some()
