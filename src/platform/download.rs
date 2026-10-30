@@ -5,7 +5,7 @@ use cap_std::{
     fs::{Dir, OpenOptions},
 };
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs::File,
     io,
     path::{Component, Path, PathBuf},
@@ -54,12 +54,14 @@ impl DownloadRoot {
         let name = path
             .file_name()
             .ok_or_else(|| io::Error::other("invalid download name"))?;
-        let dir = self.directory(path.parent().unwrap_or(&self.path), false)?;
+        let folder = path.parent().unwrap_or(&self.path);
+        let dir = self.directory(folder, false)?;
         let partial = OsString::from(crate::model::temp_name(&name.to_string_lossy()));
         let file = dir.open_with(&partial, OpenOptions::new().create_new(true).write(true))?;
         Ok((
             DownloadTarget {
                 dir,
+                folder: folder.into(),
                 name: name.into(),
                 partial,
             },
@@ -71,6 +73,8 @@ impl DownloadRoot {
 /// Keeps the actual parent open through copying, publication and failure cleanup.
 pub struct DownloadTarget {
     dir: Dir,
+    /// The parent's path, for systems that rename only by path.
+    folder: PathBuf,
     name: OsString,
     partial: OsString,
 }
@@ -80,16 +84,75 @@ impl DownloadTarget {
         if replace {
             return self.dir.rename(&self.partial, &self.dir, &self.name);
         }
-        // There must be no check-then-rename fallback: on filesystems without hard
-        // links, it could overwrite a file created after that check. Save as lets the
-        // user explicitly authorize replacement on those filesystems instead.
-        self.dir.hard_link(&self.partial, &self.dir, &self.name)
-            .map_err(|e| io::Error::new(e.kind(), format!(
-                "Cannot safely create this download: {e}. Use Save as to confirm its destination."
-            )))?;
-        let _ = self.dir.remove_file(&self.partial);
+        // A hard link takes the name only while it is free, in one step.
+        match self.dir.hard_link(&self.partial, &self.dir, &self.name) {
+            Ok(()) => {
+                let _ = self.dir.remove_file(&self.partial);
+                return Ok(());
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Err(e),
+            Err(_) => {}
+        }
+        // FAT and exFAT drives, and some network shares, have no hard links. A rename the
+        // system refuses to make over an existing file is just as safe.
+        match rename_new(&self.dir, &self.folder, &self.partial, &self.name) {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::Unsupported | io::ErrorKind::InvalidInput
+                ) => {}
+            done => return done,
+        }
+        // Only where neither exists: look, then rename. A file another program creates
+        // under the same name in the moment between would be replaced.
+        if self.dir.symlink_metadata(&self.name).is_ok() {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        self.dir.rename(&self.partial, &self.dir, &self.name)
+    }
+}
+
+/// Renames `from` to `to` in `dir` unless `to` exists, in one step: `AlreadyExists` if it
+/// does, and `Unsupported` or `InvalidInput` where the system or file system cannot.
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+fn rename_new(dir: &Dir, _folder: &Path, from: &OsStr, to: &OsStr) -> io::Result<()> {
+    use rustix::fs::{RenameFlags, renameat_with};
+    Ok(renameat_with(dir, from, dir, to, RenameFlags::NOREPLACE)?)
+}
+
+/// Without `MOVEFILE_REPLACE_EXISTING`, Windows refuses to move onto an existing file. File
+/// systems without hard links have no links or junctions either, so the path stays put.
+#[cfg(windows)]
+fn rename_new(_dir: &Dir, folder: &Path, from: &OsStr, to: &OsStr) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide = |name: &OsStr| -> Vec<u16> {
+        folder
+            .join(name)
+            .as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect()
+    };
+    let (from, to) = (wide(from), wide(to));
+    // SAFETY: both are NUL-terminated wide strings that outlive the call.
+    let moved = unsafe {
+        windows_sys::Win32::Storage::FileSystem::MoveFileExW(from.as_ptr(), to.as_ptr(), 0)
+    };
+    if moved == 0 {
+        Err(io::Error::last_os_error())
+    } else {
         Ok(())
     }
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    windows
+)))]
+fn rename_new(_dir: &Dir, _folder: &Path, _from: &OsStr, _to: &OsStr) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
 }
 
 impl Drop for DownloadTarget {
@@ -120,6 +183,14 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"another writer");
         drop(target);
         assert_eq!(std::fs::read_dir(&base).unwrap().count(), 1);
+        // A free name is taken, also on drives without hard links, such as FAT.
+        let (target, mut file) = root.create(&base.join("free")).unwrap();
+        file.write_all(b"new").unwrap();
+        drop(file);
+        target.publish(false).unwrap();
+        drop(target);
+        assert_eq!(std::fs::read(base.join("free")).unwrap(), b"new");
+        assert_eq!(std::fs::read_dir(&base).unwrap().count(), 2);
         drop(root);
         std::fs::remove_dir_all(base).unwrap();
     }

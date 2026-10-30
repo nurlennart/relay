@@ -37,13 +37,17 @@ vt100 = "0.16"
 
 # Each platform gets its native GPU backend and TLS stack. Windows also hosts the
 # Microsoft RDP ActiveX control and supports integrated MSSQL authentication.
+# Renames that refuse to replace a file, for downloads to drives without hard links.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.5", features = ["fs"] }
+
 [target.'cfg(windows)'.dependencies]
 mysql = { version = "28", default-features = false, features = ["minimal-rust", "native-tls"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "native-tls", "winauth", "sql-browser-tokio"] }
 wgpu = { version = "27", default-features = false, features = ["dx12", "wgsl"] }
 windows = { version = "0.61.3", features = ["Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant"] }
 windows-core = "0.61.2"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Security_Credentials", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Security_Credentials", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_Storage_FileSystem"] }
 
 # Elsewhere remote desktops are drawn by IronRDP. Its crates require Rust 1.94.
 [target.'cfg(not(windows))'.dependencies]
