@@ -128,10 +128,7 @@ impl App {
                 if !collapsed {
                     ui.add_space(12.);
                     section_label(ui, "GROUPS");
-                    let mut groups = std::collections::BTreeMap::<String, usize>::new();
-                    for c in &self.connections {
-                        *groups.entry(c.group.clone()).or_default() += 1;
-                    }
+                    let groups = self.groups();
                     egui::ScrollArea::vertical()
                         .id_salt("groups")
                         .max_height((ui.available_height() - 52.).max(60.))
@@ -144,10 +141,10 @@ impl App {
                                         .color(colors.muted),
                                 );
                             }
-                            for (group, count) in groups {
-                                let selected = self.group.as_ref() == Some(&group);
-                                if nav_row(ui, Icon::Folder, &group, count, selected) {
-                                    self.group = Some(group);
+                            for (group, count) in groups.iter() {
+                                let selected = self.group.as_ref() == Some(group);
+                                if nav_row(ui, Icon::Folder, group, *count, selected) {
+                                    self.group = Some(group.clone());
                                     self.filter = Filter::All;
                                     self.activate(None);
                                 }

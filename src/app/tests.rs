@@ -162,8 +162,10 @@ fn enter_in_notes_adds_a_line_and_notes_are_searchable() {
         app.poll_storage();
     }
     assert_eq!(app.connections[0].notes, "Rack 4\nUPS");
+    // The saved notes are searched, and an unchanged library is not searched again.
     app.query = "ups".into();
-    assert_eq!(app.filtered(), vec![0]);
+    assert_eq!(*app.filtered(), [0]);
+    assert!(std::rc::Rc::ptr_eq(&app.filtered(), &app.filtered()));
 }
 
 #[test]
@@ -1963,6 +1965,21 @@ fn several_connections_are_chosen_and_changed_together() {
     assert!(matches!(app.modal, Modal::None));
     let groups: Vec<_> = app.connections.iter().map(|c| c.group.as_str()).collect();
     assert_eq!(groups, ["Datacenter", "Personal", "Datacenter"]);
+    // One confirmation serves one connection or several; Escape cancels it.
+    let confirm = |app: &mut App, events| {
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| app.confirmations(ctx));
+    };
+    for ids in [vec![1], vec![1, 3]] {
+        app.modal = Modal::Delete(ids);
+        confirm(&mut app, vec![]);
+        assert!(matches!(app.modal, Modal::Delete(_)));
+        confirm(&mut app, vec![press(egui::Key::Escape)]);
+        assert!(matches!(app.modal, Modal::None));
+    }
     assert!(app.delete_connections(&[1, 3]));
     finish_saving(&mut app);
     let names: Vec<_> = app.connections.iter().map(|c| c.name.as_str()).collect();

@@ -415,6 +415,9 @@ impl Session {
         if let Some(rdp) = &self.rdp {
             rdp.set_shown(shown);
         }
+        if let Some(files) = &self.files {
+            files.set_shown(shown);
+        }
     }
 
     pub fn is_running(&self) -> bool {

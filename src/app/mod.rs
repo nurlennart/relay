@@ -65,7 +65,7 @@ pub fn run() -> eframe::Result {
     )
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 enum Filter {
     All,
     Recent,
@@ -80,9 +80,8 @@ enum Modal {
     #[default]
     None,
     Editor(Connection),
-    Delete(u64),
-    /// Several connections chosen in the library, to delete together.
-    DeleteMany(Vec<u64>),
+    /// Connections to delete: one, or several chosen in the library together.
+    Delete(Vec<u64>),
     /// Several connections to move into the group typed.
     MoveToGroup(Vec<u64>, String),
     Close(usize),
@@ -156,6 +155,10 @@ struct App {
     ctx: egui::Context,
     location: database::Location,
     revision: i64,
+    /// Counts replacements of `connections`, so views of them know when to look again.
+    generation: u64,
+    /// The library as last shown, kept until what it was made from changes.
+    views: std::cell::RefCell<library::Views>,
     pending: Option<std::sync::mpsc::Receiver<Result<database::Snapshot, String>>>,
     pending_location: Option<database::Location>,
     recovery: Option<Vec<Connection>>,
@@ -317,6 +320,8 @@ impl App {
             ctx,
             location,
             revision: 0,
+            generation: 0,
+            views: Default::default(),
             pending: None,
             pending_location: None,
             recovery: None,
@@ -1215,27 +1220,34 @@ impl App {
         if escape
             && matches!(
                 self.modal,
-                Modal::Delete(_) | Modal::Close(_) | Modal::DeleteMany(_) | Modal::MoveToGroup(..)
+                Modal::Delete(_) | Modal::Close(_) | Modal::MoveToGroup(..)
             )
         {
             self.modal = Modal::None;
         }
         match &mut self.modal {
-            Modal::DeleteMany(ids) => {
+            Modal::Delete(ids) => {
                 let ids = ids.clone();
-                dialog("delete-many", ctx).show(ctx, |ui| {
+                let names: Vec<_> = (self.connections.iter())
+                    .filter(|c| ids.contains(&c.id))
+                    .map(|c| c.name.clone())
+                    .collect();
+                dialog("delete", ctx).show(ctx, |ui| {
                     ui.set_width(380.);
-                    ui.heading(format!("Delete {} connections?", ids.len()));
-                    let names: Vec<_> = (self.connections.iter())
-                        .filter(|c| ids.contains(&c.id))
-                        .map(|c| c.name.as_str())
-                        .collect();
-                    ui.label(
-                        RichText::new(summary_of_names(&names)).color(theme::palette(ctx).muted),
-                    );
-                    ui.label("This removes the saved entries. Open sessions stay open.");
+                    let delete = if let [name] = &names[..] {
+                        ui.heading(format!("Delete “{name}”?"));
+                        ui.label("This removes the saved entry. Any open session stays open.");
+                        "Delete connection".to_string()
+                    } else {
+                        ui.heading(format!("Delete {} connections?", ids.len()));
+                        ui.label(
+                            RichText::new(summary_of_names(&names))
+                                .color(theme::palette(ctx).muted),
+                        );
+                        ui.label("This removes the saved entries. Open sessions stay open.");
+                        format!("Delete {} connections", ids.len())
+                    };
                     ui.horizontal(|ui| {
-                        let delete = format!("Delete {} connections", ids.len());
                         if ui.button(delete).clicked() && self.delete_connections(&ids) {
                             self.modal = Modal::None;
                         }
@@ -1277,71 +1289,44 @@ impl App {
             }
             _ => {}
         }
-        match self.modal {
-            Modal::Delete(id) => {
-                let name = self
-                    .connections
-                    .iter()
-                    .find(|c| c.id == id)
-                    .map_or("connection".into(), |c| format!("“{}”", c.name));
-                dialog("delete", ctx).show(ctx, |ui| {
-                    ui.set_width(360.);
-                    ui.heading(format!("Delete {name}?"));
-                    ui.label("This removes the saved entry. Any open session stays open.");
-                    ui.horizontal(|ui| {
-                        if ui.button("Delete connection").clicked()
-                            && self.delete_connections(&[id])
-                        {
-                            self.modal = Modal::None;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.modal = Modal::None;
-                        }
-                    });
-                });
-            }
-            Modal::Close(index) => {
-                let name = self
-                    .sessions
-                    .get(index)
-                    .map_or("session".into(), |s| format!("“{}”", s.title()));
-                let transfers = self
-                    .sessions
-                    .get(index)
-                    .map_or(0, Session::active_transfers);
-                let edits = self.sessions.get(index).map_or(0, Session::unsaved_edits);
-                dialog("close", ctx).show(ctx, |ui| {
-                    ui.set_width(380.);
-                    ui.heading(format!("Close {name}?"));
-                    ui.label(
-                        "The connection will end. Save your work on the remote machine first.",
+        if let Modal::Close(index) = self.modal {
+            let name = self
+                .sessions
+                .get(index)
+                .map_or("session".into(), |s| format!("“{}”", s.title()));
+            let transfers = self
+                .sessions
+                .get(index)
+                .map_or(0, Session::active_transfers);
+            let edits = self.sessions.get(index).map_or(0, Session::unsaved_edits);
+            dialog("close", ctx).show(ctx, |ui| {
+                ui.set_width(380.);
+                ui.heading(format!("Close {name}?"));
+                ui.label("The connection will end. Save your work on the remote machine first.");
+                if transfers > 0 {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        match transfers {
+                            1 => "1 transfer is not finished and will be cancelled.".into(),
+                            n => {
+                                format!("{n} transfers are not finished and will be cancelled.")
+                            }
+                        },
                     );
-                    if transfers > 0 {
-                        ui.colored_label(
-                            ui.visuals().warn_fg_color,
-                            match transfers {
-                                1 => "1 transfer is not finished and will be cancelled.".into(),
-                                n => {
-                                    format!("{n} transfers are not finished and will be cancelled.")
-                                }
-                            },
-                        );
+                }
+                if edits > 0 {
+                    ui.colored_label(ui.visuals().warn_fg_color, unsaved_edits(edits));
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Close session").clicked() {
+                        self.modal = Modal::None;
+                        self.close_tab(index);
                     }
-                    if edits > 0 {
-                        ui.colored_label(ui.visuals().warn_fg_color, unsaved_edits(edits));
+                    if ui.button("Keep open").clicked() {
+                        self.modal = Modal::None;
                     }
-                    ui.horizontal(|ui| {
-                        if ui.button("Close session").clicked() {
-                            self.modal = Modal::None;
-                            self.close_tab(index);
-                        }
-                        if ui.button("Keep open").clicked() {
-                            self.modal = Modal::None;
-                        }
-                    });
                 });
-            }
-            _ => {}
+            });
         }
     }
 }
@@ -1514,14 +1499,9 @@ fn full_window_step(
 }
 
 /// A few of `names`, and how many more there are, for a confirmation.
-fn summary_of_names(names: &[&str]) -> String {
+fn summary_of_names(names: &[String]) -> String {
     const SHOWN: usize = 4;
-    let mut text = names
-        .iter()
-        .take(SHOWN)
-        .copied()
-        .collect::<Vec<_>>()
-        .join(", ");
+    let mut text = names[..names.len().min(SHOWN)].join(", ");
     if names.len() > SHOWN {
         text.push_str(&format!(" and {} more", names.len() - SHOWN));
     }

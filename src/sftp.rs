@@ -25,7 +25,11 @@ use russh_sftp::{
 use std::{
     collections::{BTreeSet, VecDeque},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, mpsc as std_mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc as std_mpsc,
+    },
     time::{Duration, Instant, SystemTime},
 };
 use tokio::{
@@ -46,6 +50,9 @@ const CHUNK: usize = 256 * 1024;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 /// Lines of ssh's error output kept to explain a failed connection.
 const LOG_LINES: usize = 20;
+/// How many transfers that went through, or were cancelled, the queue keeps showing. Older
+/// ones go; running and failed ones always stay.
+const KEEP_FINISHED: usize = 100;
 /// How often copies open in an editor are checked for saves.
 const WATCH_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -542,7 +549,11 @@ impl Browser {
     pub fn demo(path: &str, entries: Vec<Entry>) -> Self {
         let (commands, inbox) = mpsc::unbounded_channel();
         let (sender, events) = std_mpsc::channel();
-        let events_out = Events { sender, ctx: None };
+        let events_out = Events {
+            sender,
+            ctx: None,
+            shown: Default::default(),
+        };
         let mut browser = Self::with(commands, events, events_out, None);
         browser.demo_inbox = Some(inbox);
         browser.status = Status::Ready;
@@ -647,6 +658,7 @@ impl Browser {
         let events_out = Events {
             sender,
             ctx: ctx.clone(),
+            shown: Arc::new(AtomicBool::new(true)),
         };
         let spawned = std::thread::Builder::new()
             .name("relay-sftp".into())
@@ -788,6 +800,7 @@ impl Browser {
                 if let Some((Direction::Upload, _)) = finished {
                     self.refresh();
                 }
+                self.trim_transfers();
             }
             Event::Saved { id, seen } => self.edit_saved(id, seen),
             Event::Ended(reason) => {
@@ -1050,6 +1063,12 @@ impl Browser {
         id
     }
 
+    /// Tells the browser whether it is on screen, so progress in a hidden one does not wake
+    /// the window.
+    pub fn set_shown(&self, shown: bool) {
+        self.events_out.shown.store(shown, Ordering::Relaxed);
+    }
+
     pub fn cancel(&mut self, id: u64) {
         if let Some(t) = self.transfers.iter().find(|t| t.id == id) {
             t.cancel.cancel();
@@ -1093,6 +1112,24 @@ impl Browser {
         let old = self.transfers.remove(index);
         let job = old.job.in_place();
         self.queue(job, old.direction, old.name, old.destination, None);
+    }
+
+    /// Lets the oldest transfers that went through or were cancelled go, past
+    /// [`KEEP_FINISHED`] of them.
+    fn trim_transfers(&mut self) {
+        let settled = |t: &Transfer| {
+            matches!(
+                t.state,
+                TransferState::Done | TransferState::Stopped(Failure::Cancelled)
+            )
+        };
+        let mut excess =
+            (self.transfers.iter().filter(|t| settled(t)).count()).saturating_sub(KEEP_FINISHED);
+        self.transfers.retain(|t| {
+            let drop = excess > 0 && settled(t);
+            excess -= usize::from(drop);
+            !drop
+        });
     }
 
     pub fn clear_finished(&mut self) {
@@ -1226,12 +1263,18 @@ pub fn ssh_args(c: &Connection) -> Vec<String> {
 struct Events {
     sender: std_mpsc::Sender<Event>,
     ctx: Option<egui::Context>,
+    /// Whether the browser is on screen. Progress in a hidden one does not wake the window;
+    /// everything else, such as a transfer ending or a prompt, still does.
+    shown: Arc<AtomicBool>,
 }
 
 impl Events {
     fn send(&self, event: Event) {
+        let progress = matches!(event, Event::Started { .. } | Event::Progress { .. });
         let _ = self.sender.send(event);
-        if let Some(ctx) = &self.ctx {
+        if let Some(ctx) = &self.ctx
+            && (!progress || self.shown.load(Ordering::Relaxed))
+        {
             ctx.request_repaint();
         }
     }
@@ -2172,6 +2215,19 @@ mod tests {
             );
             assert!(listing(&local).is_empty());
         }
+
+        // A long session keeps only the latest transfers that went through or were
+        // cancelled, and every one that failed.
+        browser.download(&["missing.bin".into()], &local);
+        let failed = browser.transfers.last().unwrap().id;
+        wait(&mut browser, "the failure", |b| b.active_transfers() == 0);
+        browser.download(&vec!["huge.bin".to_string(); KEEP_FINISHED + 5], &local);
+        browser.cancel_all();
+        wait(&mut browser, "the cancellations", |b| {
+            b.active_transfers() == 0
+        });
+        assert_eq!(browser.transfers.len(), KEEP_FINISHED + 1);
+        assert!(browser.transfers.iter().any(|t| t.id == failed));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2629,6 +2685,39 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "port = 8080");
         let _ = std::fs::remove_dir_all(copy.parent().unwrap());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hidden_progress_does_not_wake_the_window_but_its_end_does() {
+        let ctx = egui::Context::default();
+        let wakes = Arc::new(Mutex::new(0));
+        let seen = wakes.clone();
+        ctx.set_request_repaint_callback(move |_| *seen.lock().unwrap() += 1);
+        let (sender, _events) = std_mpsc::channel();
+        let events = Events {
+            sender,
+            ctx: Some(ctx.clone()),
+            shown: Arc::new(AtomicBool::new(false)),
+        };
+        // egui reports a wake only when sooner than one already due, so frames pass first.
+        let woke = |event| {
+            for _ in 0..3 {
+                let _ = ctx.run(egui::RawInput::default(), |_| {});
+            }
+            *wakes.lock().unwrap() = 0;
+            events.send(event);
+            *wakes.lock().unwrap() > 0
+        };
+        let progress = || Event::Progress {
+            id: 1,
+            done: 1,
+            files_done: 0,
+        };
+        assert!(!woke(progress()));
+        let result = Err(Failure::Cancelled);
+        assert!(woke(Event::Finished { id: 1, result }));
+        events.shown.store(true, Ordering::Relaxed);
+        assert!(woke(progress()));
     }
 
     #[test]

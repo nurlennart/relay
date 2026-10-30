@@ -1,12 +1,91 @@
 //! The connection library: search, the connection table, and its rows.
 use super::*;
 use egui::{Align, FontId, Layout, Margin, Rect, Sense, UiBuilder};
+use std::rc::Rc;
+
+/// What the library shows, kept between frames: a busy terminal or desktop repaints often,
+/// and finding, counting and sorting an unchanged library each time would be wasted.
+#[derive(Default)]
+pub(super) struct Views {
+    order: Option<(OrderKey, Rc<Vec<usize>>)>,
+    /// Each group with how many connections it has, by name, for the generation given.
+    groups: Option<(Generation, Groups)>,
+}
+
+/// Everything the shown order depends on.
+/// Which connections the views were made from: how often they were replaced, and how many
+/// there are, which also notices ones changed directly, as tests and rendering checks do.
+type Generation = (u64, usize);
+
+/// Each group with how many connections it has, by name.
+type Groups = Rc<Vec<(String, usize)>>;
+
+#[derive(PartialEq)]
+struct OrderKey {
+    generation: Generation,
+    query: String,
+    filter: Filter,
+    group: Option<String>,
+    recent: Vec<u64>,
+}
 
 impl App {
+    /// Replaces the connections, so views of them are made again.
+    pub(super) fn set_connections(&mut self, connections: Vec<Connection>) {
+        self.connections = connections;
+        self.generation += 1;
+    }
+
+    fn generation(&self) -> Generation {
+        (self.generation, self.connections.len())
+    }
+
     /// The positions in `connections` of those shown, in the order shown.
-    pub(super) fn filtered(&self) -> Vec<usize> {
-        let query = self.query.to_lowercase();
+    pub(super) fn filtered(&self) -> Rc<Vec<usize>> {
         let recent = self.state.recent(&self.location);
+        let key = OrderKey {
+            generation: self.generation(),
+            query: self.query.clone(),
+            filter: self.filter,
+            group: self.group.clone(),
+            recent: recent.to_vec(),
+        };
+        let mut views = self.views.borrow_mut();
+        if let Some((cached, order)) = &views.order
+            && *cached == key
+        {
+            return order.clone();
+        }
+        let order = Rc::new(self.find_shown(recent));
+        views.order = Some((key, order.clone()));
+        order
+    }
+
+    /// Each group with how many connections it has, by name.
+    pub(super) fn groups(&self) -> Groups {
+        let generation = self.generation();
+        let mut views = self.views.borrow_mut();
+        if let Some((cached, groups)) = &views.groups
+            && *cached == generation
+        {
+            return groups.clone();
+        }
+        let mut counts = std::collections::BTreeMap::<&str, usize>::new();
+        for c in &self.connections {
+            *counts.entry(&c.group).or_default() += 1;
+        }
+        let groups: Groups = Rc::new(
+            counts
+                .into_iter()
+                .map(|(group, count)| (group.to_string(), count))
+                .collect(),
+        );
+        views.groups = Some((generation, groups.clone()));
+        groups
+    }
+
+    fn find_shown(&self, recent: &[u64]) -> Vec<usize> {
+        let query = self.query.to_lowercase();
         let mut items: Vec<_> = (0..self.connections.len())
             .filter(|&i| {
                 let c = &self.connections[i];
@@ -333,7 +412,7 @@ impl App {
                         self.modal = Modal::MoveToGroup(self.marked_in_order(shown), String::new());
                     }
                     if ui.button("Delete…").clicked() {
-                        self.modal = Modal::DeleteMany(self.marked_in_order(shown));
+                        self.modal = Modal::Delete(self.marked_in_order(shown));
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.button("Clear").on_hover_text("Esc").clicked() {
@@ -375,7 +454,7 @@ impl App {
         }
         menu_separator(ui);
         if ui.button(format!("Delete {count} connections…")).clicked() {
-            self.modal = Modal::DeleteMany(self.marked_in_order(shown));
+            self.modal = Modal::Delete(self.marked_in_order(shown));
             ui.close();
         }
     }
@@ -786,7 +865,7 @@ impl App {
         }
         menu_separator(ui);
         if ui.button("Delete connection").clicked() {
-            self.modal = Modal::Delete(c.id);
+            self.modal = Modal::Delete(vec![c.id]);
             ui.close();
         }
     }

@@ -1680,14 +1680,15 @@ fn transfers(ui: &mut egui::Ui, files: &mut Browser, max_height: f32) {
                     }
                 });
             });
+            // Only the rows in view are laid out, however long the history.
+            ui.spacing_mut().item_spacing.y = 0.;
             egui::ScrollArea::vertical()
                 .id_salt("files-transfers")
                 .max_height((TRANSFER_ROW * TRANSFER_ROWS as f32).min(max_height))
                 .auto_shrink([false, true])
                 .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.;
-                    for transfer in &files.transfers {
+                .show_rows(ui, TRANSFER_ROW, files.transfers.len(), |ui, rows| {
+                    for transfer in &files.transfers[rows] {
                         transfer_row(ui, transfer, &mut actions);
                     }
                 });

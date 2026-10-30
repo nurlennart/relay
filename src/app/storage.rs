@@ -31,7 +31,7 @@ impl App {
         };
         match result {
             Ok(snapshot) => {
-                self.connections = snapshot.connections;
+                self.set_connections(snapshot.connections);
                 self.revision = snapshot.revision;
                 self.storage_ok = true;
                 let mut remember_error = None;
@@ -102,7 +102,7 @@ impl App {
                         && snapshot.revision != self.revision
                         && self.recovery.is_none()
                     {
-                        self.connections = snapshot.connections;
+                        self.set_connections(snapshot.connections);
                         self.revision = snapshot.revision;
                         self.forget_removed();
                     }
