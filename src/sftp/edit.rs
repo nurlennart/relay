@@ -585,7 +585,7 @@ fn watcher(commands: std_mpsc::Receiver<Watch>, events: Events) {
                 });
                 let direct = matches!(watching, Some(Ok(())));
                 if !direct {
-                    events.send(Event::WatchError(format!(
+                    events.send(Event::WatchFallback(format!(
                         "Saves to {} will be checked every 5 seconds because file notifications are unavailable.", path.display()
                     )));
                 }
