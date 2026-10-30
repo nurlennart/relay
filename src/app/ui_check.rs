@@ -616,6 +616,16 @@ fn files(app: &mut App) {
                 );
             }
         }
+        Ok("edit") => {
+            use crate::sftp::EditState;
+            browser.demo_edit("Cargo.toml", EditState::Open);
+            browser.demo_edit("deploy.sh", EditState::Uploading);
+            browser.demo_edit(
+                ".env",
+                EditState::Changed("“.env” changed on the server since you opened it.".into()),
+            );
+            browser.demo_edit("server.log", EditState::Failed("Permission denied.".into()));
+        }
         Ok("password") => browser.demo_prompt(
             "deploy@build.example.com's password:",
             crate::askpass::Kind::Secret,

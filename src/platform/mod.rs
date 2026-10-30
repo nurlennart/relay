@@ -4,7 +4,7 @@ use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
     RawWindowHandle, WindowHandle,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(not(windows))]
 mod other;
@@ -106,4 +106,79 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
         .chain(sys::EXTRA_PROGRAM_DIRS.iter().map(PathBuf::from))
         .map(|dir| dir.join(name))
         .find(|candidate| candidate.is_file())
+}
+
+/// Opens `path` in `editor`, a command line where `{file}` stands for the file (which
+/// otherwise goes last), or in the system's editor for that kind of file when it is empty.
+/// Relay does not wait for the editor to close.
+pub fn edit_file(editor: &str, path: &Path) -> Result<(), String> {
+    let words = split_command(editor);
+    let Some((program, args)) = words.split_first() else {
+        return sys::edit_with_default(path);
+    };
+    let file = path.to_string_lossy();
+    let mut command = std::process::Command::new(program);
+    let mut placed = false;
+    for arg in args {
+        placed |= arg.contains("{file}");
+        command.arg(arg.replace("{file}", &file));
+    }
+    if !placed {
+        command.arg(path);
+    }
+    spawn_detached(command).map_err(|e| format!("Cannot start {program}: {e}"))
+}
+
+/// Starts `command` and reaps it when it exits, without waiting for that.
+fn spawn_detached(mut command: std::process::Command) -> std::io::Result<()> {
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    std::thread::Builder::new()
+        .name("relay-editor".into())
+        .spawn(move || child.wait())?;
+    Ok(())
+}
+
+/// Splits a command line at spaces, keeping text in double or single quotes together.
+/// Backslashes are kept as they are, since Windows paths are full of them.
+pub fn split_command(line: &str) -> Vec<String> {
+    let mut words = vec![];
+    let mut word: Option<String> = None;
+    let mut quote = None;
+    for c in line.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => word.get_or_insert_default().push(c),
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                word.get_or_insert_default();
+            }
+            (None, c) if c.is_whitespace() => words.extend(word.take()),
+            (None, c) => word.get_or_insert_default().push(c),
+        }
+    }
+    words.extend(word);
+    words
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editor_commands_split_at_spaces_outside_quotes() {
+        assert_eq!(split_command("  "), Vec::<String>::new());
+        assert_eq!(split_command("code --wait"), ["code", "--wait"]);
+        assert_eq!(
+            split_command(r#""C:\Program Files\Notepad++\notepad++.exe" -multiInst"#),
+            [r"C:\Program Files\Notepad++\notepad++.exe", "-multiInst"]
+        );
+        assert_eq!(
+            split_command("emacsclient -n '+{file}' \"\""),
+            ["emacsclient", "-n", "+{file}", ""]
+        );
+    }
 }

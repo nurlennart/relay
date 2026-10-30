@@ -72,3 +72,16 @@ pub fn find_window(_title: &str, _known: &[Window]) -> Option<Window> {
 }
 
 pub fn focus(_window: Window) {}
+
+/// Opens `path` in the default text editor on macOS, and with the desktop's application for
+/// its type elsewhere.
+pub fn edit_with_default(path: &std::path::Path) -> Result<(), String> {
+    let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("open", &["-t"])
+    } else {
+        ("xdg-open", &[])
+    };
+    let mut command = std::process::Command::new(program);
+    command.args(args).arg(path);
+    super::spawn_detached(command).map_err(|e| format!("Cannot start {program}: {e}"))
+}

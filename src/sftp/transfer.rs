@@ -2,6 +2,11 @@
 //! progress has a total, then streamed through a fixed buffer into a staged file that takes
 //! the destination's place only once complete.
 use super::*;
+use std::hash::{DefaultHasher, Hasher};
+
+/// The largest file whose contents are compared before an edit replaces it; past this, its
+/// size and time must do.
+const COMPARE_LIMIT: u64 = 64 * 1024 * 1024;
 
 /// Runs queued transfers one at a time.
 pub(super) async fn transfers(
@@ -64,13 +69,15 @@ impl Progress<'_> {
     }
 }
 
+/// Copies what `job` names. A single file's transfer returns the version the server has
+/// afterwards, which an edit checks for before its next upload.
 async fn transfer(
     session: &SftpSession,
     id: u64,
     job: &Job,
     cancel: &CancellationToken,
     events: &Events,
-) -> Result<(), Failure> {
+) -> Result<Option<Version>, Failure> {
     let error = |what: &str, e: &dyn std::fmt::Display| Failure::Error(format!("{what}: {e}"));
     let mut progress = Progress {
         id,
@@ -84,10 +91,17 @@ async fn transfer(
             local,
             remote,
             replace,
+            unchanged,
+            in_place,
         } => {
             let existing = exists(session, remote)
                 .await
                 .map_err(|e| error("Cannot check the destination", &describe(e)))?;
+            // A quick look first saves uploading in vain; the contents are compared just
+            // before the upload takes the file's place.
+            if let Some(expected) = unchanged {
+                still(session, remote, expected, false, cancel).await?;
+            }
             if existing && !replace {
                 return Err(Failure::Exists(format!(
                     "“{}” already exists on the server.",
@@ -113,9 +127,18 @@ async fn transfer(
                         .map_err(|e| error(&format!("Cannot create {folder}"), &describe(e)))?;
                 }
             }
+            let mut contents = 0;
             for (from, to, _) in &plan.files {
-                upload_file(session, from, to, cancel, &mut progress).await?;
+                let checks = Checks {
+                    unchanged: unchanged.as_ref(),
+                    in_place: *in_place,
+                };
+                contents = upload_file(session, from, to, checks, cancel, &mut progress).await?;
                 progress.file_done();
+            }
+            if plan.folders.is_empty() {
+                let stamp = session.metadata(remote).await.ok().map(|m| Stamp::of(&m));
+                return Ok(stamp.map(|stamp| Version { stamp, contents }));
             }
         }
         Job::Download {
@@ -144,13 +167,17 @@ async fn transfer(
                     .await
                     .map_err(|e| error(&format!("Cannot create {}", folder.display()), &e))?;
             }
+            let mut version = None;
             for (from, to, _) in &plan.files {
-                download_file(session, from, to, cancel, &mut progress).await?;
+                version = download_file(session, from, to, cancel, &mut progress).await?;
                 progress.file_done();
+            }
+            if plan.folders.is_empty() {
+                return Ok(version);
             }
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Lists a local file or folder for upload. Links to folders are skipped, since they can loop.
@@ -239,13 +266,81 @@ async fn plan_download(
     Ok(plan)
 }
 
+/// Fails unless remote `path` is still the `expected` version: its size and time, and, with
+/// `contents`, what it holds, up to [`COMPARE_LIMIT`].
+async fn still(
+    session: &SftpSession,
+    path: &str,
+    expected: &Version,
+    contents: bool,
+    cancel: &CancellationToken,
+) -> Result<(), Failure> {
+    let name = file_name(path);
+    let changed = || {
+        Failure::Changed(format!(
+            "“{name}” changed on the server since you opened it."
+        ))
+    };
+    let meta = match session.metadata(path).await {
+        Ok(meta) => meta,
+        Err(SftpError::Status(s)) if s.status_code == StatusCode::NoSuchFile => {
+            return Err(Failure::Changed(format!(
+                "“{name}” is no longer on the server."
+            )));
+        }
+        Err(e) => {
+            return Err(Failure::Error(format!(
+                "Cannot check “{name}”: {}",
+                describe(e)
+            )));
+        }
+    };
+    if Stamp::of(&meta) != expected.stamp {
+        return Err(changed());
+    }
+    if !contents || meta.len() > COMPARE_LIMIT {
+        return Ok(());
+    }
+    let fail = |e: &dyn std::fmt::Display| Failure::Error(format!("Cannot check “{name}”: {e}"));
+    let mut file = session.open(path).await.map_err(|e| fail(&describe(e)))?;
+    let mut hash = DefaultHasher::new();
+    let mut buffer = vec![0u8; CHUNK];
+    loop {
+        let read = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(Failure::Cancelled),
+            read = file.read(&mut buffer) => read,
+        };
+        match read.map_err(|e| fail(&e))? {
+            0 => break,
+            n => hash.write(&buffer[..n]),
+        }
+    }
+    if hash.finish() != expected.contents {
+        return Err(changed());
+    }
+    Ok(())
+}
+
+/// How carefully an upload replaces an existing file.
+#[derive(Clone, Copy)]
+struct Checks<'a> {
+    /// The version the file must still be when the upload takes its place.
+    unchanged: Option<&'a Version>,
+    /// Write over the file directly where its folder takes no new files.
+    in_place: bool,
+}
+
+/// Uploads one file, returning a fingerprint of what it sent.
 async fn upload_file(
     session: &SftpSession,
     local: &Path,
     remote: &str,
+    checks: Checks<'_>,
     cancel: &CancellationToken,
     progress: &mut Progress<'_>,
-) -> Result<(), Failure> {
+) -> Result<u64, Failure> {
+    let unchanged = checks.unchanged;
     let fail = |e: &dyn std::fmt::Display| Failure::Error(format!("{}: {e}", file_name(remote)));
     let mut source = tokio::fs::File::open(local).await.map_err(|e| fail(&e))?;
     // A file being replaced keeps its contents until its replacement is complete.
@@ -258,11 +353,19 @@ async fn upload_file(
             .await
             .unwrap_or_else(|_| remote.into());
         if let Some((temp, mut target)) = stage(session, &real).await {
-            let mut copied = match copy(&mut source, &mut target, cancel, progress).await {
+            let mut hash = DefaultHasher::new();
+            let mut copied = match copy(&mut source, &mut target, cancel, progress, &mut hash).await
+            {
                 Ok(()) => target.shutdown().await.map_err(|e| fail(&e)),
                 Err(e) => Err(e),
             };
             drop(target);
+            // Someone may have saved the file while it uploaded.
+            if copied.is_ok()
+                && let Some(expected) = unchanged
+            {
+                copied = still(session, &real, expected, true, cancel).await;
+            }
             if copied.is_ok() {
                 let permissions = Metadata {
                     permissions: meta.permissions.map(|p| p & 0o7777),
@@ -273,10 +376,22 @@ async fn upload_file(
             } else {
                 let _ = session.remove_file(temp).await;
             }
-            return copied;
+            return copied.map(|()| hash.finish());
         }
-        // A folder that takes no new files still lets its files be overwritten in place.
+        // A folder that takes no new files may still let its files be overwritten in place,
+        // though an interrupted upload then leaves the file half written.
+        if !checks.in_place {
+            return Err(Failure::Error(
+                "The folder on the server takes no new files, which saving safely needs. \
+                 Your changes stay in the copy."
+                    .into(),
+            ));
+        }
+        if let Some(expected) = unchanged {
+            still(session, remote, expected, true, cancel).await?;
+        }
     }
+    let mut hash = DefaultHasher::new();
     let mut target = session
         .open_with_flags(
             remote,
@@ -284,7 +399,7 @@ async fn upload_file(
         )
         .await
         .map_err(|e| fail(&describe(e)))?;
-    let copied = match copy(&mut source, &mut target, cancel, progress).await {
+    let copied = match copy(&mut source, &mut target, cancel, progress, &mut hash).await {
         Ok(()) => target.shutdown().await.map_err(|e| fail(&e)),
         Err(e) => Err(e),
     };
@@ -293,7 +408,7 @@ async fn upload_file(
         drop(target);
         let _ = session.remove_file(remote).await;
     }
-    copied
+    copied.map(|()| hash.finish())
 }
 
 /// Creates a new file beside `path` to write its replacement into, or `None` where the
@@ -334,22 +449,26 @@ async fn replace(session: &SftpSession, temp: &str, path: &str) -> Result<(), St
     })
 }
 
+/// Downloads one file, returning the version it was: how it looked when it was opened, and a
+/// fingerprint of what was read.
 async fn download_file(
     session: &SftpSession,
     remote: &str,
     local: &Path,
     cancel: &CancellationToken,
     progress: &mut Progress<'_>,
-) -> Result<(), Failure> {
+) -> Result<Option<Version>, Failure> {
     let fail = |e: &dyn std::fmt::Display| Failure::Error(format!("{}: {e}", file_name(remote)));
     let mut source = session.open(remote).await.map_err(|e| fail(&describe(e)))?;
-    let modified = source.metadata().await.ok().and_then(|m| m.modified().ok());
+    let meta = source.metadata().await.ok();
+    let modified = meta.as_ref().and_then(|m| m.modified().ok());
     // The file appears under its own name only once it is complete.
     let partial = partial_path(local);
     let mut target = tokio::fs::File::create_new(&partial)
         .await
         .map_err(|e| fail(&e))?;
-    let mut copied = copy(&mut source, &mut target, cancel, progress).await;
+    let mut hash = DefaultHasher::new();
+    let mut copied = copy(&mut source, &mut target, cancel, progress, &mut hash).await;
     if copied.is_ok() {
         copied = target.flush().await.map_err(|e| fail(&e));
     }
@@ -368,7 +487,12 @@ async fn download_file(
     if copied.is_err() {
         let _ = tokio::fs::remove_file(&partial).await;
     }
-    copied
+    copied.map(|()| {
+        meta.as_ref().map(|m| Version {
+            stamp: Stamp::of(m),
+            contents: hash.finish(),
+        })
+    })
 }
 
 /// Where a download is written until it is complete: beside its destination.
@@ -377,12 +501,14 @@ fn partial_path(local: &Path) -> PathBuf {
     local.with_file_name(crate::model::temp_name(&name))
 }
 
-/// Copies `reader` to `writer` through one buffer, stopping promptly when cancelled.
+/// Copies `reader` to `writer` through one buffer, stopping promptly when cancelled, and
+/// fingerprints what passes into `hash`.
 async fn copy(
     reader: &mut (impl AsyncRead + Unpin),
     writer: &mut (impl AsyncWrite + Unpin),
     cancel: &CancellationToken,
     progress: &mut Progress<'_>,
+    hash: &mut DefaultHasher,
 ) -> Result<(), Failure> {
     let mut buffer = vec![0u8; CHUNK];
     loop {
@@ -401,6 +527,7 @@ async fn copy(
             written = writer.write_all(&buffer[..n]) => written,
         };
         written.map_err(|e| Failure::Error(format!("Cannot write: {e}")))?;
+        hash.write(&buffer[..n]);
         progress.add(n as u64);
     }
 }

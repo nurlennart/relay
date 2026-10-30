@@ -27,6 +27,33 @@ pub fn background(command: &mut std::process::Command) {
     command.creation_flags(CREATE_NO_WINDOW);
 }
 
+/// Opens `path` with the editor Windows has for its type, which for scripts is not the
+/// program that runs them, or in Notepad when there is none.
+pub fn edit_with_default(path: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    let verb = wide("edit".as_ref());
+    let file = wide(path.as_os_str());
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // Values above 32 mean it started.
+    if result as usize > 32 {
+        return Ok(());
+    }
+    let mut command = std::process::Command::new("notepad.exe");
+    command.arg(path);
+    super::spawn_detached(command).map_err(|e| format!("Cannot start Notepad: {e}"))
+}
+
 /// The Windows OpenSSH Client feature, or another `ssh.exe` on `PATH`.
 pub fn ssh_program() -> PathBuf {
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());

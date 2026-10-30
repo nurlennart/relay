@@ -85,6 +85,9 @@ pub struct State {
     pub tab_libraries: Vec<Library>,
     /// The folder downloads from the file browser went to last.
     pub download_folder: Option<PathBuf>,
+    /// The command that opens files edited from the file browser, where `{file}` stands for
+    /// the file; empty for the system's editor.
+    pub editor: String,
     /// Which of `open` are local shells, kept apart like `file_tabs`.
     pub local_tabs: Vec<usize>,
     /// Tabs among `open` shown side by side, kept apart like `file_tabs`.
