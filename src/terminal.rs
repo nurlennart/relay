@@ -793,24 +793,25 @@ impl Terminal {
                 },
             );
             // Ticks beside the scrollbar mark where matches are in the history.
+            // Only one match per tick is visited, however many the history holds.
             if let Some(search) = &self.search {
-                let mut last = f32::NEG_INFINITY;
-                for (i, m) in search.matches.iter().enumerate() {
-                    let y = track.min.y + track.height() * m[0].0 as f32 / total;
-                    let current = search.current == Some(i);
-                    if y - last >= 2. || current {
-                        last = y;
-                        let tick = Rect::from_min_size(
-                            Pos2::new(track.min.x - 3., y - 1.),
-                            Vec2::new(6., 2.),
-                        );
-                        let color = if current {
-                            pal.current_match
-                        } else {
-                            pal.match_tick
-                        };
-                        painter.rect_filled(tick, 0., color);
-                    }
+                let tick = |y: f32, color| {
+                    let rect =
+                        Rect::from_min_size(Pos2::new(track.min.x - 3., y - 1.), Vec2::new(6., 2.));
+                    painter.rect_filled(rect, 0., color);
+                };
+                let y_of = |row: u32| track.min.y + track.height() * row as f32 / total;
+                let mut i = 0;
+                while let Some(m) = search.matches.get(i) {
+                    let y = y_of(m[0].0);
+                    tick(y, pal.match_tick);
+                    // The next tick is at least 2 points lower; matches in between would
+                    // be drawn over this one.
+                    let next = ((y + 2. - track.min.y) / track.height() * total).ceil() as u32;
+                    i = (i + 1).max(search.matches.partition_point(|m| m[0].0 < next));
+                }
+                if let Some(m) = search.current.and_then(|i| search.matches.get(i)) {
+                    tick(y_of(m[0].0), pal.current_match);
                 }
             }
         }

@@ -450,7 +450,8 @@ enum Event {
         seen: Seen,
         contents: u64,
     },
-    WatchError(String),
+    /// Saves are checked by polling, as file notifications are unavailable.
+    WatchFallback(String),
     EditStopChecked {
         id: u64,
         clean: bool,
@@ -820,7 +821,7 @@ impl Browser {
                 self.trim_transfers();
             }
             Event::Saved { id, seen, contents } => self.edit_saved(id, seen, contents),
-            Event::WatchError(error) => self.error = Some(error),
+            Event::WatchFallback(notice) => self.notice = Some((notice, Instant::now())),
             Event::EditStopChecked { id, clean, cancel } => {
                 if !cancel.is_cancelled() {
                     self.edit_stop_checked(id, clean);
