@@ -200,6 +200,9 @@ struct App {
     detached: Vec<u64>,
     /// The main window while a remote desktop fills it in full screen.
     full_window: Option<FullWindow>,
+    /// When the main window was last full screen, or on its way in or out, so its size then
+    /// is not remembered as its ordinary size.
+    full_screen_seen: Option<Instant>,
     /// Whether the bar for leaving full screen shows, from the pointer reaching the top edge.
     full_screen_bar: bool,
     /// Native windows found for detached sessions, which remote desktops are moved into.
@@ -235,6 +238,8 @@ struct App {
 }
 
 const NOTICE_SECONDS: u64 = 4;
+/// How long after full screen the window's size is left alone, while it returns to its own.
+const FULL_SCREEN_SETTLE: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 struct Palette {
@@ -337,6 +342,7 @@ impl App {
             tab_trail: (None, None),
             detached: vec![],
             full_window: None,
+            full_screen_seen: None,
             full_screen_bar: false,
             windows: vec![],
             tabs: vec![],
@@ -702,6 +708,35 @@ impl App {
     }
 
     /// Opens a shell on this computer in a new tab.
+    /// Remembers the restored window size; a maximized window keeps the size it returns to.
+    /// Sizes from full screen, and from the moments entering and leaving it, are not the
+    /// window's own. The window opens at its size before zooming, which the zoomed points are
+    /// scaled back to.
+    fn remember_window(
+        &mut self,
+        inner: Option<egui::Rect>,
+        maximized: Option<bool>,
+        full_screen: bool,
+        zoom: f32,
+    ) {
+        if full_screen {
+            self.full_screen_seen = Some(Instant::now());
+        }
+        if self
+            .full_screen_seen
+            .is_some_and(|at| at.elapsed() < FULL_SCREEN_SETTLE)
+        {
+            return;
+        }
+        if let Some(maximized) = maximized {
+            self.state.maximized = maximized;
+            if !maximized && let Some(inner) = inner {
+                let size = inner.size() * zoom;
+                self.state.window = Some([size.x.round(), size.y.round()]);
+            }
+        }
+    }
+
     /// Shows session `index`'s remote desktop full screen.
     fn enter_full_screen(&mut self, index: usize) {
         match self.sessions[index].enter_full_screen() {
@@ -1337,16 +1372,9 @@ impl eframe::App for App {
             self.state.zoom = (zoom != 1.).then_some(zoom);
             self.save_state();
         }
-        // Remember the restored window size; a maximized window keeps the size it returns to.
-        // The window opens at its size before zooming, which the zoomed points are scaled back to.
-        let (inner, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().maximized));
-        if let Some(maximized) = maximized {
-            self.state.maximized = maximized;
-            if !maximized && let Some(inner) = inner {
-                let size = inner.size() * zoom;
-                self.state.window = Some([size.x.round(), size.y.round()]);
-            }
-        }
+        let viewport = ctx.input(|i| i.viewport().clone());
+        let full_screen = self.full_window.is_some() || viewport.fullscreen == Some(true);
+        self.remember_window(viewport.inner_rect, viewport.maximized, full_screen, zoom);
         #[cfg(feature = "ui-check")]
         ui_check::capture(ctx);
         if ctx.input(|i| i.viewport().close_requested()) && self.pending.is_some() {

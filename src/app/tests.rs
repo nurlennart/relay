@@ -1579,6 +1579,30 @@ fn the_window_follows_a_full_screen_desktop() {
 }
 
 #[test]
+fn full_screen_never_becomes_the_remembered_window_size() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    let rect = |w, h| {
+        Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(w, h),
+        ))
+    };
+    app.remember_window(rect(1000., 700.), Some(false), false, 1.);
+    assert_eq!(app.state.window, Some([1000., 700.]));
+    // In full screen, the monitor's size is not the window's.
+    app.remember_window(rect(2560., 1440.), Some(false), true, 1.);
+    // Leaving, the window reports its old size for a moment before returning to its own.
+    app.remember_window(rect(2560., 1440.), Some(false), false, 1.);
+    assert_eq!(app.state.window, Some([1000., 700.]));
+    assert!(!app.state.maximized);
+    // Once settled, its size is followed again.
+    app.full_screen_seen = Some(Instant::now() - FULL_SCREEN_SETTLE);
+    app.remember_window(rect(1100., 720.), Some(false), false, 1.);
+    assert_eq!(app.state.window, Some([1100., 720.]));
+}
+
+#[test]
 fn local_shells_offer_snippets_but_not_files() {
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
