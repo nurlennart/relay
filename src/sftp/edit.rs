@@ -2,6 +2,9 @@
 //! and opened, and each save is uploaded through the transfer queue, unless the file changed
 //! on the server since it was opened or last uploaded. A copy whose changes are not on the
 //! server yet is never removed without asking.
+//!
+//! Saves are watched by a thread of the browser's own rather than the connection's, so
+//! saves made while disconnected are noticed too.
 use super::*;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -35,23 +38,40 @@ pub struct Edit {
     /// The editor command, empty for the system's.
     editor: String,
     /// The server's file as last downloaded or uploaded; an upload expects to find it so.
-    stamp: Option<Stamp>,
+    version: Option<Version>,
     /// The copy as last saved, so a watch started again reports only newer saves.
     seen: Option<Seen>,
+    /// The copy as it was when it last matched the server's file.
+    synced: Option<Seen>,
+    /// The copy as it was when the upload under way started.
+    sending: Option<Seen>,
     /// Saved again while uploading: upload once more when that finishes.
     again: bool,
 }
 
 impl Edit {
-    /// Whether the copy holds changes the server does not have.
+    /// Whether the copy holds changes the server does not have. The copy itself is checked,
+    /// so a save not reported yet counts too.
     pub fn unsaved(&self) -> bool {
         self.opened
             && (self.again
                 || matches!(
                     self.state,
                     EditState::Uploading | EditState::Failed(_) | EditState::Changed(_)
-                ))
+                )
+                || seen(&self.local) != self.synced)
     }
+}
+
+/// What the watcher is told.
+pub(super) enum Watch {
+    /// Report saves to the copy at `path` of edit `id` other than `seen`.
+    Add {
+        id: u64,
+        path: PathBuf,
+        seen: Option<Seen>,
+    },
+    Remove(u64),
 }
 
 impl Browser {
@@ -87,8 +107,10 @@ impl Browser {
             uploaded: None,
             opened: false,
             editor: editor.into(),
-            stamp: None,
+            version: None,
             seen: None,
+            synced: None,
+            sending: None,
             again: false,
         });
         self.download_copy(id);
@@ -132,16 +154,22 @@ impl Browser {
     /// Uploads edit `id`'s copy, over whatever is on the server if `overwrite`, and otherwise
     /// only if nobody changed it there.
     fn upload_copy(&mut self, id: u64, overwrite: bool) {
+        let ended = self.ended();
         let Some(edit) = self.edits.iter_mut().find(|e| e.id == id) else {
             return;
         };
-        edit.state = EditState::Uploading;
         edit.again = false;
+        if ended {
+            edit.state = EditState::Failed("Not connected. Reconnect, then retry.".into());
+            return;
+        }
+        edit.state = EditState::Uploading;
+        edit.sending = seen(&edit.local);
         let job = Job::Upload {
             local: edit.local.clone(),
             remote: edit.remote.clone(),
             replace: true,
-            unchanged: if overwrite { None } else { edit.stamp },
+            unchanged: if overwrite { None } else { edit.version },
         };
         let (name, folder) = (edit.name.clone(), parent(&edit.remote).unwrap_or_default());
         self.forget_transfers(id);
@@ -179,7 +207,7 @@ impl Browser {
             return;
         };
         let edit = self.edits.remove(index);
-        self.send(Command::Unwatch(id));
+        self.watch(Watch::Remove(id));
         for t in self.transfers.iter().filter(|t| t.edit == Some(id)) {
             t.cancel.cancel();
         }
@@ -195,7 +223,7 @@ impl Browser {
     pub fn take_edits(&mut self) -> Vec<Edit> {
         let edits = std::mem::take(&mut self.edits);
         for edit in &edits {
-            self.send(Command::Unwatch(edit.id));
+            self.watch(Watch::Remove(edit.id));
         }
         edits
     }
@@ -212,7 +240,7 @@ impl Browser {
             }
             let opened = edit.opened;
             if opened {
-                self.send(Command::Watch {
+                self.watch(Watch::Add {
                     id,
                     path: edit.local.clone(),
                     seen: edit.seen,
@@ -226,27 +254,29 @@ impl Browser {
     }
 
     /// Follows up on a transfer of edit `id`'s copy.
-    pub(super) fn edit_finished(&mut self, id: u64, result: Result<Option<Stamp>, Failure>) {
+    pub(super) fn edit_finished(&mut self, id: u64, result: Result<Option<Version>, Failure>) {
         let Some(index) = self.edits.iter().position(|e| e.id == id) else {
             return;
         };
         let edit = &mut self.edits[index];
         match result {
-            Ok(stamp) if !edit.opened => {
+            Ok(version) if !edit.opened => {
                 edit.opened = true;
-                edit.stamp = stamp;
+                edit.version = version;
                 edit.seen = seen(&edit.local);
+                edit.synced = edit.seen;
                 edit.state = EditState::Open;
-                let watch = Command::Watch {
+                let watch = Watch::Add {
                     id,
                     path: edit.local.clone(),
                     seen: edit.seen,
                 };
-                self.send(watch);
+                self.watch(watch);
                 self.open_editor(index);
             }
-            Ok(stamp) => {
-                edit.stamp = stamp;
+            Ok(version) => {
+                edit.version = version;
+                edit.synced = edit.sending.take();
                 edit.uploaded = Some(SystemTime::now());
                 edit.state = EditState::Open;
                 if edit.again {
@@ -291,10 +321,31 @@ impl Browser {
             opened: state != EditState::Opening,
             state,
             editor: String::new(),
-            stamp: None,
+            version: None,
             seen: None,
+            synced: None,
+            sending: None,
             again: false,
         });
+    }
+
+    /// Tells the watcher, starting it with the first copy to watch.
+    fn watch(&mut self, watch: Watch) {
+        if self.watcher.is_none() {
+            let (sender, commands) = std_mpsc::channel();
+            let events = self.events_out.clone();
+            let spawned = std::thread::Builder::new()
+                .name("relay-edit-watch".into())
+                .spawn(move || watcher(commands, events));
+            if let Err(e) = spawned {
+                self.error = Some(format!("Cannot watch for saves: {e}"));
+                return;
+            }
+            self.watcher = Some(sender);
+        }
+        if let Some(watcher) = &self.watcher {
+            let _ = watcher.send(watch);
+        }
     }
 }
 
@@ -352,9 +403,11 @@ fn copy_folder() -> std::io::Result<PathBuf> {
     }
 }
 
-/// Reports saves to the copies it is told to watch. A save is reported once the file has
-/// looked the same for a moment, so a file still being written is not uploaded half done.
-pub(super) async fn watch(mut commands: mpsc::UnboundedReceiver<Command>, events: Events) {
+/// Reports saves to the copies it is told to watch, until the browser goes. A save is
+/// reported once the file has looked the same for a moment, so a file still being written is
+/// not uploaded half done.
+fn watcher(commands: std_mpsc::Receiver<Watch>, events: Events) {
+    use std_mpsc::RecvTimeoutError;
     struct Watched {
         id: u64,
         path: PathBuf,
@@ -364,36 +417,43 @@ pub(super) async fn watch(mut commands: mpsc::UnboundedReceiver<Command>, events
         last: Option<Seen>,
     }
     let mut watched: Vec<Watched> = vec![];
-    let mut tick = tokio::time::interval(WATCH_INTERVAL);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut next = Instant::now();
     loop {
-        tokio::select! {
-            command = commands.recv() => match command {
-                Some(Command::Watch { id, path, seen }) => {
-                    watched.retain(|w| w.id != id);
-                    watched.push(Watched { id, path, seen, last: seen });
-                }
-                Some(Command::Unwatch(id)) => watched.retain(|w| w.id != id),
-                Some(_) => {}
-                None => return,
-            },
-            _ = tick.tick(), if !watched.is_empty() => {
-                for w in &mut watched {
-                    // Editors that save by replacing the file leave a moment without one.
-                    let now = tokio::fs::metadata(&w.path)
-                        .await
-                        .ok()
-                        .map(|m| (m.len(), m.modified().ok()));
-                    if let Some(seen) = now
-                        && now != w.seen
-                        && now == w.last
-                    {
-                        w.seen = now;
-                        events.send(Event::Saved { id: w.id, seen });
-                    }
-                    w.last = now;
-                }
+        // With nothing to watch, it sleeps until told otherwise.
+        let command = if watched.is_empty() {
+            commands.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        } else {
+            commands.recv_timeout(next.saturating_duration_since(Instant::now()))
+        };
+        match command {
+            Ok(Watch::Add { id, path, seen }) => {
+                watched.retain(|w| w.id != id);
+                watched.push(Watched {
+                    id,
+                    path,
+                    seen,
+                    last: seen,
+                });
             }
+            Ok(Watch::Remove(id)) => watched.retain(|w| w.id != id),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+        if Instant::now() < next {
+            continue;
+        }
+        next = Instant::now() + WATCH_INTERVAL;
+        for w in &mut watched {
+            // Editors that save by replacing the file leave a moment without one.
+            let now = seen(&w.path);
+            if let Some(seen) = now
+                && now != w.seen
+                && now == w.last
+            {
+                w.seen = now;
+                events.send(Event::Saved { id: w.id, seen });
+            }
+            w.last = now;
         }
     }
 }

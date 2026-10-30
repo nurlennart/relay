@@ -83,6 +83,15 @@ pub struct Stamp {
     modified: Option<u32>,
 }
 
+/// A remote file as Relay last read or wrote it. Size and time alone miss a save of the same
+/// size within the same second, or one that keeps the time, so the contents count too.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Version {
+    stamp: Stamp,
+    /// A fingerprint of the contents, taken as they were copied.
+    contents: u64,
+}
+
 impl Stamp {
     fn of(meta: &Metadata) -> Self {
         Self {
@@ -159,9 +168,9 @@ pub enum Job {
         local: PathBuf,
         remote: String,
         replace: bool,
-        /// Upload only if the remote file still looks like this, as an edited file does
-        /// when nobody else saved it in the meantime.
-        unchanged: Option<Stamp>,
+        /// Upload only if the remote file is still this version, as an edited file is when
+        /// nobody else saved it in the meantime.
+        unchanged: Option<Version>,
     },
     Download {
         remote: String,
@@ -368,24 +377,11 @@ impl View {
 }
 
 enum Command {
-    List {
-        seq: u64,
-        path: String,
-    },
+    List { seq: u64, path: String },
     Mkdir(String),
-    Rename {
-        from: String,
-        to: String,
-    },
+    Rename { from: String, to: String },
     Delete(Vec<String>),
     Transfer(Queued),
-    /// Report saves to the local file `path` of edit `id` other than `seen`.
-    Watch {
-        id: u64,
-        path: PathBuf,
-        seen: Option<Seen>,
-    },
-    Unwatch(u64),
     Close,
 }
 
@@ -421,10 +417,10 @@ enum Event {
         done: u64,
         files_done: u64,
     },
-    /// A transfer ended. A single file's transfer says how the remote file looks now.
+    /// A transfer ended. A single file's transfer says which version the server has now.
     Finished {
         id: u64,
-        result: Result<Option<Stamp>, Failure>,
+        result: Result<Option<Version>, Failure>,
     },
     /// The copy of edit `id` was saved.
     Saved {
@@ -445,6 +441,10 @@ struct Launch {
 pub struct Browser {
     commands: mpsc::UnboundedSender<Command>,
     events: std_mpsc::Receiver<Event>,
+    /// Where the watcher of edited files reports, beside the worker.
+    events_out: Events,
+    /// Watches the copies of edited files, once there are any.
+    watcher: Option<std_mpsc::Sender<edit::Watch>>,
     pub status: Status,
     /// The folder shown; empty until the first listing arrives.
     pub path: String,
@@ -526,8 +526,9 @@ impl Browser {
     #[cfg(any(test, feature = "ui-check"))]
     pub fn demo(path: &str, entries: Vec<Entry>) -> Self {
         let (commands, inbox) = mpsc::unbounded_channel();
-        let (_, events) = std_mpsc::channel();
-        let mut browser = Self::with(commands, events, None);
+        let (sender, events) = std_mpsc::channel();
+        let events_out = Events { sender, ctx: None };
+        let mut browser = Self::with(commands, events, events_out, None);
         browser.demo_inbox = Some(inbox);
         browser.status = Status::Ready;
         browser.path = path.into();
@@ -589,11 +590,14 @@ impl Browser {
     fn with(
         commands: mpsc::UnboundedSender<Command>,
         events: std_mpsc::Receiver<Event>,
+        events_out: Events,
         start: Option<String>,
     ) -> Self {
         Self {
             commands,
             events,
+            events_out,
+            watcher: None,
             status: Status::Connecting,
             path: String::new(),
             home: String::new(),
@@ -640,7 +644,7 @@ impl Browser {
                     Err(e) => events.send(Event::Ended(format!("Cannot start SFTP: {e}"))),
                 }
             });
-        let mut browser = Self::with(commands, events, start);
+        let mut browser = Self::with(commands, events, events_out, start);
         if let Err(e) = spawned {
             browser.status = Status::Ended(format!("Cannot start SFTP: {e}"));
         }
@@ -1305,14 +1309,9 @@ async fn worker(
 
     let (queue, queued) = mpsc::unbounded_channel();
     tokio::spawn(transfer::transfers(session.clone(), queued, events.clone()));
-    let (watch, watched) = mpsc::unbounded_channel();
-    tokio::spawn(edit::watch(watched, events.clone()));
     let run = |command: Command| match command {
         Command::Transfer(job) => {
             let _ = queue.send(job);
-        }
-        command @ (Command::Watch { .. } | Command::Unwatch(_)) => {
-            let _ = watch.send(command);
         }
         Command::Close => {}
         command => {
@@ -1422,9 +1421,7 @@ async fn operation(session: Arc<SftpSession>, command: Command, events: Events) 
                 _ => Err(format!("Cannot delete {}", failed.join("; "))),
             }
         }
-        Command::Transfer(_) | Command::Watch { .. } | Command::Unwatch(_) | Command::Close => {
-            return;
-        }
+        Command::Transfer(_) | Command::Close => return,
     };
     events.send(Event::Changed(result));
 }
@@ -2317,6 +2314,120 @@ mod tests {
         });
         drop(browser);
         assert!(!local.exists(), "a saved copy goes with its browser");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn edits_notice_changes_that_keep_the_size_and_time() {
+        let root = scratch("edit-same");
+        let file = root.join("token.txt");
+        std::fs::write(&file, "aaaa").unwrap();
+        let Some(mut browser) = local_browser(&root) else {
+            return;
+        };
+        browser.edit("token.txt", NO_EDITOR);
+        let local = settled(&mut browser, "the copy").local.clone();
+        // Someone saves the same number of bytes and puts the old time back.
+        let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
+        std::fs::write(&file, "bbbb").unwrap();
+        let theirs = std::fs::File::options().write(true).open(&file).unwrap();
+        theirs.set_modified(modified).unwrap();
+        drop(theirs);
+        std::fs::write(&local, "cccc").unwrap();
+        wait(&mut browser, "the conflict", |b| {
+            matches!(b.edits[0].state, EditState::Changed(_))
+        });
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "bbbb");
+        assert_eq!(listing(&root), ["token.txt"], "no staged file is left");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The upload reads from a pipe the test writes, so it is surely under way while the
+    /// file changes on the server.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_on_the_server_during_an_upload_is_not_overwritten() {
+        use std::io::Write;
+        let root = scratch("edit-race");
+        let remote = root.join("remote");
+        std::fs::create_dir_all(&remote).unwrap();
+        let file = remote.join("data.txt");
+        std::fs::write(&file, "original").unwrap();
+        let Some(mut browser) = local_browser(&remote) else {
+            return;
+        };
+        browser.edit("data.txt", NO_EDITOR);
+        let copy = settled(&mut browser, "the copy").local.clone();
+        let pipe = root.join("pipe");
+        let made = std::process::Command::new("mkfifo").arg(&pipe).status();
+        if !made.is_ok_and(|s| s.success()) {
+            eprintln!("skipping: mkfifo is not available");
+            return;
+        }
+        browser.edits[0].local = pipe.clone();
+        let id = browser.edits[0].id;
+        browser.retry_edit(id, false);
+        let mut writer = std::fs::File::options().write(true).open(&pipe).unwrap();
+        writer.write_all(b"mine, half").unwrap();
+        // The replacement being written beside the file shows the upload is under way.
+        wait(&mut browser, "the upload to start", |_| {
+            listing(&remote).len() > 1
+        });
+        std::fs::write(&file, "theirs").unwrap();
+        writer.write_all(b" and the rest").unwrap();
+        drop(writer);
+        wait(&mut browser, "the upload to end", |b| {
+            b.edits[0].state != EditState::Uploading
+        });
+        assert!(
+            matches!(browser.edits[0].state, EditState::Changed(_)),
+            "{:?}",
+            browser.edits[0].state
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "theirs");
+        assert_eq!(listing(&remote), ["data.txt"], "no staged file is left");
+        let _ = std::fs::remove_dir_all(copy.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn saves_while_disconnected_or_not_yet_seen_keep_the_copy() {
+        let root = scratch("edit-offline");
+        std::fs::write(root.join("a.txt"), "a").unwrap();
+        std::fs::write(root.join("b.txt"), "b").unwrap();
+        let Some(mut browser) = local_browser(&root) else {
+            return;
+        };
+        browser.edit("a.txt", NO_EDITOR);
+        browser.edit("b.txt", NO_EDITOR);
+        wait(&mut browser, "the copies", |b| {
+            b.edits.iter().all(|e| e.state == EditState::Open)
+        });
+        let (a, b) = (
+            browser.edits[0].local.clone(),
+            browser.edits[1].local.clone(),
+        );
+        assert_eq!(browser.unsaved_edits(), 0);
+
+        browser.disconnect("Gone.");
+        std::fs::write(&a, "a, offline").unwrap();
+        // Counted at once, before the save is reported.
+        assert_eq!(browser.unsaved_edits(), 1);
+        wait(&mut browser, "the save to be noticed", |b| {
+            matches!(b.edits[0].state, EditState::Failed(_))
+        });
+        assert_eq!(browser.edits[1].state, EditState::Open);
+        // A save just before closing, too quick to be reported.
+        std::fs::write(&b, "b, at the last moment").unwrap();
+        drop(browser);
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a, offline");
+        assert_eq!(
+            std::fs::read_to_string(&b).unwrap(),
+            "b, at the last moment"
+        );
+        for copy in [a, b] {
+            let _ = std::fs::remove_dir_all(copy.parent().unwrap());
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
