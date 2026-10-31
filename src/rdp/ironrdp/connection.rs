@@ -1,9 +1,7 @@
 //! The connection itself: a thread with its own Tokio runtime that connects, decodes the
 //! desktop into the shared frame, sends input, and reconnects after network drops.
-use super::{
-    clipboard::{self, Backend, Sink},
-    frame::{Frame, Region},
-};
+use super::clipboard::{self, Backend, Sink};
+use crate::frame::{self, Frame, Region};
 use eframe::egui;
 use ironrdp_cliprdr::{CliprdrClient, backend::ClipboardMessage};
 use ironrdp_connector::{
@@ -69,8 +67,6 @@ pub enum Event {
     Connected,
     /// The connection dropped and is being restored.
     Reconnecting,
-    /// Text the remote computer copied.
-    Copied(String),
     /// The remote computer cannot change its resolution, so the picture is scaled instead.
     FixedResolution,
     Ended(Outcome),
@@ -135,6 +131,8 @@ pub struct Worker {
     commands: UnboundedSender<Command>,
     events: mpsc::Receiver<Event>,
     pub frame: Arc<Mutex<Frame>>,
+    /// Text the remote computer copied, if the UI has not taken it yet.
+    pub copied: Arc<Mutex<Option<String>>>,
     /// Stops the connection wherever it waits, which lets go of its socket, picture and
     /// password even while the server does not answer.
     _stop: DropGuard,
@@ -152,10 +150,12 @@ impl Worker {
         let stop = CancellationToken::new();
         let stopped = stop.clone();
         let frame = Arc::new(Mutex::new(Frame::default()));
+        let copied = Arc::new(Mutex::new(None));
         let link = Link {
             events,
             ctx,
             frame: frame.clone(),
+            copied: copied.clone(),
             shown,
         };
         std::thread::Builder::new()
@@ -182,6 +182,7 @@ impl Worker {
             commands,
             events: reports,
             frame,
+            copied,
             _stop: stop.drop_guard(),
         })
     }
@@ -201,6 +202,9 @@ struct Link {
     events: mpsc::Sender<Event>,
     ctx: egui::Context,
     frame: Arc<Mutex<Frame>>,
+    /// Only the latest copied text is kept, however much the server sends before the UI
+    /// takes it.
+    copied: Arc<Mutex<Option<String>>>,
     /// Whether the desktop is on screen. A hidden one keeps its picture up to date without
     /// waking the window, and shows it when its tab does.
     shown: Arc<AtomicBool>,
@@ -217,7 +221,7 @@ impl Link {
 #[derive(Debug)]
 struct ClipboardSink {
     messages: UnboundedSender<ClipboardMessage>,
-    events: mpsc::Sender<Event>,
+    copied: Arc<Mutex<Option<String>>>,
     ctx: egui::Context,
 }
 
@@ -226,7 +230,9 @@ impl Sink for ClipboardSink {
         let _ = self.messages.send(message);
     }
     fn copied(&self, text: String) {
-        let _ = self.events.send(Event::Copied(text));
+        if let Ok(mut copied) = self.copied.lock() {
+            *copied = Some(text);
+        }
         self.ctx.request_repaint();
     }
 }
@@ -250,7 +256,7 @@ async fn run(mut settings: Settings, mut commands: UnboundedReceiver<Command>, l
             Backend::new(
                 ClipboardSink {
                     messages: messages.clone(),
-                    events: link.events.clone(),
+                    copied: link.copied.clone(),
                     ctx: link.ctx.clone(),
                 },
                 offered.clone(),
@@ -564,6 +570,9 @@ async fn session(
 ) -> Stop {
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let size = result.desktop_size;
+    if let Err(e) = frame::valid_size(size.width, size.height) {
+        return Stop::Ended(e);
+    }
     let mut image = DecodedImage::new(PixelFormat::RgbA32, size.width, size.height);
     if let Ok(mut frame) = link.frame.lock() {
         frame.resize(size.width.into(), size.height.into());
@@ -704,6 +713,9 @@ async fn session(
                         }
                     };
                     let (size, share_id, chunk_size, server_pointer, software_pointer) = finalized;
+                    if let Err(e) = frame::valid_size(size.width, size.height) {
+                        return Stop::Ended(e);
+                    }
                     image = DecodedImage::new(PixelFormat::RgbA32, size.width, size.height);
                     if let Ok(mut frame) = link.frame.lock() {
                         frame.resize(size.width.into(), size.height.into());

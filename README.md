@@ -8,7 +8,7 @@ Relay keeps your RDP and SSH connections in a searchable library and opens them 
 
 ## What you get
 
-- **Remote desktops, terminals and files in one place.** RDP, SSH and SFTP open as tabs. Put two side by side, or move one into its own window.
+- **Remote desktops, terminals and files in one place.** RDP, VNC, SSH and SFTP open as tabs. Put two side by side, or move one into its own window.
 - **Remote desktops that fit.** A remote desktop takes the size of its tab and your monitor's scaling, and follows along when you resize or switch monitors, so text stays sharp and the usual size.
 - **Find anything in a keystroke.** Search by name, host, user, group or notes with `Ctrl+K`, or jump straight to a recent connection with `Ctrl+T`.
 - **Works with what you already have.** SSH runs through your system's OpenSSH, so your config, keys, agent and jump hosts just work.
@@ -28,13 +28,13 @@ Download the archive for your platform from the [latest release](https://github.
 | macOS 11+ (Apple silicon and Intel) | `relay-<version>-macos-universal.zip` | Unzip and move **Relay.app** to Applications. The app is not notarized: the first time, right-click it and choose **Open**. |
 | Linux (x86_64, aarch64) | `relay-<version>-linux-*.tar.gz` | Extract and run `./install.sh` to install into `~/.local`. |
 
-Nothing else is needed: on Windows, remote desktops use the same control as Remote Desktop Connection, and on macOS and Linux Relay brings its own RDP client.
+Nothing else is needed: on Windows, remote desktops use the same control as Remote Desktop Connection, and on macOS and Linux Relay brings its own RDP client. VNC, including a Mac's Screen Sharing, works everywhere with Relay's own client.
 
 ## Get started
 
 1. Click **New connection** (`Ctrl+N`) and enter a name and a host. Already have connections elsewhere? Import them from **Settings → Library**.
 2. Double-click the connection, or select it and press `Enter`. It opens in a tab.
-3. In a hurry? Type a host such as `admin@server` or `rdp://desktop` in the search box and press `Enter` to connect without saving it.
+3. In a hurry? Type a host such as `admin@server`, `rdp://desktop` or `vnc://pi` in the search box and press `Enter` to connect without saving it.
 
 On macOS, use `Cmd` wherever this page says `Ctrl`.
 

@@ -7,12 +7,13 @@ Everything Relay can do, in detail. New to Relay? Start with the [README](../REA
 - [Connection library](#connection-library) and [where Relay keeps data](#where-relay-keeps-data)
 - [Import and export](#import-and-export)
 - [Shared team libraries](#shared-team-libraries): [MSSQL](#mssql), [MySQL](#mysql), [SQLite file](#sqlite-file)
-- [Sessions](#sessions): [remote desktops on Windows](#remote-desktops-on-windows), [on macOS and Linux](#remote-desktops-on-macos-and-linux), [SSH](#ssh), [SFTP file browser](#sftp-file-browser)
+- [Sessions](#sessions): [remote desktops on Windows](#remote-desktops-on-windows), [on macOS and Linux](#remote-desktops-on-macos-and-linux), [VNC](#vnc), [SSH](#ssh), [SFTP file browser](#sftp-file-browser)
 
 ## How remote desktops open
 
 - **Windows:** the remote desktop is embedded in the tab with the Windows RDP control, the same one Remote Desktop Connection uses.
 - **macOS and Linux:** Relay's built-in RDP client, based on [IronRDP](https://github.com/Devolutions/IronRDP), draws the remote desktop in the tab. Nothing else needs to be installed.
+- **VNC, everywhere:** Relay's own VNC client draws the desktop in the tab on Windows, macOS and Linux. See [VNC](#vnc).
 
 ## Color themes
 
@@ -28,7 +29,7 @@ Open **Settings → Keyboard shortcuts**, or press `F1` while Relay has keyboard
 - Click **Connect**, double-click a row, or select it and press `Enter` to open a tab. For SSH connections, the folder button, **Browse files** in the row's menu, or `Shift+Enter` opens an [SFTP file browser](#sftp-file-browser) instead.
 - Sidebar filters and groups narrow the library. Search matches names, addresses, usernames, groups, notes, and protocols. Each connection has a free-form notes field; its first line shows under the name.
 - **Quick open:** **+** in the tab strip, or `Ctrl+T` when no session has the keyboard, opens a search in front of the tab you are in. It lists recently opened connections first; type to search the library, or type a host as below to connect to it. `Enter` connects, `Shift+Enter` browses an SSH connection's files, `Alt+Enter` connects to the typed address even when something matches, and `Esc` closes it. **New connection** in the library (or `Ctrl+N`) adds one.
-- **Quick connect:** type a host in search and press `Enter` when nothing in the library matches, or `Alt+Enter` to connect directly even when something does. Search accepts `host`, `host:port`, `user@host`, `[IPv6]:port`, and an `ssh`/`rdp`/`sftp` prefix or `ssh://`/`rdp://`/`sftp://`; `sftp` opens a file browser. Without a prefix, `user@host` and port 22 mean SSH and anything else RDP. An unsaved session offers **Save to library**.
+- **Quick connect:** type a host in search and press `Enter` when nothing in the library matches, or `Alt+Enter` to connect directly even when something does. Search accepts `host`, `host:port`, `user@host`, `[IPv6]:port`, and an `ssh`/`rdp`/`vnc`/`sftp` prefix or `ssh://`/`rdp://`/`vnc://`/`sftp://`; `sftp` opens a file browser. Without a prefix, ports 5900–5999 mean VNC, `user@host` and port 22 SSH, and anything else RDP. As in VNC viewers, a VNC port below 100 is a display number: `vnc://host:1` connects to port 5901. An unsaved session offers **Save to library**.
 - Keyboard (use `Cmd` instead of `Ctrl` on macOS): `Ctrl+K` searches the library and `Ctrl+T` opens quick open; `↑`/`↓` move the selection and `Enter` connects (from the search box or the list); `Esc` clears the search and closes dialogs; `Enter` saves the connection editor (in its notes, `Enter` starts a new line). `Ctrl+N` adds a profile, `Ctrl+W` closes the selected tab, and `Ctrl+B` toggles the sidebar. `Ctrl+1`–`Ctrl+9` jump to tabs and `Ctrl+Tab`/`Ctrl+Shift+Tab` cycle them, even from an SSH terminal; the terminal receives the other shortcuts while focused. Click the manager chrome to regain focus.
 - Below 1000 px wide the sidebar collapses to icons, and narrow tables hide the group and then the protocol column. The window can shrink to 720×560.
 - Session tabs show a status dot: accent while open, red once the session has ended. Middle-click a tab to close it. Drag a tab to reorder it, or use `Ctrl+Shift+PageUp`/`Ctrl+Shift+PageDown`.
@@ -62,7 +63,7 @@ Every import shows a review before anything is saved, skips duplicates, and list
 
 Open **Settings → Library → Import CSV** and review the preview before committing. The importer supports the full export schema (see [tests/fixtures/export-sample.csv](../tests/fixtures/export-sample.csv)), including semicolon delimiters, quoted fields, UTF-8, UTF-16, and Windows-1252. A simpler `Name,Host,Protocol,Port,Username,Group,Favorite` schema also works. Blank ports use protocol defaults. Blank destinations fall back to `ConnectionIpAddress`.
 
-RDP and SSH records can be imported; VNC and other protocols are listed as unsupported in the preview. Duplicates are skipped using source IDs, or an endpoint/name/group identity when an ID is absent. Existing profiles are not modified by import.
+RDP, SSH and VNC records can be imported; other protocols are listed as unsupported in the preview. Duplicates are skipped using source IDs, or an endpoint/name/group identity when an ID is absent. Existing profiles are not modified by import.
 
 **Settings → Library → Export CSV** writes the whole current library as semicolon-delimited CSV, for other tools; it leaves out SSH and remote desktop options. Descriptions become connection notes, and other known source metadata (external ID, image ID, URL, IP/MAC, and custom fields) is retained; credential columns are not imported. Cells starting with spreadsheet formula characters (`= + - @`, tab, carriage return) are prefixed with an apostrophe for safety. Relay removes that prefix on reimport, so exported values round-trip exactly. Exports replace files atomically after the save dialog confirms an overwrite.
 
@@ -139,6 +140,16 @@ Click the desktop to give it the keyboard; click elsewhere in Relay to take it b
 Some options are not available here and are listed in the connection editor when selected: local drives, printers, smart cards, microphone, remote audio (sound is turned off), and sending system key combinations such as `Alt+Tab` to the remote computer. There is no Kerberos sign-in.
 
 **Full screen** (at the right of the tab bar, or `Ctrl+Alt+Enter`) fills the screen with the desktop alone, and with **Fit to tab** the remote resolution follows. `Ctrl+Alt+Enter` again, **Leave full screen** in the bar that appears when the pointer touches the top edge, or switching tabs with `Ctrl+Alt+PageUp`/`PageDown` returns to Relay.
+
+### VNC
+
+VNC connections open in a tab on every platform, drawn by Relay's own client; nothing else needs to be installed. The tab connects straight away and asks only for what the server wants: nothing, a VNC password (VNC uses only its first eight characters), or, for a Mac's Screen Sharing, the user name and password of an account on the Mac. The password stays in memory while the session is open and is never saved.
+
+The picture is scaled to fit the tab, and follows the remote computer when its resolution changes. The remote pointer's shape is drawn where your pointer is. Keys are sent by what they type, so the remote computer's keyboard layout does not matter for text; shortcuts such as `Ctrl+C` are sent as the key and its modifiers. With a Mac, `Cmd` is sent as the Mac's Command key; with other computers it acts as `Ctrl`. Pasting with `Ctrl+V` (`Cmd+V`) first hands your clipboard's text to the remote computer, and text copied there arrives in your clipboard. VNC hands text to the remote computer as Latin-1, so other characters arrive there as `?`. **Full screen** and `Ctrl+Alt+Enter` work as for [remote desktops on macOS and Linux](#remote-desktops-on-macos-and-linux), on Windows too. Sessions reconnect after network drops (up to 5 attempts) with the password you entered.
+
+Each VNC connection has **VNC options** in its editor: **Share copied text with the remote computer** (on by default) and **View only**, which shows the screen without sending keys, the pointer or copied text.
+
+Relay supports the RFB protocol versions 3.3 to 3.8 with no authentication, VNC passwords, and Apple's sign-in, and the Raw, CopyRect, Hextile and ZRLE encodings. Servers that insist on TLS (VeNCrypt), RealVNC's own encryption or TightVNC's security type are refused with a message naming what they asked for; allow VNC password authentication on them, or reach them through an SSH tunnel. VNC does not encrypt the session itself, so use it on networks you trust, or forward the port over SSH, for example with an SSH connection whose port forward is `L5901:localhost:5900`, then connect to `vnc://localhost:5901`.
 
 ### Remote desktop options
 

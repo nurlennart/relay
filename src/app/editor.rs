@@ -12,7 +12,6 @@ impl App {
         let mut c = c.clone();
         let mut save = false;
         let mut cancel = false;
-        let rdp = c.protocol == Protocol::Rdp;
         let groups: std::collections::BTreeSet<_> =
             self.connections.iter().map(|c| c.group.clone()).collect();
         let fields_height = (ctx.content_rect().height() - 300.).max(200.);
@@ -32,11 +31,14 @@ impl App {
                 .max_height(fields_height)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let half = (ui.available_width() - ui.spacing().item_spacing.x) / 2.;
-                        for protocol in [Protocol::Rdp, Protocol::Ssh] {
+                        let count = Protocol::ALL.len() as f32;
+                        let width = (ui.available_width()
+                            - ui.spacing().item_spacing.x * (count - 1.))
+                            / count;
+                        for protocol in Protocol::ALL {
                             let button = egui::Button::new(protocol.label())
                                 .selected(c.protocol == protocol);
-                            if ui.add_sized([half, CONTROL_HEIGHT], button).clicked() {
+                            if ui.add_sized([width, CONTROL_HEIGHT], button).clicked() {
                                 if c.port == c.protocol.port() {
                                     c.port = protocol.port();
                                 }
@@ -81,7 +83,11 @@ impl App {
                             }
                         });
                     });
-                    let user_hint = if rdp { "DOMAIN\\username" } else { "username" };
+                    let user_hint = match c.protocol {
+                        Protocol::Rdp => "DOMAIN\\username",
+                        Protocol::Ssh => "username",
+                        Protocol::Vnc => "for a Mac, an account on it",
+                    };
                     field(ui, "Username (optional)", &mut c.username, user_hint);
                     labeled(ui, "Group", |ui| group_input(ui, &mut c.group, &groups));
                     labeled(ui, "Notes (optional)", |ui| {
@@ -102,18 +108,20 @@ impl App {
                     ui.add_space(10.);
                     ui.separator();
                     ui.add_space(2.);
-                    if c.protocol == Protocol::Rdp {
-                        rdp_options(ui, &mut c.rdp);
-                    } else {
-                        ssh_options(ui, &mut c.ssh, parent);
+                    match c.protocol {
+                        Protocol::Rdp => rdp_options(ui, &mut c.rdp),
+                        Protocol::Ssh => ssh_options(ui, &mut c.ssh, parent),
+                        Protocol::Vnc => vnc_options(ui, &mut c.vnc),
                     }
                 });
             ui.add_space(8.);
-            let help = if rdp {
-                rdp::SIGN_IN_HELP
-            } else {
-                "Uses your OpenSSH client, including your SSH config and agent.\n\
-                 Host verification and password prompts appear in the terminal."
+            let help = match c.protocol {
+                Protocol::Rdp => rdp::SIGN_IN_HELP,
+                Protocol::Ssh => {
+                    "Uses your OpenSSH client, including your SSH config and agent.\n\
+                     Host verification and password prompts appear in the terminal."
+                }
+                Protocol::Vnc => vnc::SIGN_IN_HELP,
             };
             ui.label(RichText::new(help).size(12.).color(colors.muted));
             if !self.editor_error.is_empty() {
@@ -241,6 +249,20 @@ pub(super) fn ssh_options(
                 .size(11.)
                 .color(theme::palette(ui.ctx()).muted),
             );
+        });
+}
+
+pub(super) fn vnc_options(ui: &mut egui::Ui, options: &mut model::VncOptions) {
+    egui::CollapsingHeader::new("VNC options")
+        .id_salt("vnc-options")
+        .default_open(*options != model::VncOptions::default())
+        .show(ui, |ui| {
+            ui.checkbox(
+                &mut options.clipboard,
+                "Share copied text with the remote computer",
+            );
+            ui.checkbox(&mut options.view_only, "View only")
+                .on_hover_text("Shows the remote screen without sending keys or the pointer");
         });
 }
 

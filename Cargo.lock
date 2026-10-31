@@ -4905,13 +4905,17 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "relay"
 version = "0.5.14"
 dependencies = [
+ "aes",
  "arboard",
  "cap-std",
  "chrono",
+ "cipher",
  "csv",
+ "des",
  "dirs",
  "eframe",
  "encoding_rs",
+ "flate2",
  "futures-util",
  "getrandom 0.3.4",
  "image",
@@ -4928,8 +4932,10 @@ dependencies = [
  "ironrdp-tls",
  "ironrdp-tokio",
  "keyring",
+ "md-5 0.11.0",
  "mysql",
  "notify",
+ "num-bigint",
  "portable-pty",
  "raw-window-handle",
  "rfd",

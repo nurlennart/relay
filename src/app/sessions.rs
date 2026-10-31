@@ -224,7 +224,7 @@ impl App {
                                 icon.center(),
                                 14.,
                                 match s.connection.protocol {
-                                    Protocol::Rdp => colors.rdp,
+                                    Protocol::Rdp | Protocol::Vnc => colors.rdp,
                                     Protocol::Ssh => colors.accent,
                                 },
                             );
@@ -280,27 +280,36 @@ impl App {
         } else if let Some(error) = &s.error {
             let error = error.clone();
             ui.add_space(40.);
-            ui.label(RichText::new(error).size(15.));
-            ui.add_space(12.);
-            if ui.button("Reconnect").clicked() {
+            let reconnect = ui
+                .vertical_centered(|ui| {
+                    ui.set_max_width(520.);
+                    ui.label(RichText::new(error).size(15.));
+                    ui.add_space(12.);
+                    accent_button(ui, "Reconnect", 120.).clicked()
+                })
+                .inner;
+            if reconnect {
                 self.reconnect(index);
             }
         } else if !s.has_desktop() {
-            ui.add_space(50.);
-            ui.spinner();
-            ui.heading("Opening your session…");
-            ui.label(
-                RichText::new("Complete any Windows authentication prompt to continue.")
-                    .color(colors.muted),
-            );
-            let patience = Duration::from_secs(20);
-            match patience.checked_sub(s.started.elapsed()) {
-                // Nothing else wakes the window when the note becomes due.
-                Some(left) => ui.ctx().request_repaint_after(left),
-                None => {
-                    ui.label("Waiting for the Windows RDP control to initialize.");
+            ui.add_space(40.);
+            ui.vertical_centered(|ui| {
+                ui.spinner();
+                ui.add_space(8.);
+                ui.heading("Opening your session…");
+                ui.label(
+                    RichText::new("Complete any Windows authentication prompt to continue.")
+                        .color(colors.muted),
+                );
+                let patience = Duration::from_secs(20);
+                match patience.checked_sub(s.started.elapsed()) {
+                    // Nothing else wakes the window when the note becomes due.
+                    Some(left) => ui.ctx().request_repaint_after(left),
+                    None => {
+                        ui.label("Waiting for the Windows RDP control to initialize.");
+                    }
                 }
-            }
+            });
         } else {
             if let Some(status) = s.status() {
                 ui.colored_label(ui.visuals().warn_fg_color, status);
@@ -388,11 +397,11 @@ impl App {
             && s.is_running()
             && s.error.is_none()
             && !s.full_screen()
-            && !(rdp::FULL_SCREEN_IN_WINDOW && pane == Pane::Window)
+            && !(s.full_screen_in_window() && pane == Pane::Window)
         {
             actions.full_screen = ui
                 .button("Full screen")
-                .on_hover_text(rdp::FULL_SCREEN_HELP)
+                .on_hover_text(s.full_screen_help())
                 .clicked();
         }
         actions

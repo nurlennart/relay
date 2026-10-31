@@ -5,10 +5,6 @@ use super::*;
 use crate::platform::DownloadRoot;
 use std::hash::{DefaultHasher, Hasher};
 
-/// The largest file whose contents are compared before an edit replaces it; past this, its
-/// size and time must do.
-const COMPARE_LIMIT: u64 = 64 * 1024 * 1024;
-
 /// Runs queued transfers one at a time.
 pub(super) async fn transfers(
     session: Arc<SftpSession>,
@@ -331,7 +327,8 @@ async fn plan_download(
 }
 
 /// Fails unless remote `path` is still the `expected` version: its size and time, and, with
-/// `contents`, what it holds, up to [`COMPARE_LIMIT`].
+/// `contents`, what it holds. Size and time can survive another client's save, so however large
+/// the file, only its contents prove it unchanged; reading them stops when cancelled.
 async fn still(
     session: &SftpSession,
     path: &str,
@@ -369,15 +366,6 @@ async fn still(
     // before the upload takes the file's place does.
     if !contents {
         return Ok(());
-    }
-    if meta.len() > COMPARE_LIMIT {
-        return match expected.stamp {
-            Some(_) => Ok(()),
-            None => Err(Failure::Changed(format!(
-                "Cannot tell whether “{name}” changed on the server: it is too large to \
-                 compare, and the server did not give its size and time."
-            ))),
-        };
     }
     let fail = |e: &dyn std::fmt::Display| Failure::Error(format!("Cannot check “{name}”: {e}"));
     let mut file = session.open(path).await.map_err(|e| fail(&describe(e)))?;

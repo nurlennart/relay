@@ -3,7 +3,7 @@ name = "relay"
 version = "0.5.14"
 edition = "2024"
 rust-version = "1.94"
-description = "A remote connection workspace for RDP and SSH on Windows, macOS, and Linux"
+description = "A remote connection workspace for RDP, SSH and VNC on Windows, macOS, and Linux"
 repository = "https://github.com/nurlennart/relay"
 license = "MIT"
 publish = false
@@ -12,17 +12,24 @@ publish = false
 ui-check = ["dep:image"]
 
 [dependencies]
+# VNC: AES, DES, MD5 and big numbers sign in; flate2 inflates ZRLE.
+aes = "0.9"
 cap-std = "4.0.3"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+cipher = "0.5"
 csv = "1.3"
+des = "0.9"
 dirs = "6"
 eframe = { version = "0.33.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 encoding_rs = "0.8"
+flate2 = "1.1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getrandom = "0.3"
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 keyring = "4.2"
+md-5 = "0.11"
 notify = "8.2.0"
+num-bigint = "0.4"
 portable-pty = "0.9"
 raw-window-handle = "0.6.2"
 rfd = { version = "0.17", default-features = false }

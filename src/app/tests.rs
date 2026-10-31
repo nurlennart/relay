@@ -1992,6 +1992,10 @@ fn several_connections_are_chosen_and_changed_together() {
     assert_eq!(app.selected, Some(1), "the range starts where it was");
     app.click_row(2, egui::Modifiers::NONE, &shown);
     assert!(app.marked.is_empty());
+    // A selection that is no longer shown is not chosen along with the clicked row.
+    app.click_row(3, ctrl, &[1, 3]);
+    assert_eq!(marked(&app), [3]);
+    app.marked.clear();
 
     // Ctrl+A chooses everything shown, a search narrows it, and Esc clears it.
     library_frame(&mut app, &ctx, vec![key(egui::Key::A, ctrl)]);

@@ -9,6 +9,8 @@ pub(super) enum Icon {
     Star,
     StarFilled,
     Desktop,
+    /// A desktop with a pointer on it: one whose screen is shared, as VNC does.
+    SharedDesktop,
     Terminal,
     Folder,
     Settings,
@@ -31,6 +33,7 @@ impl Icon {
     pub(super) fn protocol(protocol: Protocol) -> Self {
         match protocol {
             Protocol::Rdp => Self::Desktop,
+            Protocol::Vnc => Self::SharedDesktop,
             Protocol::Ssh => Self::Terminal,
         }
     }
@@ -95,12 +98,22 @@ pub(super) fn paint_sized(
             }
             painter.add(egui::Shape::closed_line(points, stroke));
         }
-        Icon::Desktop => {
+        Icon::Desktop | Icon::SharedDesktop => {
             // The screen, not screen and stand together, sits on the centre line, so it lines
             // up with text beside it as the other icons' boxes do.
             outline(rect(-7., -5., 7., 4.5), 1.5);
             line(&[(0., 4.5), (0., 7.5)]);
             line(&[(-3.5, 7.5), (3.5, 7.5)]);
+            if icon == Icon::SharedDesktop {
+                // An arrow pointer on the screen, its tip up and to the left, with a short tail.
+                let head = [(-3., -3.), (2., -0.6), (-0.6, 2.)];
+                painter.add(egui::Shape::convex_polygon(
+                    head.iter().map(|&(x, y)| at(x, y)).collect(),
+                    color,
+                    Stroke::NONE,
+                ));
+                line(&[(0., 0.), (2.2, 2.2)]);
+            }
         }
         Icon::Terminal => {
             outline(rect(-7., -6., 7., 6.), 2.);

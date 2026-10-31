@@ -21,7 +21,7 @@ use crate::{
     model::{self, Connection, Protocol},
     platform, rdp, secret,
     session::{self, Session},
-    state, theme,
+    state, theme, vnc,
 };
 use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
 use icons::{Icon, icon_button};
@@ -72,6 +72,7 @@ enum Filter {
     Favorites,
     Rdp,
     Ssh,
+    Vnc,
 }
 
 /// The dialog covering the workspace. Only one is open at a time.
@@ -526,8 +527,8 @@ impl App {
             // Ctrl+Alt+Enter, as in FreeRDP: macOS and laptop keyboards often lack Break.
             let desktop =
                 (self.active()).filter(|&i| !self.is_detached(i) && self.sessions[i].has_desktop());
-            if rdp::FULL_SCREEN_IN_WINDOW
-                && let Some(index) = desktop
+            if let Some(index) = desktop
+                && self.sessions[index].full_screen_in_window()
                 && shortcut(
                     egui::Modifiers::CTRL | egui::Modifiers::ALT,
                     egui::Key::Enter,
@@ -743,8 +744,9 @@ impl App {
 
     /// Shows session `index`'s remote desktop full screen.
     fn enter_full_screen(&mut self, index: usize) {
+        let in_window = self.sessions[index].full_screen_in_window();
         match self.sessions[index].enter_full_screen() {
-            Ok(()) if rdp::FULL_SCREEN_IN_WINDOW => {
+            Ok(()) if in_window => {
                 self.notify("Ctrl+Alt+Enter or the top edge of the screen leaves full screen");
             }
             Ok(()) => {}
@@ -755,16 +757,17 @@ impl App {
     /// Fills the window for the remote desktop in front that asked for full screen, and
     /// returns it; others in the background leave full screen.
     fn sync_full_screen(&mut self, ctx: &egui::Context) -> Option<usize> {
-        if !rdp::FULL_SCREEN_IN_WINDOW {
-            return None;
-        }
+        // Windows' RDP control keeps a full screen of its own, which Relay leaves alone.
         let active = self.active().filter(|&i| !self.is_detached(i));
         for (i, s) in self.sessions.iter_mut().enumerate() {
-            if Some(i) != active && s.full_screen() {
+            if Some(i) != active && s.full_screen() && s.full_screen_in_window() {
                 s.leave_full_screen();
             }
         }
-        let shown = active.filter(|&i| self.sessions[i].full_screen());
+        let shown = active.filter(|&i| {
+            let s = &self.sessions[i];
+            s.full_screen() && s.full_screen_in_window()
+        });
         let window = ctx.input(|i| i.viewport().fullscreen) == Some(true);
         let (state, command) = full_window_step(self.full_window, shown.is_some(), window);
         self.full_window = state;
@@ -1398,9 +1401,9 @@ impl eframe::App for App {
         let on_screen = self.on_screen();
         // Only sessions on screen wake the window with their output; the others catch up when
         // their tab is shown.
-        for (index, session) in self.sessions.iter().enumerate() {
+        for index in 0..self.sessions.len() {
             let shown = on_screen.contains(&index) || self.is_detached(index);
-            session.set_shown(shown);
+            self.sessions[index].set_shown(shown);
         }
         // A tab restored from the last run connects when it is first shown.
         for &index in &on_screen {

@@ -565,7 +565,6 @@ fn watcher(commands: std_mpsc::Receiver<Watch>, events: Events) {
         contents: Option<u64>,
         last: Option<Seen>,
         dirty: bool,
-        stable: bool,
         native: bool,
         checked: Instant,
     }
@@ -605,7 +604,6 @@ fn watcher(commands: std_mpsc::Receiver<Watch>, events: Events) {
                     contents,
                     last: seen,
                     dirty: true,
-                    stable: false,
                     native: direct,
                     checked: Instant::now(),
                 });
@@ -667,14 +665,11 @@ fn watcher(commands: std_mpsc::Receiver<Watch>, events: Events) {
                 })
             });
             let now = seen(&w.path);
-            if signalled || now != w.last {
-                w.dirty = true;
-                w.stable = false;
-            } else {
-                w.stable = true;
-            }
+            // A file is read only once it has looked the same for a whole interval.
+            let stable = !signalled && now == w.last;
+            w.dirty |= !stable;
             w.last = now;
-            if !w.stable || now.is_none() {
+            if !stable || now.is_none() {
                 continue;
             }
             if !w.dirty && (w.native || w.checked.elapsed() < Duration::from_secs(5)) {
@@ -685,7 +680,6 @@ fn watcher(commands: std_mpsc::Receiver<Watch>, events: Events) {
             };
             // A file replaced or still being written must settle again.
             if seen(&w.path) != now {
-                w.stable = false;
                 continue;
             }
             if w.seen != now || w.contents != Some(contents) {

@@ -9,19 +9,23 @@ pub enum Protocol {
     #[default]
     Rdp,
     Ssh,
+    Vnc,
 }
 
 impl Protocol {
+    pub const ALL: [Self; 3] = [Self::Rdp, Self::Ssh, Self::Vnc];
     pub fn label(self) -> &'static str {
         match self {
             Self::Rdp => "RDP",
             Self::Ssh => "SSH",
+            Self::Vnc => "VNC",
         }
     }
     pub fn port(self) -> u16 {
         match self {
             Self::Rdp => 3389,
             Self::Ssh => 22,
+            Self::Vnc => 5900,
         }
     }
 }
@@ -45,6 +49,33 @@ pub struct Connection {
     pub rdp: RdpOptions,
     #[serde(default, skip_serializing_if = "SshOptions::is_default")]
     pub ssh: SshOptions,
+    #[serde(default, skip_serializing_if = "VncOptions::is_default")]
+    pub vnc: VncOptions,
+}
+
+/// How a VNC connection shares this computer with the remote one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VncOptions {
+    /// Copied text crosses in both directions.
+    pub clipboard: bool,
+    /// Shows the remote screen without sending keys or the pointer.
+    pub view_only: bool,
+}
+
+impl Default for VncOptions {
+    fn default() -> Self {
+        Self {
+            clipboard: true,
+            view_only: false,
+        }
+    }
+}
+
+impl VncOptions {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// OpenSSH options Relay passes on the command line.
@@ -208,12 +239,14 @@ impl RdpOptions {
 }
 
 /// Quick-connect prefixes and the protocol each means. Longer prefixes come first.
-const QUICK_PREFIXES: [(&str, Protocol); 6] = [
+const QUICK_PREFIXES: [(&str, Protocol); 8] = [
     ("ssh://", Protocol::Ssh),
     ("rdp://", Protocol::Rdp),
+    ("vnc://", Protocol::Vnc),
     ("sftp://", Protocol::Ssh),
     ("ssh ", Protocol::Ssh),
     ("rdp ", Protocol::Rdp),
+    ("vnc ", Protocol::Vnc),
     ("sftp ", Protocol::Ssh),
 ];
 
@@ -273,6 +306,10 @@ pub fn merge(
                 keys: _,
                 display: _,
             },
+        vnc: VncOptions {
+            clipboard: _,
+            view_only: _,
+        },
     } = base;
     let mut merged = current.clone();
     let mut conflicts = vec![];
@@ -310,6 +347,8 @@ pub fn merge(
         rdp.audio => "remote audio",
         rdp.keys => "key combinations",
         rdp.display => "resolution",
+        vnc.clipboard => "clipboard",
+        vnc.view_only => "view only",
     }
     (merged, conflicts)
 }
@@ -399,9 +438,11 @@ impl Connection {
         Ok(())
     }
     /// Parses a quick-connect target: `host`, `host:port`, `user@host`, `[IPv6]:port`, with
-    /// an optional `ssh `, `rdp `, `sftp `, `ssh://`, `rdp://` or `sftp://` prefix. Without a
-    /// prefix, `user@host` and port 22 mean SSH and anything else RDP, matching how people
-    /// write each. SFTP targets are SSH connections; [`browses`] tells them apart.
+    /// an optional `ssh `, `rdp `, `vnc `, `sftp `, `ssh://`, `rdp://`, `vnc://` or `sftp://`
+    /// prefix. Without a prefix, ports from 5900 to 5999 mean VNC, `user@host` and port 22
+    /// SSH, and anything else RDP, matching how people write each. As in VNC viewers, a VNC
+    /// port below 100 is a display number: `vnc://host:1` is port 5901. SFTP targets are SSH
+    /// connections; [`browses`] tells them apart.
     pub fn quick(text: &str) -> Option<Self> {
         // Trailing space matters: "ssh " is a prefix still being typed, not a host.
         let mut rest = text.trim_start();
@@ -436,11 +477,17 @@ impl Connection {
             // No colon, or a bare IPv6 address.
             (address, None)
         };
-        let protocol = protocol.unwrap_or(if !user.is_empty() || port == Some(22) {
+        let protocol = protocol.unwrap_or(if port.is_some_and(|p| (5900..6000).contains(&p)) {
+            Protocol::Vnc
+        } else if !user.is_empty() || port == Some(22) {
             Protocol::Ssh
         } else {
             Protocol::Rdp
         });
+        let port = match port {
+            Some(display) if protocol == Protocol::Vnc && display < 100 => Some(5900 + display),
+            port => port,
+        };
         let mut connection = Self::new();
         connection.protocol = protocol;
         connection.port = port.unwrap_or(protocol.port());
@@ -625,6 +672,20 @@ mod tests {
         current.rdp.gateway = "gw2.example".into();
         let (_, conflicts) = merge(&base, &draft, &current);
         assert_eq!(conflicts, ["port", "RD Gateway"]);
+        draft.vnc.view_only = true;
+        let (merged, _) = merge(&base, &draft, &current);
+        assert!(merged.vnc.view_only && merged.vnc.clipboard);
+    }
+    #[test]
+    fn vnc_options_are_saved_only_when_changed() {
+        let mut c = Connection::new();
+        c.protocol = Protocol::Vnc;
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("\"Vnc\"") && !json.contains("view_only"));
+        c.vnc.view_only = true;
+        let json = serde_json::to_string(&c).unwrap();
+        let read: Connection = serde_json::from_str(&json).unwrap();
+        assert_eq!(read.vnc, c.vnc);
     }
     #[test]
     fn validates_hosts_and_ports() {
@@ -719,6 +780,26 @@ mod tests {
         );
         assert!(browses(" sftp://build") && browses("Sftp build"));
         assert!(!browses("ssh build") && !browses("sftpserver") && !browses("sftp"));
+        assert_eq!(
+            target("desk:5901"),
+            expect(Protocol::Vnc, "", "desk", 5901, "desk")
+        );
+        assert_eq!(
+            target("alex@mac.local:5900"),
+            expect(Protocol::Vnc, "alex", "mac.local", 5900, "alex@mac.local")
+        );
+        assert_eq!(
+            target("vnc://pi:2"),
+            expect(Protocol::Vnc, "", "pi", 5902, "pi")
+        );
+        assert_eq!(
+            target("VNC pi:6001"),
+            expect(Protocol::Vnc, "", "pi", 6001, "pi")
+        );
+        assert_eq!(
+            target("vnc pi"),
+            expect(Protocol::Vnc, "", "pi", 5900, "pi")
+        );
         assert_eq!(
             target("rdp alex@desk"),
             expect(Protocol::Rdp, "alex", "desk", 3389, "alex@desk")
