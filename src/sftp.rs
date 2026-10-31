@@ -378,6 +378,19 @@ pub struct View {
     pub scroll_to_cursor: bool,
     /// Folders to go back to, most recent last.
     pub back: Vec<String>,
+    /// A selection rectangle being dragged over the listing.
+    pub band: Option<Band>,
+}
+
+/// A selection rectangle being dragged over the listing.
+pub struct Band {
+    /// Where it started: points from the top of the listing's rows, and across the screen.
+    pub from: f32,
+    pub x: f32,
+    /// What was selected before it, kept when Ctrl or Cmd adds to the selection.
+    pub base: BTreeSet<String>,
+    /// The listing scrolls to this offset next frame, following the pointer past an edge.
+    pub scroll_to: Option<f32>,
 }
 
 impl View {
@@ -397,6 +410,7 @@ impl View {
         self.new_folder = None;
         self.confirm = None;
         self.filter.clear();
+        self.band = None;
     }
 }
 
