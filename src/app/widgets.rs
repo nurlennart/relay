@@ -258,6 +258,40 @@ pub(super) fn outline_button(ui: &mut egui::Ui, label: &str, width: f32) -> egui
     )
 }
 
+/// A confirmation's buttons, right-aligned below a gap: Cancel, then `action`, filled red when
+/// it ends or removes something and in the accent color otherwise. Returns whether each was
+/// clicked; `action` only while `enabled`.
+pub(super) fn confirm_buttons(
+    ui: &mut egui::Ui,
+    action: &str,
+    cancel: &str,
+    destructive: bool,
+    enabled: bool,
+) -> (bool, bool) {
+    let colors = theme::palette(ui.ctx());
+    let fill = if destructive {
+        ui.visuals().error_fg_color
+    } else {
+        colors.accent
+    };
+    ui.add_space(12.);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let button = egui::Button::new(RichText::new(action).color(colors.bg).strong())
+            .fill(fill)
+            .corner_radius(RADIUS)
+            .min_size(Vec2::new(96., CONTROL_HEIGHT));
+        let confirmed = ui.add_enabled(enabled, button).clicked();
+        let width = ui.fonts_mut(|f| {
+            f.layout_no_wrap(cancel.into(), egui::FontId::proportional(13.), colors.text)
+                .size()
+                .x
+        });
+        let cancelled = outline_button(ui, cancel, (width + 24.).max(80.)).clicked();
+        (confirmed, cancelled)
+    })
+    .inner
+}
+
 /// Small letter-spaced capitals for section and column headings.
 pub(super) fn caption(text: &str) -> RichText {
     RichText::new(text).size(10.).extra_letter_spacing(0.6)
