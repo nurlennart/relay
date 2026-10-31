@@ -121,11 +121,14 @@ async fn transfer(
                 files: plan.files.len() as u64,
                 skipped: plan.skipped,
             });
+            // Cancelling stops between folders, and while the server is slow to answer.
             for folder in &plan.folders {
-                if !exists(session, folder).await.unwrap_or(false) {
-                    session
-                        .create_dir(folder.clone())
-                        .await
+                if !cancellable(cancel, exists(session, folder))
+                    .await?
+                    .unwrap_or(false)
+                {
+                    cancellable(cancel, session.create_dir(folder.clone()))
+                        .await?
                         .map_err(|e| error(&format!("Cannot create {folder}"), &describe(e)))?;
                 }
             }
@@ -168,6 +171,9 @@ async fn transfer(
             let destination = DownloadRoot::open(chosen)
                 .map_err(|e| error("Cannot open the download folder", &e))?;
             for folder in &plan.folders {
+                if cancel.is_cancelled() {
+                    return Err(Failure::Cancelled);
+                }
                 destination
                     .create_folder(folder)
                     .map_err(|e| error(&format!("Cannot create {}", folder.display()), &e))?;
