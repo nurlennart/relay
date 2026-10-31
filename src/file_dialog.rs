@@ -16,8 +16,6 @@ pub enum Kind {
     NewDatabase,
     /// One or more Remote Desktop files.
     RdpFiles,
-    /// An SSH private key.
-    Key,
     /// A font for terminals.
     Font,
 }
@@ -32,7 +30,6 @@ impl Kind {
             }
             Self::RdpFiles => Some(("Remote Desktop file", &["rdp"])),
             Self::Font => Some(("Font", &["ttf", "otf", "ttc"])),
-            Self::Key => None,
         }
     }
 }
@@ -69,10 +66,32 @@ pub fn choose(parent: Option<Window>, kind: Kind) -> Vec<PathBuf> {
             .save_file()
             .into_iter()
             .collect(),
-        Kind::ImportCsv | Kind::ImportJson | Kind::Database | Kind::Key | Kind::Font => {
+        Kind::ImportCsv | Kind::ImportJson | Kind::Database | Kind::Font => {
             dialog.pick_file().into_iter().collect()
         }
     }
+}
+
+/// Asks for an SSH private key, starting in the folder of `current` when it names one, or else
+/// in `~/.ssh`, which the macOS and Linux pickers hide as a dot folder.
+pub fn pick_key(parent: Option<Window>, current: &str) -> Option<PathBuf> {
+    let home = dirs::home_dir();
+    let current = match (current.trim().strip_prefix("~/"), &home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(current.trim()),
+    };
+    let start = current
+        .parent()
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .into_iter()
+        .chain(home.map(|home| home.join(".ssh")))
+        .find(|folder| folder.is_dir());
+    let mut dialog = dialog(parent);
+    if let Some(start) = start {
+        dialog = dialog.set_directory(start);
+    }
+    dialog.pick_file()
 }
 
 /// Asks for files to upload, or folders with `folders`.
