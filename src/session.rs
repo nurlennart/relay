@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 /// A remote desktop: RDP through the platform's client, or VNC drawn by Relay.
 enum Desktop {
     Rdp(RdpClient),
-    Vnc(VncClient),
+    /// Boxed, as VNC's client is much larger than Windows' RDP control.
+    Vnc(Box<VncClient>),
 }
 
 /// Calls the method both kinds of desktop have.
@@ -303,10 +304,10 @@ impl Session {
         }
         if self.rdp.is_none() {
             let desktop = match self.connection.protocol {
-                Protocol::Vnc => Ok(Desktop::Vnc(VncClient::new(
+                Protocol::Vnc => Ok(Desktop::Vnc(Box::new(VncClient::new(
                     &self.connection,
                     self.ctx.clone(),
-                ))),
+                )))),
                 _ => RdpClient::new(
                     self.host.or(parent),
                     &self.connection,
