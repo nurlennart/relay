@@ -186,6 +186,16 @@ impl RdpClient {
         }
     }
 
+    /// Ends the session at the user's request, letting go of anything held; the tab stays,
+    /// ready to reconnect.
+    pub fn disconnect(&mut self) {
+        self.release_all();
+        self.stage = Stage::Ended("Disconnected.".into());
+        self.texture = None;
+        self.full_screen = false;
+        self.keys = ironrdp_input::Database::new();
+    }
+
     /// Applies what the connection reported since the last frame.
     pub fn poll(&mut self) {
         let Stage::Running {

@@ -111,6 +111,8 @@ struct State {
     full_screen: bool,
     generation: u64,
     error: Option<String>,
+    /// The user disconnected, so the end is not reported as a failure.
+    leaving: bool,
 }
 #[derive(Clone, Copy)]
 enum Event {
@@ -190,7 +192,11 @@ impl IDispatch_Impl for Sink_Impl {
                     .find_map(|v| BSTR::try_from(v).ok())
                     .map(|s| s.to_string())
                     .unwrap_or_default();
-                state.error = Some(format!("RDP session ended (reason {reason}). {detail}"));
+                state.error = Some(if state.leaving {
+                    "Disconnected.".into()
+                } else {
+                    format!("RDP session ended (reason {reason}). {detail}")
+                });
             }
         }
         drop(state);
@@ -467,6 +473,16 @@ impl RdpClient {
     }
     pub fn ended(&self) -> bool {
         self.state.lock().unwrap().ended
+    }
+    /// Ends the session at the user's request; the tab stays, ready to reconnect.
+    pub fn disconnect(&mut self) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.leaving = true;
+            state.ended = true;
+            state.error = Some("Disconnected.".into());
+        }
+        let _ = invoke(&self.client, "Disconnect", DISPATCH_METHOD, vec![]);
     }
     pub fn error(&self) -> Option<String> {
         self.state.lock().unwrap().error.clone()

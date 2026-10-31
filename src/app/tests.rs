@@ -258,6 +258,13 @@ fn new_connection_starts_in_the_open_group() {
     app.group = Some("Servers".into());
     app.new_connection();
     assert!(matches!(&app.modal, Modal::Editor(c) if c.group == "Servers"));
+    // Or with the protocol shown, on its usual port.
+    app.group = None;
+    app.filter = Filter::Vnc;
+    app.new_connection();
+    assert!(
+        matches!(&app.modal, Modal::Editor(c) if c.protocol == Protocol::Vnc && c.port == 5900)
+    );
 }
 
 #[test]

@@ -63,6 +63,9 @@ impl Desktop {
     fn set_shown(&mut self, shown: bool) {
         either!(self, d => d.set_shown(shown))
     }
+    fn disconnect(&mut self) {
+        either!(self, d => d.disconnect())
+    }
     fn show(&mut self, ui: &mut eframe::egui::Ui) -> eframe::egui::Rect {
         either!(self, d => d.show(ui))
     }
@@ -324,6 +327,9 @@ impl Session {
                 }
             }
         }
+        self.poll_desktop();
+    }
+    fn poll_desktop(&mut self) {
         if let Some(rdp) = &mut self.rdp {
             rdp.poll();
         }
@@ -441,6 +447,13 @@ impl Session {
         if let Some(rdp) = &mut self.rdp {
             rdp.leave_full_screen();
         }
+    }
+    /// Ends a remote desktop at the user's request, keeping the tab to reconnect from.
+    pub fn disconnect(&mut self) {
+        if let Some(rdp) = &mut self.rdp {
+            rdp.disconnect();
+        }
+        self.poll_desktop();
     }
     /// Whether a remote desktop has been created for this session.
     pub fn has_desktop(&self) -> bool {

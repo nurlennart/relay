@@ -111,6 +111,17 @@ impl VncClient {
         }
     }
 
+    /// Ends the session at the user's request, letting go of anything held; the tab stays,
+    /// ready to reconnect.
+    pub fn disconnect(&mut self) {
+        self.set_shown(false);
+        self.stage = Stage::Ended("Disconnected.".into());
+        self.texture = None;
+        self.pointer = Pointer::Unknown;
+        self.full_screen = false;
+        self.translator = input::Translator::default();
+    }
+
     /// Applies what the connection reported since the last frame.
     pub fn poll(&mut self) {
         let Stage::Running {
