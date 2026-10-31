@@ -1118,9 +1118,19 @@ impl App {
             return;
         }
         let mut connection = Connection::new();
-        // A connection added while a group is open belongs to that group.
+        // A connection added while a group or protocol is open belongs to it.
         if let Some(group) = &self.group {
             connection.group = group.clone();
+        }
+        let protocol = match self.filter {
+            Filter::Rdp => Some(Protocol::Rdp),
+            Filter::Ssh => Some(Protocol::Ssh),
+            Filter::Vnc => Some(Protocol::Vnc),
+            Filter::All | Filter::Recent | Filter::Favorites => None,
+        };
+        if let Some(protocol) = protocol {
+            connection.protocol = protocol;
+            connection.port = protocol.port();
         }
         self.edit(connection);
     }

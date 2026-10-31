@@ -327,6 +327,7 @@ impl App {
 #[derive(Default)]
 pub(super) struct Actions {
     full_screen: bool,
+    disconnect: bool,
     unsplit: bool,
     attach: bool,
     save: bool,
@@ -404,6 +405,12 @@ impl App {
                 .on_hover_text(s.full_screen_help())
                 .clicked();
         }
+        if s.has_desktop() && s.is_running() && !s.full_screen() {
+            actions.disconnect = ui
+                .button("Disconnect")
+                .on_hover_text("End the session; the tab stays to reconnect from")
+                .clicked();
+        }
         actions
     }
 
@@ -412,6 +419,9 @@ impl App {
     pub(super) fn apply_actions(&mut self, index: usize, actions: Actions) -> bool {
         if actions.full_screen {
             self.enter_full_screen(index);
+        }
+        if actions.disconnect {
+            self.sessions[index].disconnect();
         }
         if actions.save {
             self.edit(self.sessions[index].connection.clone());
