@@ -94,21 +94,17 @@ impl DownloadTarget {
             Err(_) => {}
         }
         // FAT and exFAT drives, and some network shares, have no hard links. A rename the
-        // system refuses to make over an existing file is just as safe.
-        match rename_new(&self.dir, &self.folder, &self.partial, &self.name) {
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::Unsupported | io::ErrorKind::InvalidInput
-                ) => {}
-            done => return done,
-        }
-        // Only where neither exists: look, then rename. A file another program creates
-        // under the same name in the moment between would be replaced.
-        if self.dir.symlink_metadata(&self.name).is_ok() {
-            return Err(io::ErrorKind::AlreadyExists.into());
-        }
-        self.dir.rename(&self.partial, &self.dir, &self.name)
+        // system refuses to make over an existing file is just as safe. Where neither is
+        // possible, looking first and then renaming could replace a file created between
+        // the two, so the download stops instead.
+        rename_new(&self.dir, &self.folder, &self.partial, &self.name).map_err(|e| match e.kind() {
+            io::ErrorKind::Unsupported | io::ErrorKind::InvalidInput => io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this drive cannot add a file without risking replacing another; \
+                     use Save as to choose the file to replace",
+            ),
+            _ => e,
+        })
     }
 }
 

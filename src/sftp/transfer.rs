@@ -140,8 +140,9 @@ async fn transfer(
                 progress.file_done();
             }
             if plan.folders.is_empty() {
+                // Without its size and time, the next save compares the contents instead.
                 let stamp = session.metadata(remote).await.ok().map(|m| Stamp::of(&m));
-                return Ok(stamp.map(|stamp| Version { stamp, contents }));
+                return Ok(Some(Version { stamp, contents }));
             }
         }
         Job::Download {
@@ -352,11 +353,25 @@ async fn still(
             )));
         }
     };
-    if Stamp::of(&meta) != expected.stamp {
+    if expected
+        .stamp
+        .is_some_and(|stamp| stamp != Stamp::of(&meta))
+    {
         return Err(changed());
     }
-    if !contents || meta.len() > COMPARE_LIMIT {
+    // A quick look cannot tell a version known only by its contents; the full check just
+    // before the upload takes the file's place does.
+    if !contents {
         return Ok(());
+    }
+    if meta.len() > COMPARE_LIMIT {
+        return match expected.stamp {
+            Some(_) => Ok(()),
+            None => Err(Failure::Changed(format!(
+                "Cannot tell whether “{name}” changed on the server: it is too large to \
+                 compare, and the server did not give its size and time."
+            ))),
+        };
     }
     let fail = |e: &dyn std::fmt::Display| Failure::Error(format!("Cannot check “{name}”: {e}"));
     let mut file = session.open(path).await.map_err(|e| fail(&describe(e)))?;
@@ -587,7 +602,6 @@ async fn download_file(
     let (publication, file) = destination.create(local).map_err(|e| fail(&e))?;
     let mut target = tokio::fs::File::from_std(file);
     let mut hash = DefaultHasher::new();
-    let started_at = progress.done;
     let mut copied = copy(&mut source, &mut target, cancel, progress, &mut hash).await;
     if copied.is_ok() {
         copied = target.flush().await.map_err(|e| fail(&e));
@@ -614,10 +628,7 @@ async fn download_file(
     }
     copied.map(|()| {
         Some(Version {
-            stamp: meta.as_ref().map(Stamp::of).unwrap_or(Stamp {
-                size: progress.done - started_at,
-                modified: None,
-            }),
+            stamp: meta.as_ref().map(Stamp::of),
             contents: hash.finish(),
         })
     })

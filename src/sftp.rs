@@ -94,7 +94,9 @@ pub struct Stamp {
 /// size within the same second, or one that keeps the time, so the contents count too.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Version {
-    stamp: Stamp,
+    /// `None` when the server did not say, as when looking at the file after an upload
+    /// failed; then only the contents tell.
+    stamp: Option<Stamp>,
     /// A fingerprint of the contents, taken as they were copied.
     contents: u64,
 }
@@ -2452,6 +2454,42 @@ mod tests {
                     == Some("TWO")
         });
         assert_eq!(browser.unsaved_edits(), 0);
+
+        // The server may not give a file's size and time after an upload. Its contents are
+        // then compared before the next save replaces it.
+        let id = browser.edits[0].id;
+        let mut hash = std::hash::DefaultHasher::new();
+        std::hash::Hasher::write(&mut hash, b"TWO");
+        let contents = std::hash::Hasher::finish(&hash);
+        browser.edit_finished(
+            id,
+            Ok(Some(Version {
+                stamp: None,
+                contents,
+            })),
+        );
+        std::fs::write(&local, "two, again").unwrap();
+        wait(&mut browser, "the save checked by its contents", |b| {
+            b.active_transfers() == 0
+                && std::fs::read_to_string(root.join("notes.txt")).unwrap() == "two, again"
+        });
+        // Without any version to expect, a save waits for Overwrite instead of uploading.
+        browser.edit_finished(id, Ok(None));
+        std::fs::write(&local, "unchecked").unwrap();
+        wait(&mut browser, "the save to wait", |b| {
+            matches!(b.edits[0].state, EditState::Changed(_))
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "two, again"
+        );
+        browser.retry_edit(id, true);
+        let edit = settled(&mut browser, "the overwrite of an unknown version");
+        assert_eq!(edit.state, EditState::Open);
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "unchecked"
+        );
 
         // Someone else saves on the server; the next save waits instead of overwriting.
         std::fs::write(root.join("notes.txt"), "theirs, longer").unwrap();

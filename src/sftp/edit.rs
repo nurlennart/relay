@@ -195,6 +195,15 @@ impl Browser {
             edit.state = EditState::Failed("Not connected. Reconnect, then retry.".into());
             return;
         }
+        // Without a version to expect, an upload could replace someone else's save unseen,
+        // so the copy waits until Overwrite is chosen.
+        if !overwrite && edit.opened && edit.version.is_none() {
+            edit.state = EditState::Changed(format!(
+                "Cannot tell whether “{}” changed on the server since it was last read.",
+                edit.name
+            ));
+            return;
+        }
         edit.state = EditState::Uploading;
         edit.sending = seen(&edit.local);
         let job = Job::Upload {
