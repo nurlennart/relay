@@ -81,7 +81,7 @@ impl App {
                     (Filter::Favorites, Icon::Star, "Favorites", counts.favorites),
                     (Filter::Rdp, Icon::Desktop, "RDP desktop", counts.rdp),
                     (Filter::Ssh, Icon::Terminal, "SSH terminal", counts.ssh),
-                    (Filter::Vnc, Icon::Desktop, "VNC desktop", counts.vnc),
+                    (Filter::Vnc, Icon::SharedDesktop, "VNC desktop", counts.vnc),
                 ];
                 let mut chosen = None;
                 if collapsed {

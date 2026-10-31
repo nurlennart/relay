@@ -142,6 +142,16 @@ pub fn upload(ctx: &egui::Context, texture: &mut Option<egui::TextureHandle>, up
     }
 }
 
+/// What a desktop's tab shows while it connects to `host`, centred as the sign-in prompt is.
+pub fn connecting(ui: &mut egui::Ui, host: &str) {
+    ui.add_space(40.);
+    ui.vertical_centered(|ui| {
+        ui.spinner();
+        ui.add_space(8.);
+        ui.heading(format!("Connecting to {host}…"));
+    });
+}
+
 /// The sign-in prompt for `host`. A user name is asked for only when `username` gives its field
 /// and hint, and must then be filled in. Returns whether the user asked to connect, with the
 /// user name trimmed.
@@ -197,10 +207,12 @@ pub fn sign_in(
             }
         }
         ui.add_space(12.);
-        connect = ui
-            .add_enabled(!missing, egui::Button::new("Connect"))
-            .clicked()
-            || (enter && !missing);
+        let colors = crate::theme::palette(ui.ctx());
+        let button = egui::Button::new(RichText::new("Connect").color(colors.bg).strong())
+            .fill(colors.accent)
+            .corner_radius(6)
+            .min_size(egui::vec2(120., 32.));
+        connect = ui.add_enabled(!missing, button).clicked() || (enter && !missing);
         ui.add_space(8.);
         ui.label(RichText::new(note).size(12.).weak());
     });

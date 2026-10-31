@@ -361,11 +361,7 @@ impl RdpClient {
             },
             Stage::Running {
                 connected: false, ..
-            } => {
-                ui.add_space(50.);
-                ui.spinner();
-                ui.heading(format!("Connecting to {}…", self.connection.host));
-            }
+            } => frame::connecting(ui, &self.connection.host),
             Stage::Running { .. } => self.desktop(ui, rect, focus),
             Stage::Ended(_) => {}
         }
@@ -439,7 +435,6 @@ impl RdpClient {
             frame::upload(ui.ctx(), &mut self.texture, update);
         }
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0., egui::Color32::BLACK);
         let Some(texture) = &self.texture else {
             return;
         };

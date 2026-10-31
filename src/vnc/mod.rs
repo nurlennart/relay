@@ -261,11 +261,7 @@ impl VncClient {
             }
             Stage::Running {
                 connected: false, ..
-            } => {
-                ui.add_space(50.);
-                ui.spinner();
-                ui.heading(format!("Connecting to {}…", self.connection.host));
-            }
+            } => frame::connecting(ui, &self.connection.host),
             Stage::Running { .. } => self.desktop(ui, rect, focus),
             Stage::Ended(_) => {}
         }
@@ -336,7 +332,6 @@ impl VncClient {
             self.pointer = pointer(ui.ctx(), shape);
         }
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0., egui::Color32::BLACK);
         let Some(texture) = &self.texture else {
             return;
         };
