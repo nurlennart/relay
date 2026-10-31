@@ -1,6 +1,6 @@
 [package]
 name = "relay"
-version = "0.5.13"
+version = "0.5.14"
 edition = "2024"
 rust-version = "1.94"
 description = "A remote connection workspace for RDP and SSH on Windows, macOS, and Linux"
