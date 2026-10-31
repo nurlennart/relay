@@ -1,6 +1,7 @@
 //! The remote screen and the encodings that update it. Relay asks for 32-bit little-endian
 //! true colour, so every pixel arrives as blue, green, red and a padding byte, and ZRLE's
 //! compact pixels as blue, green and red.
+use crate::frame::valid_size;
 use flate2::{Decompress, FlushDecompress, Status};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -24,11 +25,6 @@ pub const ENCODINGS: [i32; 7] = [
     DESKTOP_SIZE,
 ];
 
-/// Screens beyond this many pixels a side are refused rather than allocated: the largest
-/// texture egui's GPU setup lets Relay draw.
-pub const MAX_SIDE: u16 = 8192;
-/// The most pixels a screen may have, as many as 8K, so each copy of it stays within 128 MiB.
-pub const MAX_PIXELS: usize = 1 << 25;
 /// The largest pointer shape accepted, in pixels a side.
 const MAX_POINTER: u16 = 256;
 /// The most compressed data one ZRLE rectangle may carry.
@@ -382,26 +378,6 @@ impl Screen {
     }
 }
 
-/// Checks a screen size from the server: each side at least a pixel and at most `MAX_SIDE`,
-/// and at most `MAX_PIXELS` in all.
-pub fn valid_size(width: u16, height: u16) -> Result<(), String> {
-    if width == 0 || height == 0 {
-        return Err(format!(
-            "the server asked for an unusable screen size ({width}×{height} pixels)"
-        ));
-    }
-    if width > MAX_SIDE
-        || height > MAX_SIDE
-        || usize::from(width) * usize::from(height) > MAX_PIXELS
-    {
-        return Err(format!(
-            "the remote screen is {width}×{height} pixels, larger than Relay can show \
-             ({MAX_SIDE} pixels a side, 8K in all)"
-        ));
-    }
-    Ok(())
-}
-
 fn black(pixels: usize) -> Vec<u8> {
     [0, 0, 0, 255].repeat(pixels)
 }
@@ -548,16 +524,6 @@ mod tests {
         assert_eq!(pixel(&screen, 1, 2), [2, 2, 2, 255]);
         assert_eq!(pixel(&screen, 2, 2), [3, 3, 3, 255]);
         assert_eq!(pixel(&screen, 1, 0), [1, 1, 1, 255]);
-    }
-
-    #[test]
-    fn screens_must_fit_a_texture_and_the_pixel_budget() {
-        assert!(valid_size(3840, 2160).is_ok());
-        assert!(valid_size(7680, 4320).is_ok());
-        assert!(valid_size(8193, 1).is_err());
-        assert!(valid_size(11520, 2160).is_err());
-        assert!(valid_size(8192, 8192).is_err());
-        assert!(valid_size(0, 600).is_err());
     }
 
     #[tokio::test]

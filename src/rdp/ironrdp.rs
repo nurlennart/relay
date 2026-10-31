@@ -165,9 +165,25 @@ impl RdpClient {
     pub fn set_parent(&mut self, _parent: Window) {}
 
     /// Tells the connection whether its tab is on screen, so a hidden desktop's updates do not
-    /// wake the window.
-    pub fn set_shown(&self, shown: bool) {
+    /// wake the window. Hiding it lets go of held keys and buttons, whose releases now go
+    /// elsewhere.
+    pub fn set_shown(&mut self, shown: bool) {
         self.shown.store(shown, Ordering::Relaxed);
+        if !shown {
+            self.release_all();
+        }
+    }
+
+    /// Releases every key and button the remote computer thinks is held.
+    fn release_all(&mut self) {
+        self.focused = false;
+        self.translator.reset();
+        let input: Vec<_> = self.keys.release_all().into_vec();
+        if let Stage::Running { worker, .. } = &self.stage
+            && !input.is_empty()
+        {
+            worker.send(Command::Input(input));
+        }
     }
 
     /// Applies what the connection reported since the last frame.
@@ -181,15 +197,16 @@ impl RdpClient {
         else {
             return;
         };
+        let copied = worker.copied.lock().ok().and_then(|mut c| c.take());
+        if let Some(text) = copied {
+            self.ctx.copy_text(text.clone());
+            self.copied = Some(text);
+        }
         let mut next = None;
         for event in worker.events() {
             match event {
                 Event::Connected => (*connected, *reconnecting) = (true, false),
                 Event::Reconnecting => *reconnecting = true,
-                Event::Copied(text) => {
-                    self.ctx.copy_text(text.clone());
-                    self.copied = Some(text);
-                }
                 Event::FixedResolution => {
                     self.warning = Some(
                         "The remote computer cannot change its resolution, so the desktop is \
@@ -314,7 +331,15 @@ impl RdpClient {
                 place_cursor,
             } => {
                 let place = std::mem::take(place_cursor);
-                if sign_in(ui, &self.connection, credentials, error.as_deref(), place) {
+                if frame::sign_in(
+                    ui,
+                    &self.connection.host,
+                    Some((&mut credentials.username, r"DOMAIN\user")),
+                    &mut credentials.password,
+                    error.as_deref(),
+                    place,
+                    "Relay keeps the password only while this session is open.",
+                ) {
                     start = Some(credentials.clone());
                 }
             }
@@ -531,64 +556,6 @@ fn split_user(username: &str) -> (String, Option<String>) {
         Some((domain, user)) if !domain.is_empty() => (user.into(), Some(domain.into())),
         _ => (username.into(), None),
     }
-}
-
-/// The sign-in prompt. Returns whether the user asked to connect.
-fn sign_in(
-    ui: &mut egui::Ui,
-    connection: &Connection,
-    credentials: &mut Credentials,
-    error: Option<&str>,
-    place_cursor: bool,
-) -> bool {
-    let mut connect = false;
-    ui.add_space(40.);
-    ui.vertical_centered(|ui| {
-        ui.set_max_width(340.);
-        ui.heading(format!("Sign in to {}", connection.host));
-        ui.add_space(12.);
-        if let Some(error) = error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-            ui.add_space(8.);
-        }
-        ui.label("User name");
-        let user = ui.add(
-            egui::TextEdit::singleline(&mut credentials.username)
-                // Weak text takes the placeholder color, which the theme's text color would override.
-                .hint_text(RichText::new(r"DOMAIN\user").weak())
-                .desired_width(f32::INFINITY),
-        );
-        ui.add_space(6.);
-        ui.label("Password");
-        let password = ui.add(
-            egui::TextEdit::singleline(&mut credentials.password)
-                .password(true)
-                .desired_width(f32::INFINITY),
-        );
-        // Enter leaves a single-line field, so read it before moving the cursor anywhere.
-        let enter = (user.lost_focus() || password.lost_focus())
-            && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if place_cursor {
-            if credentials.username.is_empty() {
-                user.request_focus();
-            } else {
-                password.request_focus();
-            }
-        }
-        ui.add_space(12.);
-        let ready = !credentials.username.trim().is_empty();
-        connect = ui
-            .add_enabled(ready, egui::Button::new("Connect"))
-            .clicked()
-            || (enter && ready);
-        ui.add_space(8.);
-        ui.label(
-            RichText::new("Relay keeps the password only while this session is open.")
-                .size(12.)
-                .weak(),
-        );
-    });
-    connect
 }
 
 /// The certificate decision. Returns whether the user trusted the certificate, once they

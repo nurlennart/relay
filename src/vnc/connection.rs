@@ -451,7 +451,7 @@ async fn message<R: AsyncRead + Unpin>(
             if link.shown() {
                 link.ctx.request_repaint();
             }
-            // Sides are at most `decode::MAX_SIDE`, so they fit.
+            // Sides are at most `frame::MAX_SIDE`, so they fit.
             let size = [screen.width, screen.height].map(|v| v as u16);
             let _ = incoming.send(Incoming::Updated(size)).await;
         }

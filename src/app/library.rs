@@ -7,15 +7,32 @@ use std::rc::Rc;
 /// and finding, counting and sorting an unchanged library each time would be wasted.
 #[derive(Default)]
 pub(super) struct Views {
-    order: Option<(OrderKey, Rc<Vec<usize>>)>,
+    order: Option<(OrderKey, Shown)>,
+    /// Marked connections were checked against the order last made, so none is hidden.
+    reconciled: bool,
     /// Each group with how many connections it has, by name, for the generation given.
     groups: Option<(Generation, Groups)>,
+    /// The sidebar's counts, for the generation and recent connections given.
+    counts: Option<((Generation, Vec<u64>), Counts)>,
+}
+
+/// How many connections each of the sidebar's filters shows.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Counts {
+    pub recent: usize,
+    pub favorites: usize,
+    pub rdp: usize,
+    pub ssh: usize,
+    pub vnc: usize,
 }
 
 /// Everything the shown order depends on.
 /// Which connections the views were made from: how often they were replaced, and how many
 /// there are, which also notices ones changed directly, as tests and rendering checks do.
 type Generation = (u64, usize);
+
+/// The positions in `connections` of those shown, and their IDs, in the order shown.
+type Shown = (Rc<Vec<usize>>, Rc<Vec<u64>>);
 
 /// Each group with how many connections it has, by name.
 type Groups = Rc<Vec<(String, usize)>>;
@@ -48,6 +65,15 @@ impl App {
 
     /// The positions in `connections` of those shown, in the order shown.
     pub(super) fn filtered(&self) -> Rc<Vec<usize>> {
+        self.shown().0
+    }
+
+    /// The IDs of the connections shown, in the order shown.
+    fn shown_ids(&self) -> Rc<Vec<u64>> {
+        self.shown().1
+    }
+
+    fn shown(&self) -> Shown {
         let recent = self.state.recent(&self.location);
         let key = OrderKey {
             generation: self.generation(),
@@ -57,14 +83,40 @@ impl App {
             recent: recent.to_vec(),
         };
         let mut views = self.views.borrow_mut();
-        if let Some((cached, order)) = &views.order
+        if let Some((cached, shown)) = &views.order
             && *cached == key
         {
-            return order.clone();
+            return shown.clone();
         }
         let order = Rc::new(self.find_shown(recent));
-        views.order = Some((key, order.clone()));
-        order
+        let ids: Rc<Vec<u64>> = Rc::new(order.iter().map(|&i| self.connections[i].id).collect());
+        views.order = Some((key, (order.clone(), ids.clone())));
+        views.reconciled = false;
+        (order, ids)
+    }
+
+    /// How many connections each of the sidebar's filters shows.
+    pub(super) fn counts(&self) -> Counts {
+        let recent = self.state.recent(&self.location);
+        let key = (self.generation(), recent.to_vec());
+        let mut views = self.views.borrow_mut();
+        if let Some((cached, counts)) = &views.counts
+            && *cached == key
+        {
+            return *counts;
+        }
+        let mut counts = Counts::default();
+        for c in &self.connections {
+            counts.recent += usize::from(recent.contains(&c.id));
+            counts.favorites += usize::from(c.favorite);
+            match c.protocol {
+                Protocol::Rdp => counts.rdp += 1,
+                Protocol::Ssh => counts.ssh += 1,
+                Protocol::Vnc => counts.vnc += 1,
+            }
+        }
+        views.counts = Some((key, counts));
+        counts
     }
 
     /// Each group with how many connections it has, by name.
@@ -123,10 +175,12 @@ impl App {
         let search_id = egui::Id::new("library-search");
         let focused = ui.memory(|m| m.focused());
         // Connections chosen together stay chosen while they are shown, so actions on them
-        // never reach rows a search or filter hid.
-        let shown: Vec<u64> = order.iter().map(|&i| self.connections[i].id).collect();
-        // A set to look the chosen ones up in, so choosing thousands stays quick.
-        if !self.marked.is_empty() {
+        // never reach rows a search or filter hid. Only shown rows can be chosen, so this is
+        // needed only when what is shown changes.
+        let shown = self.shown_ids();
+        let reconciled = std::mem::replace(&mut self.views.get_mut().reconciled, true);
+        if !reconciled && !self.marked.is_empty() {
+            // A set to look the chosen ones up in, so choosing thousands stays quick.
             let visible: std::collections::HashSet<u64> = shown.iter().copied().collect();
             self.marked.retain(|id| visible.contains(id));
         }
@@ -593,7 +647,7 @@ impl App {
                         area = area.vertical_scroll_offset(top + ROW - visible);
                     }
                 }
-                let shown: Vec<u64> = order.iter().map(|&i| self.connections[i].id).collect();
+                let shown = self.shown_ids();
                 let output = area.show_rows(ui, ROW, order.len(), |ui, range| {
                     // Only the rows on screen are drawn, and copied to draw them.
                     for index in range {

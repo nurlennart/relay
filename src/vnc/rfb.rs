@@ -3,7 +3,7 @@
 //! Apple's 3.889.
 use super::{
     auth::{self, AppleChallenge},
-    decode::{self, Rect},
+    decode::Rect,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -163,7 +163,7 @@ pub async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
     let mut format = [0u8; 16];
     stream.read_exact(&mut format).await?;
     let name = text(stream).await?;
-    decode::valid_size(width, height).map_err(Refusal::Failed)?;
+    crate::frame::valid_size(width, height).map_err(Refusal::Failed)?;
 
     let mut setup = set_pixel_format();
     setup.extend(set_encodings(encodings));
@@ -303,6 +303,7 @@ pub fn cut_text(text: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vnc::decode;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
 
     fn no_random(buf: &mut [u8]) -> Result<(), String> {

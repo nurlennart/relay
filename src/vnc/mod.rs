@@ -10,7 +10,7 @@ mod rfb;
 
 use crate::{frame, model::Connection};
 use connection::{Command, Event, Outcome, Settings, Worker};
-use eframe::egui::{self, RichText};
+use eframe::egui;
 use rfb::{Credentials, Needs};
 use std::sync::{
     Arc,
@@ -240,13 +240,21 @@ impl VncClient {
                 place_cursor,
             } => {
                 let place = std::mem::take(place_cursor);
-                if sign_in(
+                let account = *needs == Needs::Account;
+                let note = if account {
+                    "Relay keeps the password only while this session is open."
+                } else {
+                    "Relay keeps the password only while this session is open. VNC uses only \
+                     its first eight characters."
+                };
+                if frame::sign_in(
                     ui,
-                    &self.connection,
-                    needs,
-                    credentials,
+                    &self.connection.host,
+                    account.then_some((&mut credentials.username, "An account on the Mac")),
+                    &mut credentials.password,
                     error.as_deref(),
                     place,
+                    note,
                 ) {
                     start = Some(credentials.clone());
                 }
@@ -411,72 +419,6 @@ fn pointer(ctx: &egui::Context, shape: Option<decode::Cursor>) -> Pointer {
         texture: ctx.load_texture("vnc-pointer", image, egui::TextureOptions::LINEAR),
         hotspot: shape.hotspot,
     }
-}
-
-/// The sign-in prompt. Returns whether the user asked to connect.
-fn sign_in(
-    ui: &mut egui::Ui,
-    connection: &Connection,
-    needs: &Needs,
-    credentials: &mut Credentials,
-    error: Option<&str>,
-    place_cursor: bool,
-) -> bool {
-    let account = *needs == Needs::Account;
-    let mut connect = false;
-    ui.add_space(40.);
-    ui.vertical_centered(|ui| {
-        ui.set_max_width(340.);
-        ui.heading(format!("Sign in to {}", connection.host));
-        ui.add_space(12.);
-        if let Some(error) = error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-            ui.add_space(8.);
-        }
-        let user = account.then(|| {
-            ui.label("User name");
-            let user = ui.add(
-                egui::TextEdit::singleline(&mut credentials.username)
-                    .hint_text(RichText::new("An account on the Mac").weak())
-                    .desired_width(f32::INFINITY),
-            );
-            ui.add_space(6.);
-            user
-        });
-        ui.label("Password");
-        let password = ui.add(
-            egui::TextEdit::singleline(&mut credentials.password)
-                .password(true)
-                .desired_width(f32::INFINITY),
-        );
-        // Enter leaves a single-line field, so read it before moving the cursor anywhere.
-        let left = password.lost_focus() || user.as_ref().is_some_and(|u| u.lost_focus());
-        let enter = left && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if place_cursor {
-            match &user {
-                Some(user) if credentials.username.is_empty() => user.request_focus(),
-                _ => password.request_focus(),
-            }
-        }
-        ui.add_space(12.);
-        let ready = !account || !credentials.username.trim().is_empty();
-        connect = ui
-            .add_enabled(ready, egui::Button::new("Connect"))
-            .clicked()
-            || (enter && ready);
-        ui.add_space(8.);
-        let note = if account {
-            "Relay keeps the password only while this session is open."
-        } else {
-            "Relay keeps the password only while this session is open. VNC uses only its \
-             first eight characters."
-        };
-        ui.label(RichText::new(note).size(12.).weak());
-    });
-    if connect {
-        credentials.username = credentials.username.trim().into();
-    }
-    connect
 }
 
 #[cfg(test)]

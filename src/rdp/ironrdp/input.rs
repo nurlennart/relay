@@ -114,9 +114,15 @@ impl Translator {
                 _ => {}
             }
         }
-        if keyboard {
-            self.sync(modifiers, &mut ops);
-        }
+        // Without the keyboard, modifiers are held only for the pointer events that had them.
+        self.sync(
+            if keyboard {
+                modifiers
+            } else {
+                egui::Modifiers::NONE
+            },
+            &mut ops,
+        );
         ops
     }
 
@@ -412,6 +418,32 @@ mod tests {
                 Operation::MouseMove(MousePosition { x: 0, y: 0 }),
                 Operation::MouseButtonReleased(MouseButton::Right),
             ],
+        );
+    }
+
+    #[test]
+    fn modified_scrolling_without_the_keyboard_lets_go_of_its_modifiers() {
+        let mut t = Translator::default();
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0., 1.),
+            modifiers: Modifiers::SHIFT,
+        };
+        let ops = t.translate(&[wheel], Modifiers::SHIFT, &view(), false, true);
+        same(
+            ops,
+            vec![
+                pressed(LEFT_SHIFT),
+                Operation::WheelRotations(WheelRotations {
+                    is_vertical: true,
+                    rotation_units: 120,
+                }),
+                released(LEFT_SHIFT),
+            ],
+        );
+        assert!(
+            t.translate(&[], Modifiers::NONE, &view(), false, true)
+                .is_empty()
         );
     }
 

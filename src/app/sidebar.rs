@@ -69,15 +69,7 @@ impl App {
                     self.set_sidebar_collapsed(!collapsed);
                 }
                 ui.add_space(12.);
-                let favorites = self.connections.iter().filter(|c| c.favorite).count();
-                let recent = self.state.recent(&self.location);
-                let recent = self
-                    .connections
-                    .iter()
-                    .filter(|c| recent.contains(&c.id))
-                    .count();
-                let count =
-                    |p: Protocol| self.connections.iter().filter(|c| c.protocol == p).count();
+                let counts = self.counts();
                 let filters = [
                     (
                         Filter::All,
@@ -85,26 +77,11 @@ impl App {
                         "All connections",
                         self.connections.len(),
                     ),
-                    (Filter::Recent, Icon::Recent, "Recent", recent),
-                    (Filter::Favorites, Icon::Star, "Favorites", favorites),
-                    (
-                        Filter::Rdp,
-                        Icon::Desktop,
-                        "RDP desktop",
-                        count(Protocol::Rdp),
-                    ),
-                    (
-                        Filter::Ssh,
-                        Icon::Terminal,
-                        "SSH terminal",
-                        count(Protocol::Ssh),
-                    ),
-                    (
-                        Filter::Vnc,
-                        Icon::Desktop,
-                        "VNC desktop",
-                        count(Protocol::Vnc),
-                    ),
+                    (Filter::Recent, Icon::Recent, "Recent", counts.recent),
+                    (Filter::Favorites, Icon::Star, "Favorites", counts.favorites),
+                    (Filter::Rdp, Icon::Desktop, "RDP desktop", counts.rdp),
+                    (Filter::Ssh, Icon::Terminal, "SSH terminal", counts.ssh),
+                    (Filter::Vnc, Icon::Desktop, "VNC desktop", counts.vnc),
                 ];
                 let mut chosen = None;
                 if collapsed {
