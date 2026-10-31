@@ -96,9 +96,19 @@ impl VncClient {
     }
 
     /// Tells the connection whether its tab is on screen, so a hidden desktop's updates do not
-    /// wake the window.
-    pub fn set_shown(&self, shown: bool) {
+    /// wake the window. Hiding it lets go of held keys and buttons, whose releases now go
+    /// elsewhere.
+    pub fn set_shown(&mut self, shown: bool) {
         self.shown.store(shown, Ordering::Relaxed);
+        if !shown {
+            self.focused = false;
+            let input = self.translator.release_all();
+            if let Stage::Running { worker, .. } = &self.stage
+                && !input.is_empty()
+            {
+                worker.send(Command::Input(input));
+            }
+        }
     }
 
     /// Applies what the connection reported since the last frame.
@@ -112,6 +122,11 @@ impl VncClient {
         else {
             return;
         };
+        let copied = worker.copied.lock().ok().and_then(|mut c| c.take());
+        if let Some(text) = copied {
+            self.ctx.copy_text(text.clone());
+            self.copied = Some(text);
+        }
         let mut next = None;
         for event in worker.events() {
             match event {
@@ -120,10 +135,6 @@ impl VncClient {
                     self.translator.mac = mac;
                 }
                 Event::Reconnecting => *reconnecting = true,
-                Event::Copied(text) => {
-                    self.ctx.copy_text(text.clone());
-                    self.copied = Some(text);
-                }
                 Event::Ended(Outcome::SignIn(needs, error)) => {
                     let username = match credentials {
                         Some(c) if !c.username.is_empty() => c.username.clone(),
@@ -344,6 +355,17 @@ impl VncClient {
             return;
         }
 
+        if focused {
+            // Lets an input method compose text for the desktop, its window by the pointer.
+            let at = response.hover_pos().unwrap_or(view.rect.center());
+            let cursor_rect = egui::Rect::from_min_size(at, egui::vec2(1., 16.));
+            ui.ctx().output_mut(|o| {
+                o.ime = Some(egui::output::IMEOutput {
+                    rect: view.rect,
+                    cursor_rect,
+                })
+            });
+        }
         let mut commands = vec![];
         let (events, modifiers) = ui.input(|i| (i.events.clone(), i.modifiers));
         let over = response.hovered() || response.is_pointer_button_down_on();

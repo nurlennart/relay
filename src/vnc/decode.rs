@@ -24,8 +24,11 @@ pub const ENCODINGS: [i32; 7] = [
     DESKTOP_SIZE,
 ];
 
-/// Screens beyond this many pixels a side are refused rather than allocated.
-pub const MAX_SIDE: u16 = 16384;
+/// Screens beyond this many pixels a side are refused rather than allocated: the largest
+/// texture egui's GPU setup lets Relay draw.
+pub const MAX_SIDE: u16 = 8192;
+/// The most pixels a screen may have, as many as 8K, so each copy of it stays within 128 MiB.
+pub const MAX_PIXELS: usize = 1 << 25;
 /// The largest pointer shape accepted, in pixels a side.
 const MAX_POINTER: u16 = 256;
 /// The most compressed data one ZRLE rectangle may carry.
@@ -86,6 +89,17 @@ impl Screen {
         self.rgba = black(self.width * self.height);
     }
 
+    /// Takes the size of `rect`. A notice that only rearranged the monitors keeps the picture,
+    /// as the server does not send what did not change.
+    fn resize_to(&mut self, rect: Rect) -> Result<Change, String> {
+        valid_size(rect.width, rect.height)?;
+        if [self.width, self.height] == [rect.width, rect.height].map(usize::from) {
+            return Ok(Change::Nothing);
+        }
+        self.resize(rect.width, rect.height);
+        Ok(Change::Resized)
+    }
+
     /// Reads one rectangle's data in `encoding` from `reader` and applies it.
     pub async fn apply<R: AsyncRead + Unpin>(
         &mut self,
@@ -112,7 +126,7 @@ impl Screen {
             COPY_RECT => {
                 let x = reader.read_u16().await.map_err(io)?;
                 let y = reader.read_u16().await.map_err(io)?;
-                self.copy(rect, [x, y]);
+                self.copy(rect, [x, y])?;
             }
             HEXTILE => self.hextile(reader, rect).await?,
             ZRLE => {
@@ -125,10 +139,7 @@ impl Screen {
                 let plain = self.inflate(&data, rect)?;
                 self.zrle(rect, &plain)?;
             }
-            DESKTOP_SIZE => {
-                self.resize(valid_side(rect.width)?, valid_side(rect.height)?);
-                return Ok(Change::Resized);
-            }
+            DESKTOP_SIZE => return self.resize_to(rect),
             EXTENDED_DESKTOP_SIZE => {
                 let screens = reader.read_u8().await.map_err(io)?;
                 let mut skip = vec![0u8; 3 + usize::from(screens) * 16];
@@ -137,8 +148,7 @@ impl Screen {
                 if rect.y != 0 || (rect.width, rect.height) == (0, 0) {
                     return Ok(Change::Nothing);
                 }
-                self.resize(valid_side(rect.width)?, valid_side(rect.height)?);
-                return Ok(Change::Resized);
+                return self.resize_to(rect);
             }
             CURSOR => {
                 let mut colors = vec![0u8; pixels * 4];
@@ -187,23 +197,21 @@ impl Screen {
     }
 
     /// Copies the rectangle at `from` to `rect`; the two may overlap.
-    fn copy(&mut self, rect: Rect, from: [u16; 2]) {
+    fn copy(&mut self, rect: Rect, from: [u16; 2]) -> Result<(), String> {
         let (width, height) = (usize::from(rect.width), usize::from(rect.height));
         let [sx, sy] = from.map(usize::from);
-        let mut rows = Vec::with_capacity(width * height * 4);
-        for y in sy..sy + height {
-            for x in sx..sx + width {
-                let pixel = if x < self.width && y < self.height {
-                    let i = (y * self.width + x) * 4;
-                    [self.rgba[i + 2], self.rgba[i + 1], self.rgba[i]]
-                } else {
-                    [0; 3]
-                };
-                rows.extend_from_slice(&pixel);
-                rows.push(0);
-            }
+        if sx + width > self.width || sy + height > self.height {
+            return Err("the server copied from outside the screen".into());
         }
-        self.raw(rect, &rows);
+        let [dx, dy] = [rect.x, rect.y].map(usize::from);
+        // Copying down goes bottom row first, so each row is read before it is overwritten.
+        for i in 0..height {
+            let row = if sy < dy { height - 1 - i } else { i };
+            let start = ((sy + row) * self.width + sx) * 4;
+            let to = ((dy + row) * self.width + dx) * 4;
+            self.rgba.copy_within(start..start + width * 4, to);
+        }
+        Ok(())
     }
 
     /// Hextile: 16×16 tiles, each raw or a background with optional subrectangles.
@@ -374,14 +382,24 @@ impl Screen {
     }
 }
 
-/// A screen's side, which must be at least a pixel and at most `MAX_SIDE`.
-pub fn valid_side(side: u16) -> Result<u16, String> {
-    if side == 0 || side > MAX_SIDE {
+/// Checks a screen size from the server: each side at least a pixel and at most `MAX_SIDE`,
+/// and at most `MAX_PIXELS` in all.
+pub fn valid_size(width: u16, height: u16) -> Result<(), String> {
+    if width == 0 || height == 0 {
         return Err(format!(
-            "the server asked for an unusable screen size ({side} pixels)"
+            "the server asked for an unusable screen size ({width}×{height} pixels)"
         ));
     }
-    Ok(side)
+    if width > MAX_SIDE
+        || height > MAX_SIDE
+        || usize::from(width) * usize::from(height) > MAX_PIXELS
+    {
+        return Err(format!(
+            "the remote screen is {width}×{height} pixels, larger than Relay can show \
+             ({MAX_SIDE} pixels a side, 8K in all)"
+        ));
+    }
+    Ok(())
 }
 
 fn black(pixels: usize) -> Vec<u8> {
@@ -509,9 +527,37 @@ mod tests {
         let mut reader = &[][..];
         let pointer = rect(0, 0, 1000, 1000);
         assert!(screen.apply(&mut reader, pointer, CURSOR).await.is_err());
-        // Copying from outside the screen reads black rather than past it.
-        apply(&mut screen, rect(0, 0, 2, 2), COPY_RECT, &[0, 9, 0, 9]).await;
+        // Nor may a copy come from outside it.
+        let mut reader = &[0, 1, 0, 0][..];
+        assert!(
+            screen
+                .apply(&mut reader, rect(0, 0, 2, 2), COPY_RECT)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn copies_down_and_right_overlap_their_source() {
+        let mut screen = Screen::new(3, 3);
+        let data: Vec<u8> = (0..4).flat_map(|i| [i, i, i, 0]).collect();
+        apply(&mut screen, rect(0, 0, 2, 2), RAW, &data).await;
+        apply(&mut screen, rect(1, 1, 2, 2), COPY_RECT, &[0, 0, 0, 0]).await;
         assert_eq!(pixel(&screen, 1, 1), [0, 0, 0, 255]);
+        assert_eq!(pixel(&screen, 2, 1), [1, 1, 1, 255]);
+        assert_eq!(pixel(&screen, 1, 2), [2, 2, 2, 255]);
+        assert_eq!(pixel(&screen, 2, 2), [3, 3, 3, 255]);
+        assert_eq!(pixel(&screen, 1, 0), [1, 1, 1, 255]);
+    }
+
+    #[test]
+    fn screens_must_fit_a_texture_and_the_pixel_budget() {
+        assert!(valid_size(3840, 2160).is_ok());
+        assert!(valid_size(7680, 4320).is_ok());
+        assert!(valid_size(8193, 1).is_err());
+        assert!(valid_size(11520, 2160).is_err());
+        assert!(valid_size(8192, 8192).is_err());
+        assert!(valid_size(0, 600).is_err());
     }
 
     #[tokio::test]
@@ -641,6 +687,13 @@ mod tests {
             Change::Resized
         );
         assert_eq!((screen.width, screen.height), (10, 5));
+        // Rearranged monitors at the same size keep the picture.
+        apply(&mut screen, rect(0, 0, 1, 1), RAW, &[1, 2, 3, 0]).await;
+        assert_eq!(
+            apply(&mut screen, rect(1, 0, 10, 5), EXTENDED_DESKTOP_SIZE, &data).await,
+            Change::Nothing
+        );
+        assert_eq!(pixel(&screen, 0, 0), [3, 2, 1, 255]);
         assert_eq!(
             apply(
                 &mut screen,

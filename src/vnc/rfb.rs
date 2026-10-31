@@ -163,8 +163,7 @@ pub async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
     let mut format = [0u8; 16];
     stream.read_exact(&mut format).await?;
     let name = text(stream).await?;
-    decode::valid_side(width).map_err(Refusal::Failed)?;
-    decode::valid_side(height).map_err(Refusal::Failed)?;
+    decode::valid_size(width, height).map_err(Refusal::Failed)?;
 
     let mut setup = set_pixel_format();
     setup.extend(set_encodings(encodings));

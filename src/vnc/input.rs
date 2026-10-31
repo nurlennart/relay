@@ -34,6 +34,9 @@ pub struct Translator {
     wheel: egui::Vec2,
     /// The modifiers of the latest key event, which text events do not carry.
     latest: egui::Modifiers,
+    /// The latest key press went out as a shortcut, such as Alt+F, so the text it also typed
+    /// is not sent again.
+    shortcut_sent: bool,
     /// The server is a Mac, so Cmd is its Command key rather than Ctrl.
     pub mac: bool,
 }
@@ -61,6 +64,7 @@ impl Translator {
                 } if keyboard => {
                     self.latest = *modifiers;
                     if *pressed {
+                        self.shortcut_sent = false;
                         // Typed characters arrive as text; shortcuts such as Ctrl+C do not.
                         let keysym = match named(*key) {
                             Some(keysym) => Some(keysym),
@@ -71,6 +75,7 @@ impl Translator {
                             self.sync(*modifiers, &mut out);
                             self.held.insert(*key, keysym);
                             out.push(Input::Key { down: true, keysym });
+                            self.shortcut_sent = named(*key).is_none();
                         }
                     } else if let Some(keysym) = self.held.remove(key) {
                         out.push(Input::Key {
@@ -79,7 +84,13 @@ impl Translator {
                         });
                     }
                 }
-                egui::Event::Text(text) if keyboard => {
+                // Text composed with an input method arrives as a commit instead.
+                egui::Event::Text(text) | egui::Event::Ime(egui::ImeEvent::Commit(text))
+                    if keyboard =>
+                {
+                    if std::mem::take(&mut self.shortcut_sent) {
+                        continue;
+                    }
                     // Shift is part of the character; other modifiers, such as Option or AltGr
                     // used to type it, would turn it into a shortcut.
                     self.sync(
@@ -123,23 +134,32 @@ impl Translator {
                     pos,
                     button,
                     pressed,
-                    ..
+                    modifiers,
                 } => {
                     let Some(bit) = button_bit(*button) else {
                         continue;
                     };
                     if *pressed && pointer {
+                        // A Shift-click selects a range only if Shift is down first.
+                        self.sync(*modifiers, &mut out);
                         self.at = view.remote(*pos);
                         self.buttons |= bit;
                         out.push(self.pointer());
                     } else if !*pressed && self.buttons & bit != 0 {
                         // Releases always go through, so a drag past the edge still ends.
+                        self.sync(*modifiers, &mut out);
                         self.at = view.remote(*pos);
                         self.buttons &= !bit;
                         out.push(self.pointer());
                     }
                 }
-                egui::Event::MouseWheel { unit, delta, .. } if pointer => {
+                egui::Event::MouseWheel {
+                    unit,
+                    delta,
+                    modifiers,
+                    ..
+                } if pointer => {
+                    self.sync(*modifiers, &mut out);
                     let per_unit = match unit {
                         egui::MouseWheelUnit::Point => 1. / POINTS_PER_CLICK,
                         egui::MouseWheelUnit::Line => 1.,
@@ -151,9 +171,17 @@ impl Translator {
                 _ => {}
             }
         }
-        if keyboard {
-            self.sync(modifiers, &mut out);
-        }
+        // Without the keyboard, modifiers are held only for the pointer events that had them.
+        self.sync(
+            if keyboard {
+                modifiers
+            } else {
+                egui::Modifiers::NONE
+            },
+            &mut out,
+        );
+        // Text follows its key in the same frame; a later one was typed separately.
+        self.shortcut_sent = false;
         out
     }
 
@@ -427,6 +455,61 @@ mod tests {
         // The key's release arrives as a key event.
         let out = typed(&mut t, &[key(Key::V, false, cmd)], cmd);
         assert_eq!(out, [up(b'v'.into())]);
+    }
+
+    #[test]
+    fn a_shortcut_is_not_typed_again_and_input_methods_type() {
+        let mut t = Translator::default();
+        let events = [
+            key(Key::A, true, Modifiers::ALT),
+            egui::Event::Text("a".into()),
+            key(Key::A, false, Modifiers::ALT),
+        ];
+        let out = typed(&mut t, &events, Modifiers::NONE);
+        if cfg!(target_os = "macos") {
+            // Option types characters on a Mac.
+            assert_eq!(out, [down(b'a'.into()), up(b'a'.into())]);
+        } else {
+            assert_eq!(
+                out,
+                [down(ALT), down(b'a'.into()), up(b'a'.into()), up(ALT)]
+            );
+        }
+        let commit = egui::Event::Ime(egui::ImeEvent::Commit("日".into()));
+        let out = typed(&mut t, &[commit], Modifiers::NONE);
+        assert_eq!(out, [down(0x0100_65e5), up(0x0100_65e5)]);
+    }
+
+    #[test]
+    fn modified_clicks_and_wheels_press_their_modifiers_first() {
+        let mut t = Translator::default();
+        let click = egui::Event::PointerButton {
+            pos: pos2(100., 50.),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::SHIFT,
+        };
+        // Without the keyboard, Shift is let go again at the end of the frame.
+        let out = t.translate(&[click], Modifiers::SHIFT, &view(), false, true);
+        let at = [0, 0];
+        assert_eq!(
+            out,
+            [down(SHIFT), Input::Pointer { buttons: 1, at }, up(SHIFT)]
+        );
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0., 1.),
+            modifiers: Modifiers::CTRL,
+        };
+        let out = typed(&mut t, &[wheel], Modifiers::CTRL);
+        assert_eq!(
+            out,
+            [
+                down(CONTROL),
+                Input::Pointer { buttons: 1 | 8, at },
+                Input::Pointer { buttons: 1, at }
+            ]
+        );
     }
 
     #[test]

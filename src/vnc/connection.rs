@@ -18,7 +18,7 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
-    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    sync::mpsc::{self as queue, UnboundedReceiver, UnboundedSender, unbounded_channel},
 };
 use tokio_util::sync::{CancellationToken, DropGuard};
 
@@ -56,8 +56,6 @@ pub enum Event {
     },
     /// The connection dropped and is being restored.
     Reconnecting,
-    /// Text the remote computer copied.
-    Copied(String),
     Ended(Outcome),
 }
 
@@ -81,6 +79,8 @@ pub struct Worker {
     events: mpsc::Receiver<Event>,
     pub frame: Arc<Mutex<Frame>>,
     pub pointer: Arc<Mutex<Pointer>>,
+    /// Text the remote computer copied, if the UI has not taken it yet.
+    pub copied: Arc<Mutex<Option<String>>>,
     /// Stops the connection wherever it waits, which lets go of its socket, picture and
     /// password even while the server does not answer.
     _stop: DropGuard,
@@ -102,9 +102,15 @@ impl Worker {
             ctx,
             frame: Arc::default(),
             pointer: Arc::default(),
+            copied: Arc::default(),
+            clipboard: settings.clipboard,
             shown,
         };
-        let (frame, pointer) = (link.frame.clone(), link.pointer.clone());
+        let (frame, pointer, copied) = (
+            link.frame.clone(),
+            link.pointer.clone(),
+            link.copied.clone(),
+        );
         std::thread::Builder::new()
             .name("vnc".into())
             .spawn(move || {
@@ -130,6 +136,7 @@ impl Worker {
             events: reports,
             frame,
             pointer,
+            copied,
             _stop: stop.drop_guard(),
         })
     }
@@ -151,6 +158,11 @@ struct Link {
     ctx: egui::Context,
     frame: Arc<Mutex<Frame>>,
     pointer: Arc<Mutex<Pointer>>,
+    /// Only the latest copied text is kept, however much the server sends before the UI
+    /// takes it.
+    copied: Arc<Mutex<Option<String>>>,
+    /// Whether copied text is shared with the local clipboard.
+    clipboard: bool,
     /// Whether the desktop is on screen. A hidden one asks for updates less often and does
     /// not wake the window, and shows its latest picture when its tab does.
     shown: Arc<AtomicBool>,
@@ -272,7 +284,6 @@ enum Incoming {
     /// A whole screen update was applied to a screen of this size, so the next can be asked
     /// for.
     Updated([u16; 2]),
-    Copied(String),
     Failed(String),
 }
 
@@ -286,14 +297,16 @@ async fn session(
     link: &Link,
 ) -> Option<String> {
     let (reader, mut writer) = stream.into_split();
-    let (incoming, mut updates) = unbounded_channel();
+    // Bounded, so a server that stops reading while it keeps sending cannot pile up updates
+    // behind a blocked write; the reader waits instead.
+    let (incoming, mut updates) = queue::channel(1);
     let screen = Screen::new(server.width, server.height);
     let receiving = link.clone();
     // Reading runs on its own so that a half-read update is never abandoned for a key press.
     let reader = tokio::spawn(async move {
         let mut reader = BufReader::with_capacity(1 << 16, reader);
         let error = receive(&mut reader, screen, &receiving, &incoming).await;
-        let _ = incoming.send(Incoming::Failed(error));
+        let _ = incoming.send(Incoming::Failed(error)).await;
     });
     let _reader = AbortOnDrop(reader);
     let mut size = [server.width, server.height];
@@ -311,12 +324,6 @@ async fn session(
                         deferred = true;
                         None
                     }
-                }
-                Some(Incoming::Copied(text)) => {
-                    if settings.clipboard {
-                        link.send(Event::Copied(text));
-                    }
-                    None
                 }
                 Some(Incoming::Failed(error)) => return Some(error),
                 None => return Some("the connection ended".into()),
@@ -376,7 +383,7 @@ async fn receive<R: AsyncRead + Unpin>(
     reader: &mut R,
     mut screen: Screen,
     link: &Link,
-    incoming: &UnboundedSender<Incoming>,
+    incoming: &queue::Sender<Incoming>,
 ) -> String {
     loop {
         if let Err(error) = message(reader, &mut screen, link, incoming).await {
@@ -389,7 +396,7 @@ async fn message<R: AsyncRead + Unpin>(
     reader: &mut R,
     screen: &mut Screen,
     link: &Link,
-    incoming: &UnboundedSender<Incoming>,
+    incoming: &queue::Sender<Incoming>,
 ) -> Result<(), String> {
     let io = |e: std::io::Error| match e.kind() {
         std::io::ErrorKind::UnexpectedEof => "the server closed the connection".to_string(),
@@ -446,7 +453,7 @@ async fn message<R: AsyncRead + Unpin>(
             }
             // Sides are at most `decode::MAX_SIDE`, so they fit.
             let size = [screen.width, screen.height].map(|v| v as u16);
-            let _ = incoming.send(Incoming::Updated(size));
+            let _ = incoming.send(Incoming::Updated(size)).await;
         }
         // Colour map entries, which true colour does not use.
         1 => {
@@ -465,7 +472,12 @@ async fn message<R: AsyncRead + Unpin>(
                 Refusal::Failed(e) => e,
                 _ => "the server sent unreadable text".into(),
             })?;
-            let _ = incoming.send(Incoming::Copied(text));
+            if link.clipboard
+                && let Ok(mut copied) = link.copied.lock()
+            {
+                *copied = Some(text);
+                link.ctx.request_repaint();
+            }
         }
         kind => {
             return Err(format!(
@@ -557,7 +569,19 @@ mod tests {
             socket.read_exact(&mut request).await.unwrap();
             assert_eq!(request, [3, 1, 0, 0, 0, 0, 0, 4, 0, 2]);
         });
-        assert_eq!(next(&worker), Event::Copied("a\nb".into()));
+        // The text may land just after the request goes out.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while worker.copied.lock().unwrap().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no copied text arrived"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            worker.copied.lock().unwrap().take().as_deref(),
+            Some("a\nb")
+        );
         let update = worker.frame.lock().unwrap().take();
         let Some(crate::frame::Update::Full(image)) = update else {
             panic!("expected the first picture");

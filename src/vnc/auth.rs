@@ -33,6 +33,10 @@ pub struct AppleChallenge {
 /// the terminating zero in its 64-byte field.
 pub const APPLE_FIELD: usize = 63;
 
+/// The longest prime accepted, in bytes. Macs send 128; the work grows with the cube of the
+/// length and cannot be interrupted, so a server cannot make Relay compute for long.
+pub const MAX_PRIME: usize = 512;
+
 /// The reply to Apple authentication: the encrypted credentials, then this side's public key.
 /// `random` fills the private key and the padding after each field.
 pub fn apple_response(
@@ -47,6 +51,9 @@ pub fn apple_response(
         ));
     }
     let length = challenge.prime.len();
+    if length > MAX_PRIME {
+        return Err("The server asked for an unusually long sign-in key.".into());
+    }
     let prime = BigUint::from_bytes_be(&challenge.prime);
     if length == 0 || prime <= BigUint::from(2u8) {
         return Err("The server sent invalid sign-in parameters.".into());
@@ -164,6 +171,12 @@ mod tests {
             ..challenge
         };
         assert!(apple_response(&bad, "alex", "pw", none).is_err());
+        let huge = AppleChallenge {
+            prime: vec![0xFF; MAX_PRIME + 1],
+            server_key: vec![0x12; MAX_PRIME + 1],
+            ..bad
+        };
+        assert!(apple_response(&huge, "alex", "pw", none).is_err());
     }
 
     #[test]

@@ -60,7 +60,7 @@ impl Desktop {
     fn cancel_focus(&mut self) {
         either!(self, d => d.cancel_focus())
     }
-    fn set_shown(&self, shown: bool) {
+    fn set_shown(&mut self, shown: bool) {
         either!(self, d => d.set_shown(shown))
     }
     fn show(&mut self, ui: &mut eframe::egui::Ui) -> eframe::egui::Rect {
@@ -492,11 +492,11 @@ impl Session {
     }
     /// Tells the session whether it is on screen, so a hidden one's output does not wake the
     /// window.
-    pub fn set_shown(&self, shown: bool) {
+    pub fn set_shown(&mut self, shown: bool) {
         if let Some(terminal) = &self.terminal {
             terminal.set_shown(shown);
         }
-        if let Some(rdp) = &self.rdp {
+        if let Some(rdp) = &mut self.rdp {
             rdp.set_shown(shown);
         }
         if let Some(files) = &self.files {
