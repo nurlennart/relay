@@ -501,6 +501,8 @@ pub struct Browser {
     listing: Option<(ListingKey, Arc<Listing>)>,
     /// The folder to open first: where a reconnected browser was.
     start: Option<String>,
+    /// The folder last asked for, which Refresh asks for again while none has opened.
+    requested: String,
     /// The listing request whose answer is awaited; older answers are dropped.
     seq: u64,
     /// The item to select when the awaited listing arrives.
@@ -654,6 +656,7 @@ impl Browser {
             listed: 0,
             listing: None,
             start,
+            requested: String::new(),
             seq: 0,
             land_on: None,
             next_id: 1,
@@ -758,8 +761,12 @@ impl Browser {
                         }
                     }
                     Err(e) => {
-                        // The first folder may be gone after a reconnect; fall back to home.
-                        if self.path.is_empty() && !self.home.is_empty() {
+                        // The first folder may be gone after a reconnect; fall back to home,
+                        // once. If home fails too, Refresh tries again.
+                        if self.path.is_empty()
+                            && !self.home.is_empty()
+                            && self.requested != self.home
+                        {
                             self.list(self.home.clone());
                         }
                         self.view.back.pop();
@@ -889,12 +896,19 @@ impl Browser {
         self.land_on = None;
         self.loading = true;
         let seq = self.seq;
+        self.requested = path.clone();
         self.send(Command::List { seq, path });
     }
 
+    /// Lists the current folder again, or, while none has opened, the one last asked for.
     pub fn refresh(&mut self) {
-        if !self.path.is_empty() {
-            self.list(self.path.clone());
+        let path = if self.path.is_empty() {
+            self.requested.clone()
+        } else {
+            self.path.clone()
+        };
+        if !path.is_empty() {
+            self.list(path);
         }
     }
 
@@ -2084,6 +2098,36 @@ mod tests {
         wait(&mut browser, "the failed listing", |b| !b.loading);
         assert!(browser.error.as_deref().unwrap().contains("No such file"));
         assert_eq!(browser.path, canonical, "a failed listing keeps the folder");
+
+        // A home that cannot be listed is asked for once, not again and again; Refresh
+        // tries again.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let home = root.join("home");
+            std::fs::create_dir(&home).unwrap();
+            let mode = |m| std::fs::Permissions::from_mode(m);
+            std::fs::set_permissions(&home, mode(0o300)).unwrap();
+            if std::fs::read_dir(&home).is_ok() {
+                eprintln!("skipping: permissions do not apply to this user");
+            } else {
+                let mut browser = local_browser(&home).unwrap();
+                let asked = browser.seq;
+                std::thread::sleep(Duration::from_millis(300));
+                browser.poll();
+                assert_eq!(browser.seq, asked, "home was asked for again");
+                assert!(!browser.loading && browser.path.is_empty());
+                assert!(browser.error.is_some());
+                std::fs::set_permissions(&home, mode(0o755)).unwrap();
+                browser.refresh();
+                wait(&mut browser, "the retried listing", |b| !b.path.is_empty());
+                assert_eq!(
+                    browser.path,
+                    home.canonicalize().unwrap().display().to_string()
+                );
+            }
+            std::fs::set_permissions(&home, mode(0o755)).unwrap();
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

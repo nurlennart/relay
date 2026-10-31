@@ -36,6 +36,12 @@ impl App {
         self.generation += 1;
     }
 
+    /// Whether the library offers Refresh: a shared one always, and the personal one once a
+    /// save was refused, as when another Relay window saved it first.
+    pub(super) fn offers_refresh(&self) -> bool {
+        !matches!(self.location, database::Location::Local(_)) || self.recovery.is_some()
+    }
+
     fn generation(&self) -> Generation {
         (self.generation, self.connections.len())
     }
@@ -185,9 +191,16 @@ impl App {
                 {
                     self.new_connection();
                 }
-                if !matches!(self.location, database::Location::Local(_))
+                let personal = matches!(self.location, database::Location::Local(_));
+                let hint = if personal {
+                    "Load the library as last saved, as by another Relay window. \
+                     Your unsaved changes can still be exported."
+                } else {
+                    "Load the latest team changes"
+                };
+                if self.offers_refresh()
                     && outline_button(ui, "Refresh", 0.)
-                        .on_hover_text("Load the latest team changes")
+                        .on_hover_text(hint)
                         .clicked()
                 {
                     self.refresh();
