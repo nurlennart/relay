@@ -539,8 +539,10 @@ impl App {
             return;
         }
         if modifiers.command {
+            // The selection may be a row a search or filter now hides, which is never chosen.
             if self.marked.is_empty()
                 && let Some(current) = self.selected
+                && shown.contains(&current)
             {
                 self.marked.insert(current);
             }
