@@ -80,8 +80,12 @@ impl Process {
         let exit = Arc::new(Mutex::new(None));
         let waited = exit.clone();
         let wake = ctx.clone();
+        let input = Arc::new(InputQueue::default());
+        let ended = input.clone();
         std::thread::spawn(move || {
             let status = child.wait();
+            // Input has nowhere to go now, so the thread writing it ends too.
+            ended.close();
             *waited.lock().unwrap() = Some(status);
             if let Some(ctx) = wake {
                 ctx.request_repaint();
@@ -93,7 +97,6 @@ impl Process {
             5000,
             Replies::default(),
         )));
-        let input = Arc::new(InputQueue::default());
         let queued = input.clone();
         let input_error = Arc::new(Mutex::new(None));
         let (failed, wake) = (input_error.clone(), ctx.clone());
@@ -155,6 +158,8 @@ impl Process {
                             // Answers queue behind input typed before them.
                             if !response.is_empty()
                                 && let Err(e) = replies.send(&response, true)
+                                // Once the program has ended, a reply has no one to read it.
+                                && !replies.is_closed()
                             {
                                 *reply_error.lock().unwrap() = Some(e);
                                 if let Some(ctx) = &ctx {
@@ -462,6 +467,18 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
         process.resize(30, 100).unwrap();
+        // Once a program ends, its input closes, which lets the thread writing it go.
+        let ended = Process::spawn(shell("exit 0"), None).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while !ended.exit_seen() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the program did not end"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(ended.input.is_closed());
+        assert!(ended.write(b"too late").is_err());
         // A program that does not read never holds up whoever sends it input.
         if cfg!(unix) {
             process.write(b"sleep 30\r").unwrap();

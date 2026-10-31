@@ -74,6 +74,10 @@ impl InputQueue {
         Some(bytes)
     }
 
+    pub fn is_closed(&self) -> bool {
+        self.state.lock().unwrap().closed
+    }
+
     pub fn close(&self) {
         let mut state = self.state.lock().unwrap();
         state.closed = true;
