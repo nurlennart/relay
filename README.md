@@ -2,7 +2,7 @@
 
 **All your remote machines in one calm, fast window.**
 
-Relay keeps your RDP and SSH connections in a searchable library and opens them in tabs: remote desktops, terminals and file browsers, side by side if you like. It's a small native app for Windows, macOS and Linux, written in Rust.
+Relay keeps your RDP, VNC and SSH connections in a searchable library and opens them in tabs: remote desktops, terminals and file browsers, side by side if you like. It's a small native app for Windows, macOS and Linux, written in Rust.
 
 ![Relay's connection library with fourteen connections in five groups, and an SSH terminal and file browser open in tabs](assets/screenshot.png)
 
@@ -74,7 +74,7 @@ The [user guide](docs/guide.md) covers everything in detail:
 - [Connection library](docs/guide.md#connection-library): groups, favorites, choosing several connections, split view and detached windows
 - [Import and export](docs/guide.md#import-and-export): SSH config, `.rdp`, CSV and JSON
 - [Shared team libraries](docs/guide.md#shared-team-libraries): setting up MSSQL, MySQL or SQLite
-- [Remote desktops](docs/guide.md#sessions), [SSH](docs/guide.md#ssh) and the [file browser](docs/guide.md#sftp-file-browser)
+- [Remote desktops](docs/guide.md#sessions), [VNC](docs/guide.md#vnc), [SSH](docs/guide.md#ssh) and the [file browser](docs/guide.md#sftp-file-browser)
 - [Where Relay keeps your data](docs/guide.md#where-relay-keeps-data)
 
 Found a bug? The version and commit are at the top of **Settings**; click them to copy both into your report. To build Relay yourself, see [CONTRIBUTING.md](CONTRIBUTING.md).
