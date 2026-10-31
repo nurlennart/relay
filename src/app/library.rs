@@ -103,6 +103,7 @@ impl App {
                         Filter::Favorites => c.favorite,
                         Filter::Rdp => c.protocol == Protocol::Rdp,
                         Filter::Ssh => c.protocol == Protocol::Ssh,
+                        Filter::Vnc => c.protocol == Protocol::Vnc,
                     }
             })
             .collect();
@@ -225,8 +226,9 @@ impl App {
                         Filter::All => "All connections",
                         Filter::Recent => "Recent",
                         Filter::Favorites => "Favorites",
-                        Filter::Rdp => "Remote desktops",
+                        Filter::Rdp => "RDP desktops",
                         Filter::Ssh => "SSH terminals",
+                        Filter::Vnc => "VNC desktops",
                     });
                     let open = self.sessions.iter().filter(|s| s.is_running()).count();
                     let mut summary = if order.len() == total {

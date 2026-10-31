@@ -1,6 +1,7 @@
 //! Turns egui keyboard, mouse, and wheel events into RDP input. Keys are sent as scancodes of
 //! their physical position, so the remote keyboard layout decides which character they type.
-use eframe::egui::{self, Key, Pos2, Rect};
+use crate::frame::View;
+use eframe::egui::{self, Key, Pos2};
 use ironrdp_input::{MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 
 const LEFT_SHIFT: u16 = 0x2A;
@@ -12,38 +13,10 @@ const NOTCH: f32 = 120.;
 /// Points of smooth (touchpad) scrolling that make up one notch.
 const POINTS_PER_NOTCH: f32 = 50.;
 
-/// Where the remote desktop is drawn, to map pointer positions onto it.
-#[derive(Clone, Copy, Debug)]
-pub struct View {
-    /// The area the picture covers, in points.
-    pub rect: Rect,
-    /// The remote desktop size in pixels.
-    pub size: [usize; 2],
-}
-
-impl View {
-    /// The area of `available` that a picture of `size` fills when scaled to fit it without
-    /// distortion, centered.
-    pub fn fit(available: Rect, size: [usize; 2]) -> Self {
-        let [w, h] = size.map(|v| v.max(1) as f32);
-        let scale = (available.width() / w).min(available.height() / h);
-        let rect = Rect::from_center_size(available.center(), egui::vec2(w * scale, h * scale));
-        Self { rect, size }
-    }
-
-    /// The remote pixel under `pos`, clamped to the desktop so drags past its edge still end.
-    pub fn remote(&self, pos: Pos2) -> MousePosition {
-        let at = |offset: f32, extent: f32, pixels: usize| {
-            let max = pixels.saturating_sub(1) as f32;
-            ((offset / extent.max(1.)) * pixels as f32)
-                .floor()
-                .clamp(0., max) as u16
-        };
-        MousePosition {
-            x: at(pos.x - self.rect.min.x, self.rect.width(), self.size[0]),
-            y: at(pos.y - self.rect.min.y, self.rect.height(), self.size[1]),
-        }
-    }
+/// The remote pixel under `pos` as IronRDP takes it.
+fn position(view: &View, pos: Pos2) -> MousePosition {
+    let [x, y] = view.remote(pos);
+    MousePosition { x, y }
 }
 
 /// Input state carried between frames.
@@ -102,7 +75,7 @@ impl Translator {
                     }
                 }
                 egui::Event::PointerMoved(pos) if pointer => {
-                    ops.push(Operation::MouseMove(view.remote(*pos)));
+                    ops.push(Operation::MouseMove(position(view, *pos)));
                 }
                 egui::Event::PointerButton {
                     pos,
@@ -113,11 +86,11 @@ impl Translator {
                     let button = mouse_button(*button);
                     if *pressed && pointer {
                         self.sync(*modifiers, &mut ops);
-                        ops.push(Operation::MouseMove(view.remote(*pos)));
+                        ops.push(Operation::MouseMove(position(view, *pos)));
                         ops.push(Operation::MouseButtonPressed(button));
                     } else if !*pressed {
                         // Releases always go through; unpressed buttons are ignored remotely.
-                        ops.push(Operation::MouseMove(view.remote(*pos)));
+                        ops.push(Operation::MouseMove(position(view, *pos)));
                         ops.push(Operation::MouseButtonReleased(button));
                     }
                 }
@@ -306,7 +279,7 @@ pub fn scancode(key: Key) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egui::{Modifiers, pos2, vec2};
+    use egui::{Modifiers, Rect, pos2, vec2};
 
     fn view() -> View {
         View {
@@ -439,24 +412,6 @@ mod tests {
                 Operation::MouseMove(MousePosition { x: 0, y: 0 }),
                 Operation::MouseButtonReleased(MouseButton::Right),
             ],
-        );
-    }
-
-    #[test]
-    fn pointer_positions_scale_to_remote_pixels() {
-        let v = view();
-        assert_eq!(v.remote(pos2(100., 50.)), MousePosition { x: 0, y: 0 });
-        assert_eq!(v.remote(pos2(300., 200.)), MousePosition { x: 400, y: 300 });
-        assert_eq!(v.remote(pos2(900., 900.)), MousePosition { x: 799, y: 599 });
-        assert_eq!(v.remote(pos2(-5., 60.)), MousePosition { x: 0, y: 20 });
-        // A 16:9 desktop in a square area is letterboxed, centered.
-        let fit = View::fit(
-            Rect::from_min_size(pos2(0., 0.), vec2(400., 400.)),
-            [1600, 900],
-        );
-        assert_eq!(
-            fit.rect,
-            Rect::from_min_max(pos2(0., 87.5), pos2(400., 312.5))
         );
     }
 

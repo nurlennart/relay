@@ -1,6 +1,7 @@
-//! The remote desktop's picture, shared between the connection thread that decodes it and the
-//! UI that uploads the changed parts to a texture.
-use eframe::egui::{self, Color32, ColorImage};
+//! A remote desktop's picture, shared between the connection thread that decodes it and the
+//! UI that uploads the changed parts to a texture, and where the picture sits in its tab.
+//! RDP (through IronRDP) and VNC both draw this way.
+use eframe::egui::{self, Color32, ColorImage, Pos2, Rect};
 
 /// A rectangle of remote pixels with exclusive right and bottom edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,9 +115,50 @@ pub fn upload(ctx: &egui::Context, texture: &mut Option<egui::TextureHandle>, up
     }
 }
 
+/// Where a remote desktop is drawn, to map pointer positions onto it.
+#[derive(Clone, Copy, Debug)]
+pub struct View {
+    /// The area the picture covers, in points.
+    pub rect: Rect,
+    /// The remote desktop size in pixels.
+    pub size: [usize; 2],
+}
+
+impl View {
+    /// The area of `available` that a picture of `size` fills when scaled to fit it without
+    /// distortion, centered.
+    pub fn fit(available: Rect, size: [usize; 2]) -> Self {
+        let [w, h] = size.map(|v| v.max(1) as f32);
+        let scale = (available.width() / w).min(available.height() / h);
+        let rect = Rect::from_center_size(available.center(), egui::vec2(w * scale, h * scale));
+        Self { rect, size }
+    }
+
+    /// The remote pixel under `pos`, clamped to the desktop so drags past its edge still end.
+    pub fn remote(&self, pos: Pos2) -> [u16; 2] {
+        let at = |offset: f32, extent: f32, pixels: usize| {
+            let max = pixels.saturating_sub(1) as f32;
+            ((offset / extent.max(1.)) * pixels as f32)
+                .floor()
+                .clamp(0., max) as u16
+        };
+        [
+            at(pos.x - self.rect.min.x, self.rect.width(), self.size[0]),
+            at(pos.y - self.rect.min.y, self.rect.height(), self.size[1]),
+        ]
+    }
+
+    /// Where remote pixel `[x, y]` appears, in points.
+    pub fn local(&self, [x, y]: [f32; 2]) -> Pos2 {
+        let [w, h] = self.size.map(|v| v.max(1) as f32);
+        self.rect.min + egui::vec2(x / w * self.rect.width(), y / h * self.rect.height())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::{pos2, vec2};
 
     fn rgba(width: usize, height: usize, value: u8) -> Vec<u8> {
         vec![value; width * height * 4]
@@ -229,5 +271,27 @@ mod tests {
             },
         );
         assert_eq!(frame.take(), None);
+    }
+
+    #[test]
+    fn pointer_positions_scale_to_remote_pixels() {
+        let v = View {
+            rect: Rect::from_min_size(pos2(100., 50.), vec2(400., 300.)),
+            size: [800, 600],
+        };
+        assert_eq!(v.remote(pos2(100., 50.)), [0, 0]);
+        assert_eq!(v.remote(pos2(300., 200.)), [400, 300]);
+        assert_eq!(v.remote(pos2(900., 900.)), [799, 599]);
+        assert_eq!(v.remote(pos2(-5., 60.)), [0, 20]);
+        assert_eq!(v.local([400., 300.]), pos2(300., 200.));
+        // A 16:9 desktop in a square area is letterboxed, centered.
+        let fit = View::fit(
+            Rect::from_min_size(pos2(0., 0.), vec2(400., 400.)),
+            [1600, 900],
+        );
+        assert_eq!(
+            fit.rect,
+            Rect::from_min_max(pos2(0., 87.5), pos2(400., 312.5))
+        );
     }
 }

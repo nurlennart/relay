@@ -7,6 +7,7 @@ mod csv_io;
 mod database;
 mod file_dialog;
 mod fonts;
+mod frame;
 mod import;
 mod json_io;
 mod model;
@@ -18,6 +19,7 @@ mod sftp;
 mod state;
 mod terminal;
 mod theme;
+mod vnc;
 
 fn main() -> eframe::Result {
     // ssh starts Relay again to ask for passwords for the file browser; see `askpass`.

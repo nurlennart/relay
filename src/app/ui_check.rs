@@ -131,6 +131,7 @@ pub fn seed(app: &mut App) {
         metadata: Default::default(),
         rdp: Default::default(),
         ssh: Default::default(),
+        vnc: Default::default(),
     })
     .collect();
     // A fuller library for the README screenshots.
@@ -250,6 +251,7 @@ pub fn seed(app: &mut App) {
                 metadata: Default::default(),
                 rdp: Default::default(),
                 ssh: Default::default(),
+                vnc: Default::default(),
             });
         }
     }
@@ -388,6 +390,20 @@ git pull && ./deploy.sh",
             height: 1080,
         };
         app.edit(c);
+    }
+    if std::env::var_os("RELAY_UI_VNC").is_some() {
+        let mut c = app.connections[0].clone();
+        c.protocol = Protocol::Vnc;
+        c.port = 5900;
+        c.username = String::new();
+        c.vnc.view_only = true;
+        app.edit(c);
+    }
+    // A live VNC session, to `host:port`.
+    if let Ok(target) = std::env::var("RELAY_UI_VNC_SESSION")
+        && let Some(c) = Connection::quick(&format!("vnc://{target}"))
+    {
+        app.connect(c, false);
     }
     if let Some(kind) = std::env::var_os("RELAY_UI_DATABASE") {
         app.modal = Modal::Library;

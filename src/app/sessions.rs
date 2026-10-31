@@ -224,7 +224,7 @@ impl App {
                                 icon.center(),
                                 14.,
                                 match s.connection.protocol {
-                                    Protocol::Rdp => colors.rdp,
+                                    Protocol::Rdp | Protocol::Vnc => colors.rdp,
                                     Protocol::Ssh => colors.accent,
                                 },
                             );
@@ -388,11 +388,11 @@ impl App {
             && s.is_running()
             && s.error.is_none()
             && !s.full_screen()
-            && !(rdp::FULL_SCREEN_IN_WINDOW && pane == Pane::Window)
+            && !(s.full_screen_in_window() && pane == Pane::Window)
         {
             actions.full_screen = ui
                 .button("Full screen")
-                .on_hover_text(rdp::FULL_SCREEN_HELP)
+                .on_hover_text(s.full_screen_help())
                 .clicked();
         }
         actions

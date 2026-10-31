@@ -30,7 +30,7 @@ pub(super) enum Icon {
 impl Icon {
     pub(super) fn protocol(protocol: Protocol) -> Self {
         match protocol {
-            Protocol::Rdp => Self::Desktop,
+            Protocol::Rdp | Protocol::Vnc => Self::Desktop,
             Protocol::Ssh => Self::Terminal,
         }
     }

@@ -4,10 +4,10 @@
 //! specific beyond the choice made in `rdp/mod.rs`.
 mod clipboard;
 mod connection;
-mod frame;
 mod input;
 
 use crate::{
+    frame,
     model::{Audio, Connection, Display, Keys, RdpOptions},
     platform::Window,
 };
@@ -418,7 +418,7 @@ impl RdpClient {
         let Some(texture) = &self.texture else {
             return;
         };
-        let view = input::View::fit(rect, texture.size());
+        let view = frame::View::fit(rect, texture.size());
         painter.image(
             texture.id(),
             view.rect,

@@ -1,12 +1,71 @@
 use crate::{
     model::{Connection, Protocol},
     platform::Window,
-    rdp::RdpClient,
+    rdp::{self, RdpClient},
     sftp::Browser,
     state::Library,
     terminal::Terminal,
+    vnc::{self, VncClient},
 };
 use std::time::{Duration, Instant};
+
+/// A remote desktop: RDP through the platform's client, or VNC drawn by Relay.
+enum Desktop {
+    Rdp(RdpClient),
+    Vnc(VncClient),
+}
+
+/// Calls the method both kinds of desktop have.
+macro_rules! either {
+    ($desktop:expr, $client:ident => $call:expr) => {
+        match $desktop {
+            Desktop::Rdp($client) => $call,
+            Desktop::Vnc($client) => $call,
+        }
+    };
+}
+
+impl Desktop {
+    fn poll(&mut self) {
+        either!(self, d => d.poll())
+    }
+    fn ended(&self) -> bool {
+        either!(self, d => d.ended())
+    }
+    fn error(&self) -> Option<String> {
+        either!(self, d => d.error())
+    }
+    fn reconnecting(&self) -> bool {
+        either!(self, d => d.reconnecting())
+    }
+    fn can_full_screen(&self) -> bool {
+        either!(self, d => d.can_full_screen())
+    }
+    fn full_screen(&self) -> bool {
+        either!(self, d => d.full_screen())
+    }
+    fn enter_full_screen(&mut self) -> Result<(), String> {
+        either!(self, d => d.enter_full_screen())
+    }
+    fn leave_full_screen(&mut self) {
+        either!(self, d => d.leave_full_screen())
+    }
+    fn focused(&self) -> bool {
+        either!(self, d => d.focused())
+    }
+    fn focus(&mut self) {
+        either!(self, d => d.focus())
+    }
+    fn cancel_focus(&mut self) {
+        either!(self, d => d.cancel_focus())
+    }
+    fn set_shown(&self, shown: bool) {
+        either!(self, d => d.set_shown(shown))
+    }
+    fn show(&mut self, ui: &mut eframe::egui::Ui) -> eframe::egui::Rect {
+        either!(self, d => d.show(ui))
+    }
+}
 
 /// How a session's tab presents it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -26,7 +85,7 @@ pub struct Session {
     /// Shows the connection's files over SFTP instead of a terminal.
     pub browsing: bool,
     pub files: Option<Browser>,
-    rdp: Option<RdpClient>,
+    rdp: Option<Desktop>,
     /// Connects the remote desktop to the server's administrative session, like mstsc /admin.
     /// It belongs to the tab, not the saved connection.
     pub admin: bool,
@@ -243,13 +302,21 @@ impl Session {
             return;
         }
         if self.rdp.is_none() {
-            match RdpClient::new(
-                self.host.or(parent),
-                &self.connection,
-                self.admin,
-                self.ctx.clone(),
-            ) {
-                Ok(rdp) => self.rdp = Some(rdp),
+            let desktop = match self.connection.protocol {
+                Protocol::Vnc => Ok(Desktop::Vnc(VncClient::new(
+                    &self.connection,
+                    self.ctx.clone(),
+                ))),
+                _ => RdpClient::new(
+                    self.host.or(parent),
+                    &self.connection,
+                    self.admin,
+                    self.ctx.clone(),
+                )
+                .map(Desktop::Rdp),
+            };
+            match desktop {
+                Ok(desktop) => self.rdp = Some(desktop),
                 Err(error) => {
                     self.error = Some(error);
                     self.ended = true;
@@ -271,7 +338,8 @@ impl Session {
         self.place_around(rect, &[]);
     }
     pub fn place_around(&mut self, rect: Option<[i32; 4]>, holes: &[[i32; 4]]) {
-        if let Some(rdp) = &mut self.rdp
+        // Only RDP on Windows has a native window to place; VNC is drawn with the rest.
+        if let Some(Desktop::Rdp(rdp)) = &mut self.rdp
             && let Err(error) = rdp.place(rect, holes)
         {
             let _ = rdp.place(None, &[]);
@@ -281,7 +349,7 @@ impl Session {
     /// Hosts a remote desktop in `window`, or back in the main window with `None`.
     pub fn set_host(&mut self, window: Option<Window>, main: Option<Window>) {
         self.host = window;
-        if let (Some(rdp), Some(parent)) = (&mut self.rdp, window.or(main)) {
+        if let (Some(Desktop::Rdp(rdp)), Some(parent)) = (&mut self.rdp, window.or(main)) {
             rdp.set_parent(parent);
         }
     }
@@ -325,7 +393,10 @@ impl Session {
         self.retry = None;
     }
     pub fn display_warning(&self) -> Option<&str> {
-        self.rdp.as_ref().and_then(|r| r.display_warning())
+        match &self.rdp {
+            Some(Desktop::Rdp(rdp)) => rdp.display_warning(),
+            _ => None,
+        }
     }
     /// A transient connection state worth showing above the session.
     pub fn status(&self) -> Option<String> {
@@ -343,6 +414,18 @@ impl Session {
     }
     pub fn can_full_screen(&self) -> bool {
         self.rdp.as_ref().is_some_and(|r| r.can_full_screen())
+    }
+    /// Whether full screen fills Relay's own window, rather than handing the desktop to a
+    /// native full-screen mode as Windows' RDP control does.
+    pub fn full_screen_in_window(&self) -> bool {
+        self.connection.protocol == Protocol::Vnc || rdp::FULL_SCREEN_IN_WINDOW
+    }
+    /// How to leave full screen, for the Full screen button.
+    pub fn full_screen_help(&self) -> &'static str {
+        match self.connection.protocol {
+            Protocol::Vnc => vnc::FULL_SCREEN_HELP,
+            _ => rdp::FULL_SCREEN_HELP,
+        }
     }
     pub fn full_screen(&self) -> bool {
         self.rdp.as_ref().is_some_and(|r| r.full_screen())
@@ -451,7 +534,7 @@ fn terminal_for(
 ) -> Result<Option<Terminal>, String> {
     match connection.protocol {
         Protocol::Ssh => Terminal::ssh(connection, ctx.clone()).map(Some),
-        Protocol::Rdp => Ok(None),
+        Protocol::Rdp | Protocol::Vnc => Ok(None),
     }
 }
 

@@ -1,9 +1,7 @@
 //! The connection itself: a thread with its own Tokio runtime that connects, decodes the
 //! desktop into the shared frame, sends input, and reconnects after network drops.
-use super::{
-    clipboard::{self, Backend, Sink},
-    frame::{Frame, Region},
-};
+use super::clipboard::{self, Backend, Sink};
+use crate::frame::{Frame, Region};
 use eframe::egui;
 use ironrdp_cliprdr::{CliprdrClient, backend::ClipboardMessage};
 use ironrdp_connector::{

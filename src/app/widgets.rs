@@ -173,7 +173,7 @@ pub(super) fn dialog(id: &'static str, ctx: &egui::Context) -> egui::Modal {
 pub(super) fn protocol_badge(ui: &mut egui::Ui, protocol: Protocol) {
     let colors = theme::palette(ui.ctx());
     let color = match protocol {
-        Protocol::Rdp => colors.rdp,
+        Protocol::Rdp | Protocol::Vnc => colors.rdp,
         Protocol::Ssh => colors.accent,
     };
     let label = |protocol: Protocol| {
@@ -193,7 +193,7 @@ pub(super) fn protocol_badge(ui: &mut egui::Ui, protocol: Protocol) {
     let galley = label(protocol);
     // Every badge is as wide as the widest label, so names beside them line up. It keeps its
     // own size, so a row centring it does not stretch it to the row's height.
-    let width = [Protocol::Rdp, Protocol::Ssh]
+    let width = Protocol::ALL
         .map(|p| label(p).size().x)
         .into_iter()
         .fold(0_f32, f32::max);

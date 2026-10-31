@@ -197,6 +197,7 @@ fn parse(text: &str, existing: &[Connection], filename: String) -> Result<Import
         let protocol = match raw_protocol.to_uppercase().as_str() {
             "RDP" => Protocol::Rdp,
             "SSH" => Protocol::Ssh,
+            "VNC" => Protocol::Vnc,
             _ => {
                 result.skip(format!(
                     "Row {}: unsupported protocol {raw_protocol:?}",
@@ -291,9 +292,17 @@ mod tests {
                 .filter(|c| c.protocol == protocol)
                 .count()
         };
-        assert_eq!((count(Protocol::Rdp), count(Protocol::Ssh)), (4, 2));
-        assert_eq!(first.skipped.len(), 1, "{:?}", first.skipped);
-        assert!(first.skipped[0].contains("VNC"));
+        assert_eq!(
+            (
+                count(Protocol::Rdp),
+                count(Protocol::Ssh),
+                count(Protocol::Vnc)
+            ),
+            (4, 2, 1)
+        );
+        assert!(first.skipped.is_empty(), "{:?}", first.skipped);
+        let kiosk = first.connections.iter().find(|c| c.name == "Kiosk screen");
+        assert_eq!(kiosk.map(|c| c.port), Some(5900));
         assert_eq!(first.duplicates, 1);
         let find = |name: &str| first.connections.iter().find(|c| c.name == name).unwrap();
         let lab = find("Lab node");
@@ -305,7 +314,7 @@ mod tests {
         assert_eq!(find("Design workstation").username, "STUDIO\\alex");
         assert_eq!(find("Archive").notes, "Old \"cold\" storage");
         let second = read(&fixture, &first.connections).unwrap();
-        assert_eq!(second.duplicates, 7);
+        assert_eq!(second.duplicates, 8);
         assert!(second.connections.is_empty());
 
         let mut utf16 = vec![0xff, 0xfe];
@@ -364,7 +373,7 @@ mod tests {
         let text = "Name,Host,Protocol,Group\n\
             \"A, B\",localhost,SSH,Office\n\
             Bad,-host,RDP,Office\n\
-            Other,localhost,VNC,Office\n";
+            Other,localhost,Telnet,Office\n";
         let result = parse(text, &[], "test.csv".into()).unwrap();
         assert_eq!(result.connections[0].name, "A, B");
         assert_eq!(result.connections[0].port, 22);

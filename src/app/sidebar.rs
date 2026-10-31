@@ -90,7 +90,7 @@ impl App {
                     (
                         Filter::Rdp,
                         Icon::Desktop,
-                        "Remote desktop",
+                        "RDP desktop",
                         count(Protocol::Rdp),
                     ),
                     (
@@ -98,6 +98,12 @@ impl App {
                         Icon::Terminal,
                         "SSH terminal",
                         count(Protocol::Ssh),
+                    ),
+                    (
+                        Filter::Vnc,
+                        Icon::Desktop,
+                        "VNC desktop",
+                        count(Protocol::Vnc),
                     ),
                 ];
                 let mut chosen = None;

@@ -102,6 +102,7 @@ impl App {
                 ("WINDOWS REMOTE DESKTOP", &[
                     ("Ctrl+Alt+Home", "Return keyboard focus to Relay"),
                     ("Ctrl+Alt+PageUp / PageDown", "Previous / next tab"),
+                    ("Ctrl+Alt+Enter", "Toggle VNC full screen"),
                     ("Ctrl+Alt+Break", "Toggle remote desktop full screen"),
                 ]),
             ];
