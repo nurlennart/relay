@@ -75,6 +75,36 @@ fn an_existing_personal_library_can_save_after_startup() {
         model::load(&path).unwrap()[0].notes,
         "Saved after restarting"
     );
+    assert!(!app.offers_refresh(), "nothing else writes it so far");
+
+    // Another Relay window saves first: this one's save is refused and offers Refresh,
+    // which loads that save and keeps the refused changes for export.
+    let mut theirs = model::load(&path).unwrap();
+    theirs[0].notes = "Saved by another window".into();
+    model::save(&path, &theirs).unwrap();
+    let mut mine = app.connections.clone();
+    mine[1].notes = "Mine".into();
+    assert!(app.persist(mine));
+    finish_saving(&mut app);
+    assert!(
+        app.error
+            .as_deref()
+            .unwrap()
+            .contains("changed this library")
+    );
+    assert!(app.offers_refresh());
+    app.refresh();
+    finish_saving(&mut app);
+    assert_eq!(app.connections[0].notes, "Saved by another window");
+    assert!(app.error.is_none(), "{:?}", app.error);
+    assert_eq!(app.recovery.as_ref().unwrap()[1].notes, "Mine");
+    // Saving again from the refreshed library goes through.
+    let mut again = app.connections.clone();
+    again[1].notes = "Mine, again".into();
+    assert!(app.persist(again));
+    finish_saving(&mut app);
+    assert!(app.error.is_none(), "{:?}", app.error);
+    assert!(!app.offers_refresh());
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_file_name(format!(
         ".{}.lock",
