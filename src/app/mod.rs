@@ -1213,20 +1213,24 @@ impl App {
                          Export them before closing or they will be lost.",
                     );
                 }
-                ui.horizontal(|ui| {
-                    let quit = egui::Button::new("End sessions and quit");
-                    if ui.add_enabled(self.pending.is_none(), quit).clicked() {
-                        self.remember_tabs();
-                        self.sessions.clear();
-                        self.activate(None);
-                        // The warning above was the last chance to export unsaved changes.
-                        self.recovery = None;
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                    if ui.button("Keep working").clicked() {
-                        self.quitting = false;
-                    }
-                });
+                let (quit, keep) = confirm_buttons(
+                    ui,
+                    "End sessions and quit",
+                    "Keep working",
+                    true,
+                    self.pending.is_none(),
+                );
+                if quit {
+                    self.remember_tabs();
+                    self.sessions.clear();
+                    self.activate(None);
+                    // The warning above was the last chance to export unsaved changes.
+                    self.recovery = None;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                if keep {
+                    self.quitting = false;
+                }
             });
             return;
         }
@@ -1260,14 +1264,10 @@ impl App {
                         ui.label("This removes the saved entries. Open sessions stay open.");
                         format!("Delete {} connections", ids.len())
                     };
-                    ui.horizontal(|ui| {
-                        if ui.button(delete).clicked() && self.delete_connections(&ids) {
-                            self.modal = Modal::None;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.modal = Modal::None;
-                        }
-                    });
+                    let (delete, cancel) = confirm_buttons(ui, &delete, "Cancel", true, true);
+                    if (delete && self.delete_connections(&ids)) || cancel {
+                        self.modal = Modal::None;
+                    }
                 });
                 return;
             }
@@ -1280,13 +1280,10 @@ impl App {
                     ui.heading(format!("Move {} connections to a group", ids.len()));
                     labeled(ui, "Group", |ui| group_input(ui, group, &groups));
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    ui.horizontal(|ui| {
-                        apply = ui
-                            .add_enabled(!group.trim().is_empty(), egui::Button::new("Move"))
-                            .clicked()
-                            || (enter && !group.trim().is_empty());
-                        cancel = ui.button("Cancel").clicked();
-                    });
+                    let named = !group.trim().is_empty();
+                    let (moved, cancelled) = confirm_buttons(ui, "Move", "Cancel", false, named);
+                    apply = moved || (enter && named);
+                    cancel = cancelled;
                 });
                 if apply {
                     let (ids, group) = (ids.clone(), group.trim().to_string());
@@ -1330,15 +1327,13 @@ impl App {
                 if edits > 0 {
                     ui.colored_label(ui.visuals().warn_fg_color, unsaved_edits(edits));
                 }
-                ui.horizontal(|ui| {
-                    if ui.button("Close session").clicked() {
-                        self.modal = Modal::None;
-                        self.close_tab(index);
-                    }
-                    if ui.button("Keep open").clicked() {
-                        self.modal = Modal::None;
-                    }
-                });
+                let (close, keep) = confirm_buttons(ui, "Close session", "Keep open", true, true);
+                if close {
+                    self.modal = Modal::None;
+                    self.close_tab(index);
+                } else if keep {
+                    self.modal = Modal::None;
+                }
             });
         }
     }
