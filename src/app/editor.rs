@@ -221,8 +221,7 @@ pub(super) fn ssh_options(
                     let button =
                         egui::Button::new("Browse…").min_size(Vec2::new(browse, CONTROL_HEIGHT));
                     if ui.add(button).clicked()
-                        && let Some(path) =
-                            file_dialog::choose(parent, file_dialog::Kind::Key).first()
+                        && let Some(path) = file_dialog::pick_key(parent, &options.identity)
                     {
                         options.identity = path.display().to_string();
                     }
