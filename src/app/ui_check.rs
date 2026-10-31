@@ -399,11 +399,21 @@ git pull && ./deploy.sh",
         c.vnc.view_only = true;
         app.edit(c);
     }
+    // A confirmation dialog: close (the first tab's session), delete, move or quit.
+    match std::env::var("RELAY_UI_CONFIRM").as_deref() {
+        Ok("delete") => app.modal = Modal::Delete(vec![1]),
+        Ok("move") => app.modal = Modal::MoveToGroup(vec![1, 2], "Studio".into()),
+        Ok("quit") => app.quitting = true,
+        _ => {}
+    }
     // A live VNC session, to `host:port`.
     if let Ok(target) = std::env::var("RELAY_UI_VNC_SESSION")
         && let Some(c) = Connection::quick(&format!("vnc://{target}"))
     {
         app.connect(c, false);
+        if std::env::var("RELAY_UI_CONFIRM").as_deref() == Ok("close") {
+            app.modal = Modal::Close(0);
+        }
     }
     if let Some(kind) = std::env::var_os("RELAY_UI_DATABASE") {
         app.modal = Modal::Library;
