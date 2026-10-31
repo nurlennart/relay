@@ -851,7 +851,15 @@ fn table(
             let mut area = egui::ScrollArea::vertical()
                 .id_salt(("files-list", key))
                 .max_height(rows)
-                .auto_shrink([false, false]);
+                .auto_shrink([false, false])
+                // A drag selects or moves items rather than scrolling.
+                .scroll_source(egui::scroll_area::ScrollSource {
+                    drag: false,
+                    ..Default::default()
+                });
+            if let Some(offset) = (files.view.band.as_mut()).and_then(|b| b.scroll_to.take()) {
+                area = area.vertical_scroll_offset(offset);
+            }
             if std::mem::take(&mut files.view.scroll_to_cursor)
                 && let Some(index) = files
                     .view
@@ -881,6 +889,14 @@ fn table(
             });
             let id = ui.make_persistent_id(("files-list", key)).with("scroll");
             ui.data_mut(|d| d.insert_temp(id, (output.state.offset.y, output.inner_rect.height())));
+            band(
+                ui,
+                files,
+                key,
+                names,
+                output.inner_rect,
+                output.state.offset.y,
+            );
         });
     // Show what is being dragged beside the pointer.
     if let Some(dragged) = egui::DragAndDrop::payload::<Dragged>(ui.ctx())
@@ -1047,6 +1063,8 @@ fn row(
     }
     let mut x = rect.left() + 26.;
     let name_width = columns.name - 26.;
+    // A drag that starts on the icon or name moves the items; anywhere else it selects.
+    let mut name_end = x + name_width;
     let renaming = files
         .view
         .rename
@@ -1098,7 +1116,7 @@ fn row(
         } else {
             colors.text
         });
-        cell_text(ui, rect, x, name_width, text, false);
+        name_end = x + cell_text(ui, rect, x, name_width, text, false);
     }
     x += name_width + COLUMN_GAP;
     let size = if entry.dir {
@@ -1149,10 +1167,24 @@ fn row(
     if response.secondary_clicked() && !selected {
         files.view.select_only(name);
     }
+    // A double click opens a folder, and a file in the external editor.
     if response.double_clicked() && !renaming {
-        open(files, std::slice::from_ref(name), actions);
+        if entry.dir {
+            files.navigate(name);
+        } else if !entry.special {
+            actions.push(Action::Edit(name.clone()));
+        }
     }
-    if response.dragged() && !renaming {
+    if response.drag_started()
+        && !renaming
+        && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+        && origin.x > name_end + 4.
+    {
+        let index = names.iter().position(|n| n == name).unwrap_or(0);
+        let from = index as f32 * FILE_ROW + origin.y - rect.top();
+        start_band(&mut files.view, from, origin.x, ui.input(|i| i.modifiers));
+    }
+    if response.dragged() && !renaming && files.view.band.is_none() {
         let names = if selected {
             // Keep the listing's order.
             names
@@ -1226,10 +1258,10 @@ fn row(
     (entry.dir && hovered).then_some(path)
 }
 
-/// Draws `text` in one column of a row, shortened to fit.
-fn cell_text(ui: &egui::Ui, rect: Rect, x: f32, width: f32, text: RichText, right: bool) {
+/// Draws `text` in one column of a row, shortened to fit. Returns how wide it is drawn.
+fn cell_text(ui: &egui::Ui, rect: Rect, x: f32, width: f32, text: RichText, right: bool) -> f32 {
     if width <= 0. {
-        return;
+        return 0.;
     }
     let galley = egui::WidgetText::from(text).into_galley(
         ui,
@@ -1242,11 +1274,130 @@ fn cell_text(ui: &egui::Ui, rect: Rect, x: f32, width: f32, text: RichText, righ
     } else {
         x
     };
+    let drawn = galley.size().x;
     ui.painter().galley(
         egui::pos2(left, rect.center().y - galley.size().y / 2.),
         galley,
         theme::palette(ui.ctx()).text,
     );
+    drawn
+}
+
+/// Starts a selection rectangle `from` points down the listing's rows, at `x` on screen. With
+/// Ctrl or Cmd it adds to the selection; otherwise it replaces it.
+fn start_band(view: &mut sftp::View, from: f32, x: f32, modifiers: egui::Modifiers) {
+    let base = if modifiers.command {
+        view.selected.clone()
+    } else {
+        std::collections::BTreeSet::new()
+    };
+    view.band = Some(sftp::Band {
+        from,
+        x,
+        base,
+        scroll_to: None,
+    });
+    view.focused = true;
+}
+
+/// The rows a selection rectangle from `from` to `to` points down the listing touches, of
+/// `rows` rows.
+fn band_rows(from: f32, to: f32, rows: usize) -> Option<std::ops::RangeInclusive<usize>> {
+    let (top, bottom) = (from.min(to), from.max(to));
+    let last = rows.checked_sub(1)?;
+    let first = (top.max(0.) / FILE_ROW) as usize;
+    if bottom < 0. || first > last {
+        return None;
+    }
+    Some(first..=((bottom / FILE_ROW) as usize).min(last))
+}
+
+/// Selects what the rectangle reaching `to` points down the listing covers, with the cursor
+/// on the row under the pointer.
+fn select_band(view: &mut sftp::View, names: &[String], to: f32) {
+    let Some(band) = &view.band else {
+        return;
+    };
+    let mut selected = band.base.clone();
+    let row =
+        |y: f32| names.get(((y.max(0.) / FILE_ROW) as usize).min(names.len().saturating_sub(1)));
+    let (anchor, cursor) = (row(band.from).cloned(), row(to).cloned());
+    if let Some(rows) = band_rows(band.from, to, names.len()) {
+        selected.extend(names[rows].iter().cloned());
+        view.anchor = anchor;
+        view.cursor = cursor;
+    }
+    view.selected = selected;
+}
+
+/// Follows a selection rectangle while the button is held, over the listing's `viewport`
+/// scrolled by `offset`: selects what it covers, draws it, and scrolls when the pointer goes
+/// past the top or bottom. The space below the last row starts one too, and a click there
+/// clears the selection.
+fn band(
+    ui: &mut egui::Ui,
+    files: &mut Browser,
+    key: u64,
+    names: &[String],
+    viewport: Rect,
+    offset: f32,
+) {
+    let content = names.len() as f32 * FILE_ROW;
+    let below = viewport.top() + content - offset;
+    if below < viewport.bottom() {
+        let rect = Rect::from_min_max(
+            egui::pos2(viewport.left(), below.max(viewport.top())),
+            viewport.right_bottom(),
+        );
+        let response = ui.interact(
+            rect,
+            ui.id().with(("files-below", key)),
+            Sense::click_and_drag(),
+        );
+        if response.clicked() {
+            files.view.selected.clear();
+            files.view.focused = true;
+        }
+        if response.drag_started()
+            && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+        {
+            let from = origin.y - viewport.top() + offset;
+            start_band(&mut files.view, from, origin.x, ui.input(|i| i.modifiers));
+        }
+    }
+    let Some(band) = &files.view.band else {
+        return;
+    };
+    let (down, pointer) = ui.input(|i| (i.pointer.primary_down(), i.pointer.interact_pos()));
+    let Some(pointer) = pointer.filter(|_| down) else {
+        files.view.band = None;
+        return;
+    };
+    let colors = theme::palette(ui.ctx());
+    let start = egui::pos2(band.x, band.from - offset + viewport.top());
+    ui.painter_at(viewport).rect(
+        Rect::from_two_pos(start, pointer),
+        RADIUS_SMALL,
+        colors.accent.gamma_multiply(0.12),
+        Stroke::new(1_f32, colors.accent.gamma_multiply(0.7)),
+        egui::StrokeKind::Inside,
+    );
+    let to = pointer.y - viewport.top() + offset;
+    select_band(&mut files.view, names, to);
+    // Past an edge the listing scrolls, faster the further the pointer is.
+    let past = if pointer.y < viewport.top() {
+        pointer.y - viewport.top()
+    } else {
+        (pointer.y - viewport.bottom()).max(0.)
+    };
+    let next =
+        (offset + (past * 0.5).clamp(-30., 30.)).clamp(0., (content - viewport.height()).max(0.));
+    if (next - offset).abs() >= 0.5 {
+        if let Some(band) = &mut files.view.band {
+            band.scroll_to = Some(next);
+        }
+        ui.ctx().request_repaint();
+    }
 }
 
 /// Selects after a click: alone, toggled with Ctrl or Cmd, or as a range with Shift.
@@ -1501,11 +1652,12 @@ fn edit_row(ui: &mut egui::Ui, edit: &Edit, connected: bool, actions: &mut Vec<(
         ICON_SIZE,
         if edit.unsaved() { color } else { colors.accent },
     );
+    // The buttons sit on the first line, beside the status they act on.
     let mut buttons = ui.new_child(
         UiBuilder::new()
             .max_rect(Rect::from_min_max(
                 egui::pos2(rect.right() - 180., rect.top()),
-                rect.max,
+                egui::pos2(rect.right(), rect.top() + 30.),
             ))
             .layout(Layout::right_to_left(Align::Center)),
     );
@@ -1978,5 +2130,45 @@ fn os_drops(
     }
     if !dropped.is_empty() {
         files.offer_upload(dropped, &folder);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_band_selects_the_rows_it_touches() {
+        let row = FILE_ROW;
+        assert_eq!(band_rows(5., row * 2. + 1., 10), Some(0..=2));
+        // Dragged upwards, the same rows.
+        assert_eq!(band_rows(row * 2. + 1., 5., 10), Some(0..=2));
+        // From the space below the last row, up into it.
+        assert_eq!(band_rows(row * 12., row * 8.5, 10), Some(8..=9));
+        // Past the top while scrolling, from the first row.
+        assert_eq!(band_rows(row * 3.5, -40., 10), Some(0..=3));
+        // Only the space below the rows, or an empty listing: nothing.
+        assert_eq!(band_rows(row * 11., row * 12., 10), None);
+        assert_eq!(band_rows(0., row, 0), None);
+    }
+
+    #[test]
+    fn a_band_replaces_the_selection_or_adds_to_it_with_ctrl() {
+        let names: Vec<String> = ["a", "b", "c", "d"].map(String::from).into();
+        let mut view = sftp::View::default();
+        view.select_only("d");
+        start_band(&mut view, 5., 0., egui::Modifiers::NONE);
+        select_band(&mut view, &names, FILE_ROW + 5.);
+        assert_eq!(view.selected, ["a", "b"].map(String::from).into());
+        assert_eq!(view.cursor.as_deref(), Some("b"));
+        assert_eq!(view.anchor.as_deref(), Some("a"));
+        // Shrinking the band takes rows out again.
+        select_band(&mut view, &names, 5.);
+        assert_eq!(view.selected, ["a"].map(String::from).into());
+        // With Ctrl, what was chosen before stays chosen.
+        view.select_only("d");
+        start_band(&mut view, FILE_ROW + 5., 0., egui::Modifiers::COMMAND);
+        select_band(&mut view, &names, FILE_ROW * 2. + 5.);
+        assert_eq!(view.selected, ["b", "c", "d"].map(String::from).into());
     }
 }
