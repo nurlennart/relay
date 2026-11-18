@@ -129,6 +129,7 @@ pub struct TerminalSettings {
     pub font: Option<PathBuf>,
     pub scheme: crate::terminal::Scheme,
     /// Programs in a terminal may put text on the clipboard (OSC 52), as tmux and vim do.
+    /// Off until opted in so a remote session cannot overwrite the OS clipboard by default.
     pub programs_copy: bool,
 }
 
@@ -138,7 +139,7 @@ impl Default for TerminalSettings {
             font_size: crate::terminal::FONT_SIZE,
             font: None,
             scheme: Default::default(),
-            programs_copy: true,
+            programs_copy: false,
         }
     }
 }
@@ -373,5 +374,17 @@ mod tests {
         assert_eq!(load(&path), State::default());
         std::fs::remove_file(&path).unwrap();
         assert_eq!(load(&path), State::default());
+    }
+
+    #[test]
+    fn programs_copy_defaults_off() {
+        assert!(!TerminalSettings::default().programs_copy);
+        assert!(!State::default().terminal.programs_copy);
+        // An older state file that never named the flag stays off after load.
+        let state: State = serde_json::from_str("{}").unwrap();
+        assert!(!state.terminal.programs_copy);
+        // An explicit opt-in is kept.
+        let state: State = serde_json::from_str(r#"{"terminal":{"programs_copy":true}}"#).unwrap();
+        assert!(state.terminal.programs_copy);
     }
 }
