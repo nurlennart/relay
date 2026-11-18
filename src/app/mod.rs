@@ -163,8 +163,12 @@ struct App {
     recovery: Option<Vec<Connection>>,
     pending_editor: Option<Connection>,
     /// A silent background reload of a shared library, separate from `pending` so it never
-    /// blocks or announces anything.
+    /// blocks saves. A new revision is held in `pending_sync` until the person reviews it.
     sync: Option<std::sync::mpsc::Receiver<Result<Option<database::Snapshot>, String>>>,
+    /// Shared-library revision waiting for Apply / Keep current.
+    pending_sync: Option<database::Snapshot>,
+    /// A shared-library revision the person already declined; do not prompt again until it moves.
+    ignored_sync_revision: Option<i64>,
     /// When the shared library was last reloaded in the background.
     synced: Instant,
     /// Whether the window had focus last frame, to reload when it returns.
@@ -335,6 +339,8 @@ impl App {
             recovery: None,
             pending_editor: None,
             sync: None,
+            pending_sync: None,
+            ignored_sync_revision: None,
             synced: Instant::now(),
             was_focused: true,
             db_kind: LibraryKind::Personal,

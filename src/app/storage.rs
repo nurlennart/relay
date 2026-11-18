@@ -33,6 +33,8 @@ impl App {
             Ok(snapshot) => {
                 self.set_connections(snapshot.connections);
                 self.revision = snapshot.revision;
+                self.pending_sync = None;
+                self.ignored_sync_revision = None;
                 self.storage_ok = true;
                 let mut remember_error = None;
                 let saved = self.pending_save;
@@ -82,9 +84,8 @@ impl App {
     }
 
     /// Reloads a shared library every minute and when the window regains focus, so teammates'
-    /// changes appear on their own. It is silent: nothing is announced, no control waits on it,
-    /// failures are dropped, and the library is downloaded and its list replaced only when its
-    /// revision changed.
+    /// changes can be reviewed. Failures are dropped. A new revision is held for Apply rather
+    /// than replacing the list silently (a hostile UPDATE could otherwise retarget hosts).
     pub(super) fn sync_library(&mut self, ctx: &egui::Context) {
         let focused = ctx.input(|i| i.focused);
         let regained = focused && !self.was_focused;
@@ -101,10 +102,19 @@ impl App {
                     if let Ok(Some(snapshot)) = result
                         && snapshot.revision != self.revision
                         && self.recovery.is_none()
+                        && self.pending_sync.is_none()
+                        && self.ignored_sync_revision != Some(snapshot.revision)
                     {
-                        self.set_connections(snapshot.connections);
-                        self.revision = snapshot.revision;
-                        self.forget_removed();
+                        if library_sync_changes(&self.connections, &snapshot.connections).is_empty()
+                        {
+                            // Notes/favorites-only: no phishing surface, apply quietly.
+                            self.set_connections(snapshot.connections);
+                            self.revision = snapshot.revision;
+                            self.ignored_sync_revision = None;
+                            self.forget_removed();
+                        } else {
+                            self.pending_sync = Some(snapshot);
+                        }
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.sync = None,
@@ -113,9 +123,11 @@ impl App {
         }
         // The personal library reloads only when asked; a save from a stale copy is refused.
         // Unsaved changes after a rejected save stay on screen until the user deals with them.
+        // A review in progress pauses further background downloads of the same change.
         if matches!(self.location, database::Location::Local(_))
             || !self.storage_ok
             || self.recovery.is_some()
+            || self.pending_sync.is_some()
         {
             return;
         }
@@ -125,7 +137,7 @@ impl App {
             self.synced = Instant::now();
             self.sync = Some(database::changes(
                 self.location.clone(),
-                self.revision,
+                self.ignored_sync_revision.unwrap_or(self.revision),
                 self.ctx.clone(),
             ));
         }
@@ -134,6 +146,26 @@ impl App {
         if self.pending.is_none() && self.sync.is_none() {
             ctx.request_repaint_after(SYNC_INTERVAL.saturating_sub(self.synced.elapsed()));
         }
+    }
+
+    /// Applies a reviewed shared-library revision.
+    pub(super) fn apply_library_sync(&mut self) {
+        let Some(snapshot) = self.pending_sync.take() else {
+            return;
+        };
+        self.set_connections(snapshot.connections);
+        self.revision = snapshot.revision;
+        self.ignored_sync_revision = None;
+        self.forget_removed();
+        self.notify("Library updated.");
+    }
+
+    /// Keeps the current list and suppresses prompts for this revision until it changes again.
+    pub(super) fn dismiss_library_sync(&mut self) {
+        let Some(snapshot) = self.pending_sync.take() else {
+            return;
+        };
+        self.ignored_sync_revision = Some(snapshot.revision);
     }
 
     pub(super) fn import_csv(&mut self) {
@@ -280,6 +312,66 @@ impl App {
     pub(super) fn library_dialogs(&mut self, ctx: &egui::Context) {
         let colors = theme::palette(ctx);
         let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if self.pending_sync.is_some() {
+            let changes = self
+                .pending_sync
+                .as_ref()
+                .map(|snapshot| library_sync_changes(&self.connections, &snapshot.connections))
+                .unwrap_or_default();
+            let mut apply = false;
+            let mut dismiss = false;
+            dialog("library-sync", ctx).show(ctx, |ui| {
+                ui.set_width(dialog_width(ctx, 680.));
+                ui.heading("Library update");
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            "The shared library changed. Review connection targets before applying, \
+                             so a hostile edit cannot silently retarget hosts or jump paths.",
+                        )
+                        .color(colors.muted),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(12.);
+                let row_height = ui
+                    .spacing()
+                    .interact_size
+                    .y
+                    .max(ui.text_style_height(&egui::TextStyle::Body));
+                egui::ScrollArea::vertical()
+                    .id_salt("library-sync-changes")
+                    .auto_shrink([false, true])
+                    .max_height((ctx.content_rect().height() - 320.).clamp(100., 280.))
+                    .show_rows(ui, row_height, changes.len().max(1), |ui, range| {
+                        if changes.is_empty() {
+                            ui.label("No host, user, jump, identity, forward, or gateway fields changed.");
+                            return;
+                        }
+                        for line in &changes[range] {
+                            ui.horizontal(|ui| {
+                                ui.set_min_height(row_height);
+                                ui.add(egui::Label::new(line).wrap());
+                            });
+                        }
+                    });
+                ui.add_space(16.);
+                ui.horizontal(|ui| {
+                    let button = egui::Button::new(
+                        RichText::new("Apply update").color(colors.bg).strong(),
+                    )
+                    .fill(colors.accent)
+                    .min_size(Vec2::new(0., CONTROL_HEIGHT));
+                    apply = ui.add(button).clicked();
+                    dismiss = outline_button(ui, "Keep current", 120.).clicked();
+                });
+            });
+            if apply {
+                self.apply_library_sync();
+            } else if dismiss || escape {
+                self.dismiss_library_sync();
+            }
+        }
         if matches!(self.modal, Modal::Importing(_)) {
             let mut cancel = false;
             dialog("reading-import", ctx).show(ctx, |ui| {
@@ -698,4 +790,76 @@ impl App {
         self.pending_location = Some(location.clone());
         self.pending = Some(database::start(location, 0, None, self.ctx.clone()));
     }
+}
+
+/// Human-readable target changes between two library revisions (phishing-sensitive fields).
+fn library_sync_changes(old: &[Connection], new: &[Connection]) -> Vec<String> {
+    use std::collections::BTreeMap;
+    let before: BTreeMap<u64, &Connection> = old.iter().map(|c| (c.id, c)).collect();
+    let after: BTreeMap<u64, &Connection> = new.iter().map(|c| (c.id, c)).collect();
+    let mut lines = Vec::new();
+    for (id, next) in &after {
+        match before.get(id) {
+            None => lines.push(format!(
+                "Added {} → {}:{} ({})",
+                next.name,
+                next.host,
+                next.port,
+                next.protocol.label()
+            )),
+            Some(prev) => {
+                for change in sensitive_connection_changes(prev, next) {
+                    lines.push(format!("{}: {change}", next.name));
+                }
+            }
+        }
+    }
+    for (id, prev) in &before {
+        if !after.contains_key(id) {
+            lines.push(format!("Removed {} ({})", prev.name, prev.host));
+        }
+    }
+    lines
+}
+
+fn sensitive_connection_changes(prev: &Connection, next: &Connection) -> Vec<String> {
+    let mut changes = Vec::new();
+    let note = |changes: &mut Vec<String>, label: &str, from: &str, to: &str| {
+        if from != to {
+            changes.push(format!("{label} {from} → {to}"));
+        }
+    };
+    note(&mut changes, "name", &prev.name, &next.name);
+    note(&mut changes, "host", &prev.host, &next.host);
+    if prev.port != next.port {
+        changes.push(format!("port {} → {}", prev.port, next.port));
+    }
+    if prev.protocol != next.protocol {
+        changes.push(format!(
+            "protocol {} → {}",
+            prev.protocol.label(),
+            next.protocol.label()
+        ));
+    }
+    note(&mut changes, "user", &prev.username, &next.username);
+    note(&mut changes, "jump", &prev.ssh.jump, &next.ssh.jump);
+    note(
+        &mut changes,
+        "identity",
+        &prev.ssh.identity,
+        &next.ssh.identity,
+    );
+    note(
+        &mut changes,
+        "forwards",
+        &prev.ssh.forwards,
+        &next.ssh.forwards,
+    );
+    note(
+        &mut changes,
+        "gateway",
+        &prev.rdp.gateway,
+        &next.rdp.gateway,
+    );
+    changes
 }
