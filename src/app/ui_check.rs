@@ -443,7 +443,13 @@ git pull && ./deploy.sh",
         } else {
             LibraryKind::Mssql
         };
-        app.db_mysql.tls = std::env::var_os("RELAY_UI_NO_TLS").is_none();
+        let tls = std::env::var_os("RELAY_UI_NO_TLS").is_none();
+        app.db_mysql.tls = tls;
+        app.db_mssql.tls = tls;
+        if !tls {
+            app.db_mysql.cleartext_ok = true;
+            app.db_mssql.cleartext_ok = true;
+        }
     }
     if std::env::var("RELAY_UI_IMPORT").as_deref() == Ok("loading") {
         app.start_import(|_| {

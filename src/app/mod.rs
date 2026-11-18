@@ -101,6 +101,8 @@ struct ServerForm {
     /// Keep the connection string in the credential store after it opens successfully.
     remember: bool,
     tls: bool,
+    /// Explicit acknowledgment that cleartext is acceptable when `tls` is off.
+    cleartext_ok: bool,
 }
 
 impl ServerForm {
@@ -110,6 +112,7 @@ impl ServerForm {
             remember: saved.is_some(),
             connection: saved.unwrap_or_else(|| example.into()),
             tls: !without_tls,
+            cleartext_ok: false,
         }
     }
 

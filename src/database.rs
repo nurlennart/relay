@@ -431,7 +431,9 @@ fn mssql_failure(error: &tiberius::error::Error, tls: bool) -> String {
     }
 }
 
-/// The MSSQL configuration: TLS is required, or not used at all when turned off.
+/// The MSSQL configuration: TLS is required, or NotSupported when turned off. Plaintext is
+/// only offered after the library dialog's cleartext confirmation; this layer still honors
+/// `server.tls` as set by that UI.
 fn mssql_config(server: &Server) -> Result<tiberius::Config, String> {
     let mut config = tiberius::Config::from_ado_string(&server.connection).map_err(|_| {
         "Invalid MSSQL connection string. Use the documented ADO.NET format.".to_string()
@@ -714,6 +716,8 @@ mod tests {
     }
     #[test]
     fn mssql_tls_is_required_unless_turned_off() {
+        // Plaintext (tls false → NotSupported) is reachable only after the library dialog's
+        // cleartext confirmation; this helper still builds either encryption level.
         let connection = "Server=tcp:db.example.com,1433;Database=Relay;User ID=relay;\
                           Password=test;Encrypt=false";
         for tls in [true, false] {

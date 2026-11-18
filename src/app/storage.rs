@@ -447,7 +447,14 @@ impl App {
                                 "Without TLS, the password and your connection library cross the \
                                  network unencrypted. Use this only on a network you trust.",
                             );
-                        } else if mysql {
+                            ui.checkbox(
+                                &mut form.cleartext_ok,
+                                "I understand connections will be sent in cleartext",
+                            );
+                        } else {
+                            form.cleartext_ok = false;
+                        }
+                        if form.tls && mysql {
                             ui.label(
                                 RichText::new(
                                     "The server's certificate must be trusted. For a private \
@@ -485,11 +492,16 @@ impl App {
                 ui.add_space(12.);
                 ui.horizontal(|ui| {
                     let idle = self.pending.is_none();
+                    let cleartext_blocked = match self.db_kind {
+                        LibraryKind::Mssql => !self.db_mssql.tls && !self.db_mssql.cleartext_ok,
+                        LibraryKind::Mysql => !self.db_mysql.tls && !self.db_mysql.cleartext_ok,
+                        LibraryKind::Personal | LibraryKind::Sqlite => false,
+                    };
                     let button =
                         egui::Button::new(RichText::new("Open library").color(colors.bg).strong())
                             .fill(colors.accent)
                             .min_size(Vec2::new(130., CONTROL_HEIGHT));
-                    open = ui.add_enabled(idle, button).clicked();
+                    open = ui.add_enabled(idle && !cleartext_blocked, button).clicked();
                     cancel = ui
                         .add_enabled_ui(idle, |ui| outline_button(ui, "Cancel", 80.))
                         .inner
@@ -678,6 +690,17 @@ impl App {
     }
 
     pub(super) fn open_library(&mut self) {
+        let cleartext_blocked = match self.db_kind {
+            LibraryKind::Mssql => !self.db_mssql.tls && !self.db_mssql.cleartext_ok,
+            LibraryKind::Mysql => !self.db_mysql.tls && !self.db_mysql.cleartext_ok,
+            LibraryKind::Personal | LibraryKind::Sqlite => false,
+        };
+        if cleartext_blocked {
+            self.error = Some(
+                "Confirm that cleartext is acceptable before opening without TLS.".into(),
+            );
+            return;
+        }
         let location = match self.db_kind {
             LibraryKind::Personal => database::Location::Local(self.path.clone()),
             LibraryKind::Sqlite if !self.db_path.trim().is_empty() => {

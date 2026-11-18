@@ -2465,6 +2465,45 @@ fn navigation_exposes_names_selection_and_keyboard_activation() {
     }
 }
 
+#[test]
+fn opening_database_library_without_tls_needs_cleartext_confirm() {
+    let ctx = egui::Context::default();
+    let mut app = test_app(&ctx);
+    app.db_kind = LibraryKind::Mssql;
+    app.db_mssql.connection = "Server=tcp:db.example.com,1433;Database=Relay;User ID=relay;\
+         Password=test;Encrypt=false"
+        .into();
+    app.db_mssql.tls = false;
+    app.db_mssql.cleartext_ok = false;
+    app.open_library();
+    assert!(app.pending.is_none());
+    assert!(
+        app.error
+            .as_deref()
+            .is_some_and(|e| e.contains("cleartext"))
+    );
+    app.error = None;
+    app.db_mssql.cleartext_ok = true;
+    app.open_library();
+    assert!(app.pending.is_some());
+    assert!(app.error.is_none());
+    // Drop the worker so the test process does not hang on a live connection attempt.
+    app.pending = None;
+    app.pending_location = None;
+
+    app.db_kind = LibraryKind::Mysql;
+    app.db_mysql.connection = "mysql://relay@db.example.com/relay".into();
+    app.db_mysql.tls = false;
+    app.db_mysql.cleartext_ok = false;
+    app.open_library();
+    assert!(app.pending.is_none());
+    assert!(
+        app.error
+            .as_deref()
+            .is_some_and(|e| e.contains("cleartext"))
+    );
+}
+
 #[cfg(feature = "ui-check")]
 #[test]
 fn captures_start_without_profile_credentials_or_pending_connections() {
