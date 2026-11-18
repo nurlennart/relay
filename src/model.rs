@@ -54,22 +54,14 @@ pub struct Connection {
 }
 
 /// How a VNC connection shares this computer with the remote one.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VncOptions {
-    /// Copied text crosses in both directions.
+    /// Copied text crosses in both directions. Off until opted in so a remote host cannot
+    /// overwrite the OS clipboard by default.
     pub clipboard: bool,
     /// Shows the remote screen without sending keys or the pointer.
     pub view_only: bool,
-}
-
-impl Default for VncOptions {
-    fn default() -> Self {
-        Self {
-            clipboard: true,
-            view_only: false,
-        }
-    }
 }
 
 impl VncOptions {
@@ -220,7 +212,8 @@ impl Default for RdpOptions {
     fn default() -> Self {
         Self {
             gateway: String::new(),
-            clipboard: true,
+            // Off until opted in: a remote host must not overwrite the OS clipboard by default.
+            clipboard: false,
             drives: false,
             printers: false,
             smart_cards: false,
@@ -674,7 +667,7 @@ mod tests {
         assert_eq!(conflicts, ["port", "RD Gateway"]);
         draft.vnc.view_only = true;
         let (merged, _) = merge(&base, &draft, &current);
-        assert!(merged.vnc.view_only && merged.vnc.clipboard);
+        assert!(merged.vnc.view_only && !merged.vnc.clipboard);
     }
     #[test]
     fn vnc_options_are_saved_only_when_changed() {
@@ -880,7 +873,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(old.rdp, RdpOptions::default());
-        assert!(old.rdp.clipboard);
+        assert!(!old.rdp.clipboard);
         c.rdp.gateway = " gw.example.com ".into();
         c.rdp.drives = true;
         c.rdp.display = Display::Fixed {

@@ -955,7 +955,8 @@ mod tests {
             }
         }
         assert!(bool::try_from(&get(&client.advanced, "EnableAutoReconnect")).unwrap());
-        assert!(bool::try_from(&get(&client.advanced, "RedirectClipboard")).unwrap());
+        // Clipboard sync defaults off until the connection opts in.
+        assert!(!bool::try_from(&get(&client.advanced, "RedirectClipboard")).unwrap());
         assert!(!bool::try_from(&get(&client.advanced, "RedirectDrives")).unwrap());
     }
 
