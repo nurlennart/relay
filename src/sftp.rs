@@ -1365,15 +1365,13 @@ async fn worker(
     mut commands: mpsc::UnboundedReceiver<Command>,
     events: Events,
 ) {
+    let mut askpass_pid = None;
     if let Some(program) = launch.askpass.take() {
         let listener = match askpass::Listener::bind().await {
             Ok(listener) => listener,
             Err(e) => return events.send(Event::Ended(e)),
         };
-        let endpoint = match listener.endpoint() {
-            Ok(endpoint) => endpoint,
-            Err(e) => return events.send(Event::Ended(e)),
-        };
+        let endpoint = listener.endpoint();
         // OpenSSH asks through the helper even when Relay was started from a terminal.
         launch
             .command
@@ -1381,7 +1379,9 @@ async fn worker(
             .env("SSH_ASKPASS_REQUIRE", "force")
             .env(askpass::ENV, endpoint);
         let (messages, mut incoming) = mpsc::unbounded_channel();
-        tokio::spawn(listener.serve(messages));
+        let (pid_tx, pid_rx) = tokio::sync::watch::channel(None);
+        askpass_pid = Some(pid_tx);
+        tokio::spawn(listener.serve(messages, pid_rx));
         let forward = events.clone();
         tokio::spawn(async move {
             while let Some(message) = incoming.recv().await {
@@ -1408,6 +1408,12 @@ async fn worker(
             )));
         }
     };
+    if let Some(pid_tx) = askpass_pid {
+        let Some(pid) = child.id() else {
+            return events.send(Event::Ended("Cannot identify the ssh process.".into()));
+        };
+        let _ = pid_tx.send(Some(pid));
+    }
     let (Some(stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
     else {
