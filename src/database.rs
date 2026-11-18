@@ -444,9 +444,9 @@ fn mssql_config(server: &Server) -> Result<tiberius::Config, String> {
     Ok(config)
 }
 
-/// Options for a MySQL URL. With TLS on, the connection is always encrypted, and without TLS
-/// options in the URL the server certificate is verified against trusted roots. With TLS off,
-/// TLS options in the URL are ignored.
+/// Options for a MySQL URL. With TLS on, the connection is always encrypted and danger SSL URL
+/// flags are ignored so certificates stay verified; root_cert_path is still honored. With TLS
+/// off, TLS options in the URL are ignored.
 fn mysql_opts(server: &Server) -> Result<mysql::Opts, String> {
     // Parse errors can quote parts of the URL, so they are not shown.
     let opts = mysql::Opts::from_url(&server.connection).map_err(|_| {
@@ -455,9 +455,13 @@ fn mysql_opts(server: &Server) -> Result<mysql::Opts, String> {
     if opts.get_db_name().is_none_or(str::is_empty) {
         return Err("Add the database to the MySQL URL, as in mysql://user@host/relay.".into());
     }
-    let ssl = server
-        .tls
-        .then(|| opts.get_ssl_opts().cloned().unwrap_or_default());
+    let ssl = server.tls.then(|| {
+        opts.get_ssl_opts()
+            .cloned()
+            .unwrap_or_default()
+            .with_danger_skip_domain_validation(false)
+            .with_danger_accept_invalid_certs(false)
+    });
     let timeout = Some(Duration::from_secs(15));
     Ok(mysql::OptsBuilder::from_opts(opts)
         .ssl_opts(ssl)
@@ -724,16 +728,16 @@ mod tests {
         let ssl = opts.get_ssl_opts().expect("TLS is required");
         assert!(!ssl.accept_invalid_certs() && !ssl.skip_domain_validation());
         assert_eq!(opts.get_db_name(), Some("relay"));
-        // TLS options in the URL are kept, or ignored when TLS is off.
+        // root_cert_path is kept; danger SSL URL flags are forced off. TLS off drops SSL opts.
         let url = "mysql://relay@db.example.com/relay?root_cert_path=/etc/relay/ca.pem\
-                   &danger_skip_domain_validation=true";
+                   &danger_skip_domain_validation=true&danger_accept_invalid_certs=true";
         let opts = mysql_opts(&server(url, true)).unwrap();
         let ssl = opts.get_ssl_opts().unwrap();
         assert_eq!(
             ssl.root_cert_path(),
             Some(std::path::Path::new("/etc/relay/ca.pem"))
         );
-        assert!(ssl.skip_domain_validation());
+        assert!(!ssl.skip_domain_validation() && !ssl.accept_invalid_certs());
         assert!(
             mysql_opts(&server(url, false))
                 .unwrap()
