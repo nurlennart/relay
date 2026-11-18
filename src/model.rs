@@ -565,7 +565,13 @@ pub fn load(path: &Path) -> Result<Vec<Connection>, String> {
     }
 }
 
+/// Largest connection-library or JSON import payload Relay will parse.
+pub const MAX_JSON_BYTES: usize = 10 * 1024 * 1024;
+
 pub fn decode(bytes: &[u8]) -> Result<Vec<Connection>, String> {
+    if bytes.len() > MAX_JSON_BYTES {
+        return Err("Connection libraries must be smaller than 10 MB.".into());
+    }
     let mut connections: Vec<Connection> = serde_json::from_slice(bytes).map_err(|e| {
         format!("Cannot read saved connections: {e}. The file has been left untouched.")
     })?;
@@ -641,6 +647,14 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oversized_libraries_are_rejected() {
+        let mut bytes = vec![b'[', b']'];
+        bytes.resize(MAX_JSON_BYTES + 1, b' ');
+        let error = decode(&bytes).err().unwrap();
+        assert!(error.contains("10 MB"), "{error}");
+    }
+
     #[test]
     fn merging_keeps_both_sides_and_names_conflicts() {
         let base = Connection::new();

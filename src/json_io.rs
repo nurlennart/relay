@@ -32,6 +32,9 @@ pub fn read(path: &Path, existing: &[Connection]) -> Result<Import, String> {
 }
 
 fn parse(bytes: &[u8], existing: &[Connection], filename: String) -> Result<Import, String> {
+    if bytes.len() > model::MAX_JSON_BYTES {
+        return Err("JSON files must be smaller than 10 MB.".into());
+    }
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum File {
@@ -122,5 +125,13 @@ mod tests {
         assert_eq!(import.connections.len(), 1);
         assert_eq!(import.skipped.len(), 1);
         assert!(import.skipped[0].starts_with("Entry 1 (Odd)"));
+    }
+
+    #[test]
+    fn oversized_json_imports_are_rejected() {
+        let mut bytes = vec![b'[', b']'];
+        bytes.resize(model::MAX_JSON_BYTES + 1, b' ');
+        let error = parse(&bytes, &[], "huge.json".into()).err().unwrap();
+        assert!(error.contains("10 MB"), "{error}");
     }
 }
