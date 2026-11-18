@@ -12,7 +12,7 @@ Relay keeps your RDP, VNC and SSH connections in a searchable library and opens 
 - **Remote desktops that fit.** A remote desktop takes the size of its tab and your monitor's scaling, and follows along when you resize or switch monitors, so text stays sharp and the usual size.
 - **Find anything in a keystroke.** Search by name, host, user, group or notes with `Ctrl+K`, or jump straight to a recent connection with `Ctrl+T`.
 - **Works with what you already have.** SSH runs through your system's OpenSSH, so your config, keys, agent and jump hosts just work.
-- **Your passwords stay yours.** Relay never stores remote passwords.
+- **Your passwords stay yours.** Remote passwords are optional and stay in your system credential store when you tick Remember — never in the connection library.
 - **Quiet on the network.** Relay connects only to the servers and libraries you set up: no update checks, no telemetry, no accounts.
 - **Bring your connections along.** Import from `~/.ssh/config`, `.rdp` files, CSV or JSON.
 - **Share with your team.** Keep one library on SQL Server, MySQL or MariaDB, or a shared SQLite file.

@@ -1009,19 +1009,25 @@ impl App {
             self.notify(format!("Copied {}", c.address()));
             ui.close();
         }
-        if rdp::SAVES_PASSWORDS
-            && c.protocol == Protocol::Rdp
+        let can_forget = match c.protocol {
+            Protocol::Rdp => rdp::SAVES_PASSWORDS,
+            Protocol::Vnc | Protocol::Ssh => true,
+        };
+        let forget_tip = if cfg!(windows) && c.protocol == Protocol::Rdp {
+            "Removes the credentials Windows saved for this host"
+        } else {
+            "Removes the password Relay saved in your system credential store"
+        };
+        if can_forget
             && ui
                 .button("Forget saved password")
-                .on_hover_text("Removes the credentials Windows saved for this host")
+                .on_hover_text(forget_tip)
                 .clicked()
         {
-            match rdp::forget_credentials(&c.host) {
-                Ok(true) => self.notify(format!("Removed saved credentials for {}", c.host)),
-                Ok(false) => {
-                    self.notify(format!("Windows has no saved credentials for {}", c.host))
-                }
-                Err(e) => self.error = Some(format!("Cannot remove saved credentials: {e}")),
+            match self.forget_saved_password(c) {
+                Ok(true) => self.notify(format!("Removed saved password for {}", c.name)),
+                Ok(false) => self.notify(format!("No saved password for {}", c.name)),
+                Err(e) => self.error = Some(format!("Cannot remove saved password: {e}")),
             }
             ui.close();
         }

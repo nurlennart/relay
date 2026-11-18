@@ -163,6 +163,7 @@ pub fn sign_in(
     error: Option<&str>,
     place_cursor: bool,
     note: &str,
+    mut remember: Option<&mut bool>,
 ) -> bool {
     let mut connect = false;
     ui.add_space(40.);
@@ -206,6 +207,13 @@ pub fn sign_in(
                 _ => field.request_focus(),
             }
         }
+        if let Some(remember) = remember.as_mut() {
+            ui.add_space(8.);
+            ui.checkbox(
+                *remember,
+                "Remember on this computer (in your system credential store)",
+            );
+        }
         ui.add_space(12.);
         let colors = crate::theme::palette(ui.ctx());
         let button = egui::Button::new(RichText::new("Connect").color(colors.bg).strong())
@@ -214,6 +222,14 @@ pub fn sign_in(
             .min_size(egui::vec2(120., 32.));
         connect = ui.add_enabled(!missing, button).clicked() || (enter && !missing);
         ui.add_space(8.);
+        let note = match remember.as_ref().map(|r| **r) {
+            Some(true) => {
+                "Saved in your system credential store on this computer. The connection \
+                 library never holds the password."
+            }
+            Some(false) => note,
+            None => note,
+        };
         ui.label(RichText::new(note).size(12.).weak());
     });
     if connect && let Some((name, _)) = username {

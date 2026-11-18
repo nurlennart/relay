@@ -10,6 +10,7 @@ use crate::{
     frame,
     model::{Audio, Connection, Display, Keys, RdpOptions},
     platform::Window,
+    secret,
 };
 use connection::{Command, Event, Outcome, Settings, Untrusted, Worker};
 use eframe::egui::{self, RichText};
@@ -21,8 +22,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Relay never saves RDP passwords here, so there is nothing to forget.
-pub const SAVES_PASSWORDS: bool = false;
+/// Saved connections can keep the password in the system credential store.
+pub const SAVES_PASSWORDS: bool = true;
 
 /// IronRDP cannot ask for a server's administrative session yet.
 pub const ADMIN_SESSIONS: bool = false;
@@ -37,9 +38,10 @@ pub const FULL_SCREEN_HELP: &str = "Ctrl+Alt+Enter or the bar at the top edge le
 pub const CONNECTING_HELP: &str = "Complete any sign-in or certificate prompt in this tab.";
 
 /// How signing in works, for the connection editor.
-pub const SIGN_IN_HELP: &str = "The tab asks for the password each time it connects and keeps it \
-    only while the session is open.\nCertificates your system does not trust are shown for you \
-    to accept.";
+pub const SIGN_IN_HELP: &str = "The tab asks for the password when it connects. Tick “Remember \
+    on this computer” to keep it in your system credential store; otherwise it stays only \
+    while the session is open.\nCertificates your system does not trust are shown for you to \
+    accept.";
 
 /// The options of `options` this backend cannot honor, as the editor lists them.
 pub fn unsupported(options: &RdpOptions) -> Vec<&'static str> {
@@ -65,6 +67,8 @@ pub fn unsupported(options: &RdpOptions) -> Vec<&'static str> {
     missing
 }
 
+/// IronRDP passwords live under `secret::` by connection id; the library menu forgets them
+/// there. This stub keeps the RDP backend API aligned with the Windows ActiveX path.
 pub fn forget_credentials(_host: &str) -> Result<bool, String> {
     Ok(false)
 }
@@ -82,16 +86,22 @@ enum Stage {
         error: Option<String>,
         /// Whether the prompt still has to put the cursor where typing is needed.
         place_cursor: bool,
+        /// Save the password in the system credential store when connecting.
+        remember: bool,
     },
     Trust {
         credentials: Credentials,
         certificate: Untrusted,
+        /// Save the login after the server accepts it.
+        remember: bool,
     },
     Running {
         worker: Worker,
         credentials: Credentials,
         connected: bool,
         reconnecting: bool,
+        /// Save the login after the server accepts it.
+        remember: bool,
     },
     Ended(String),
 }
@@ -130,16 +140,25 @@ impl RdpClient {
         _admin: bool,
         ctx: egui::Context,
     ) -> Result<Self, String> {
+        let mut credentials = Credentials {
+            username: connection.username.clone(),
+            password: String::new(),
+        };
+        let mut remember = false;
+        secret::fill_connection_login(
+            connection.id,
+            &mut credentials.username,
+            &mut credentials.password,
+            &mut remember,
+        );
         Ok(Self {
             connection: connection.clone(),
             ctx,
             stage: Stage::SignIn {
-                credentials: Credentials {
-                    username: connection.username.clone(),
-                    password: String::new(),
-                },
+                credentials,
                 error: None,
                 place_cursor: true,
+                remember,
             },
             area: None,
             requested: None,
@@ -200,53 +219,90 @@ impl RdpClient {
 
     /// Applies what the connection reported since the last frame.
     pub fn poll(&mut self) {
-        let Stage::Running {
-            worker,
-            credentials,
-            connected,
-            reconnecting,
-        } = &mut self.stage
-        else {
-            return;
-        };
-        let copied = worker.copied.lock().ok().and_then(|mut c| c.take());
-        if let Some(text) = copied {
-            self.ctx.copy_text(text.clone());
-            self.copied = Some(text);
-        }
+        let connection_id = self.connection.id;
         let mut next = None;
-        for event in worker.events() {
-            match event {
-                Event::Connected => (*connected, *reconnecting) = (true, false),
-                Event::Reconnecting => *reconnecting = true,
-                Event::FixedResolution => {
-                    self.warning = Some(
-                        "The remote computer cannot change its resolution, so the desktop is \
-                         scaled to the tab."
-                            .into(),
-                    );
-                }
-                Event::Ended(outcome) => {
-                    next = Some(match outcome {
-                        Outcome::SignIn(error) => Stage::SignIn {
-                            credentials: Credentials {
-                                password: String::new(),
-                                ..credentials.clone()
-                            },
-                            error: Some(error),
-                            place_cursor: true,
-                        },
-                        Outcome::Certificate(certificate) => Stage::Trust {
-                            credentials: credentials.clone(),
-                            certificate,
-                        },
-                        Outcome::Closed(reason) => {
-                            Stage::Ended(format!("The remote session ended: {reason}."))
+        let mut save_warning = None;
+        let mut resolution_warning = false;
+        {
+            let Stage::Running {
+                worker,
+                credentials,
+                connected,
+                reconnecting,
+                remember,
+            } = &mut self.stage
+            else {
+                return;
+            };
+            let copied = worker.copied.lock().ok().and_then(|mut c| c.take());
+            if let Some(text) = copied {
+                self.ctx.copy_text(text.clone());
+                self.copied = Some(text);
+            }
+            for event in worker.events() {
+                match event {
+                    Event::Connected => {
+                        (*connected, *reconnecting) = (true, false);
+                        if *remember {
+                            let login = secret::ConnectionLogin {
+                                username: credentials.username.clone(),
+                                password: credentials.password.clone(),
+                            };
+                            if let Err(e) =
+                                secret::persist_connection_login(connection_id, &login, true)
+                            {
+                                save_warning = Some(format!(
+                                    "Connected, but could not save the password: {e}"
+                                ));
+                            }
                         }
-                        Outcome::Failed(error) => Stage::Ended(error),
-                    });
+                    }
+                    Event::Reconnecting => *reconnecting = true,
+                    Event::FixedResolution => resolution_warning = true,
+                    Event::Ended(outcome) => {
+                        next = Some(match outcome {
+                            Outcome::SignIn(error) => {
+                                let mut credentials = Credentials {
+                                    password: String::new(),
+                                    ..credentials.clone()
+                                };
+                                let mut remember = false;
+                                secret::fill_connection_login(
+                                    connection_id,
+                                    &mut credentials.username,
+                                    &mut credentials.password,
+                                    &mut remember,
+                                );
+                                Stage::SignIn {
+                                    credentials,
+                                    error: Some(error),
+                                    place_cursor: true,
+                                    remember,
+                                }
+                            }
+                            Outcome::Certificate(certificate) => Stage::Trust {
+                                credentials: credentials.clone(),
+                                certificate,
+                                remember: *remember,
+                            },
+                            Outcome::Closed(reason) => {
+                                Stage::Ended(format!("The remote session ended: {reason}."))
+                            }
+                            Outcome::Failed(error) => Stage::Ended(error),
+                        });
+                    }
                 }
             }
+        }
+        if resolution_warning {
+            self.warning = Some(
+                "The remote computer cannot change its resolution, so the desktop is \
+                 scaled to the tab."
+                    .into(),
+            );
+        }
+        if let Some(warning) = save_warning {
+            self.warning = Some(warning);
         }
         if let Some(next) = next {
             self.stage = next;
@@ -341,8 +397,10 @@ impl RdpClient {
                 credentials,
                 error,
                 place_cursor,
+                remember,
             } => {
                 let place = std::mem::take(place_cursor);
+                let can_remember = self.connection.id != 0;
                 if frame::sign_in(
                     ui,
                     &self.connection.host,
@@ -351,17 +409,34 @@ impl RdpClient {
                     error.as_deref(),
                     place,
                     "Relay keeps the password only while this session is open.",
+                    can_remember.then_some(remember),
                 ) {
-                    start = Some(credentials.clone());
+                    let remember = can_remember && *remember;
+                    if can_remember && !remember {
+                        let login = secret::ConnectionLogin {
+                            username: credentials.username.clone(),
+                            password: credentials.password.clone(),
+                        };
+                        if let Err(e) =
+                            secret::persist_connection_login(self.connection.id, &login, false)
+                        {
+                            *error = Some(format!("Cannot remove saved password: {e}"));
+                        } else {
+                            start = Some((credentials.clone(), false));
+                        }
+                    } else {
+                        start = Some((credentials.clone(), remember));
+                    }
                 }
             }
             Stage::Trust {
                 credentials,
                 certificate,
+                remember,
             } => match trust(ui, certificate) {
                 Some(true) => {
                     connection::trust(certificate);
-                    start = Some(credentials.clone());
+                    start = Some((credentials.clone(), *remember));
                 }
                 Some(false) => {
                     self.stage = Stage::Ended(format!(
@@ -377,14 +452,14 @@ impl RdpClient {
             Stage::Running { .. } => self.desktop(ui, rect, focus),
             Stage::Ended(_) => {}
         }
-        if let Some(credentials) = start {
-            self.start(credentials);
+        if let Some((credentials, remember)) = start {
+            self.start(credentials, remember);
         }
         rect
     }
 
     /// Starts connecting with `credentials` at the tab's current size.
-    fn start(&mut self, credentials: Credentials) {
+    fn start(&mut self, credentials: Credentials, remember: bool) {
         let options = &self.connection.rdp;
         let (area, scale) = self.area.unwrap_or(([1280, 800], 100));
         let size = match options.display {
@@ -411,6 +486,7 @@ impl RdpClient {
                 credentials,
                 connected: false,
                 reconnecting: false,
+                remember,
             },
             Err(error) => Stage::Ended(error),
         };
@@ -744,8 +820,12 @@ mod tests {
         assert!(!client.ended() && !client.reconnecting() && !client.focused());
         assert!(matches!(
             &client.stage,
-            Stage::SignIn { credentials, error: None, place_cursor: true }
-                if credentials.username == "alex" && credentials.password.is_empty()
+            Stage::SignIn {
+                credentials,
+                error: None,
+                place_cursor: true,
+                remember: false,
+            } if credentials.username == "alex" && credentials.password.is_empty()
         ));
     }
 }

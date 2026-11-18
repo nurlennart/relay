@@ -151,7 +151,8 @@ impl App {
                 Protocol::Rdp => rdp::SIGN_IN_HELP,
                 Protocol::Ssh => {
                     "Uses your OpenSSH client, including your SSH config and agent.\n\
-                     Host verification and password prompts appear in the terminal."
+                     Host verification and password prompts appear in the terminal; the file \
+                     browser can remember a login password in your system credential store."
                 }
                 Protocol::Vnc => vnc::SIGN_IN_HELP,
             };
@@ -223,6 +224,8 @@ impl App {
         self.modal = Modal::Editor(c.clone());
         if save {
             let mut next = self.connections.clone();
+            // New ids are max+1, so a deleted highest id can come back; clear any orphan.
+            let mut clear_orphan_id = None;
             if c.id == 0 {
                 c.id = next
                     .iter()
@@ -230,6 +233,7 @@ impl App {
                     .max()
                     .unwrap_or(0)
                     .saturating_add(1);
+                clear_orphan_id = Some(c.id);
                 next.push(c);
             } else if let Some(existing) = next.iter_mut().find(|v| v.id == c.id) {
                 let base = self.editor_base.as_ref().unwrap_or(existing);
@@ -258,6 +262,13 @@ impl App {
                 return;
             }
             if self.persist(next) {
+                if let Some(id) = clear_orphan_id
+                    && let Err(e) = secret::forget_connection_password(id)
+                {
+                    self.error = Some(format!(
+                        "Saved the connection, but could not clear a leftover password: {e}"
+                    ));
+                }
                 self.modal = Modal::None;
             }
         }

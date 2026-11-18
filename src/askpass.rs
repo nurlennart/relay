@@ -4,7 +4,8 @@
 //! Relay names its own executable as `SSH_ASKPASS`. Started that way, it is a helper: it
 //! connects back to the Relay window over loopback, proves it was started for that ssh
 //! process with a random secret that only reaches it through the environment, and prints
-//! the answer for ssh. Answers never touch the disk.
+//! the answer for ssh. Answers stay off disk unless the person ticks Remember for a login
+//! password on a saved connection, which stores it in the system credential store.
 use serde::{Deserialize, Serialize};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -47,6 +48,29 @@ impl Kind {
             _ => Self::Secret,
         }
     }
+}
+
+/// Whether `text` looks like a login password prompt (safe to remember), not a key
+/// passphrase or one-time code.
+pub fn is_login_password_prompt(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("password") {
+        return false;
+    }
+    for excluded in [
+        "passphrase",
+        "verification code",
+        "one-time",
+        "onetime",
+        "otp",
+        "authenticator",
+        "authentication code",
+    ] {
+        if lower.contains(excluded) {
+            return false;
+        }
+    }
+    true
 }
 
 /// A question from ssh, waiting for an answer from the window.
@@ -232,6 +256,16 @@ mod tests {
         assert_eq!(Kind::of("confirm", "Allow use of key?"), Kind::Confirm);
         assert_eq!(Kind::of("none", "Confirm user presence"), Kind::Notice);
         assert!(same(b"abc", b"abc") && !same(b"abc", b"abd") && !same(b"abc", b"ab"));
+    }
+
+    #[test]
+    fn login_password_prompts_are_told_from_passphrases_and_codes() {
+        assert!(is_login_password_prompt("deploy@build's password: "));
+        assert!(is_login_password_prompt("Password:"));
+        assert!(!is_login_password_prompt("Enter passphrase for key '/home/a/.ssh/id_rsa': "));
+        assert!(!is_login_password_prompt("Verification code: "));
+        assert!(!is_login_password_prompt("One-time password (OTP): "));
+        assert!(!is_login_password_prompt("Allow use of key?"));
     }
 
     /// Runs a listener on its own thread, answering each question with `answer`.

@@ -402,6 +402,7 @@ impl Session {
     pub fn display_warning(&self) -> Option<&str> {
         match &self.rdp {
             Some(Desktop::Rdp(rdp)) => rdp.display_warning(),
+            Some(Desktop::Vnc(vnc)) => vnc.display_warning(),
             _ => None,
         }
     }

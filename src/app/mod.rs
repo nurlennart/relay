@@ -1056,12 +1056,27 @@ impl App {
     fn delete_connections(&mut self, ids: &[u64]) -> bool {
         let last_match = !self.query.is_empty()
             && (self.filtered().iter()).all(|&i| ids.contains(&self.connections[i].id));
+        let removed: Vec<_> = (self.connections.iter())
+            .filter(|c| ids.contains(&c.id))
+            .cloned()
+            .collect();
         let next = (self.connections.iter())
             .filter(|c| !ids.contains(&c.id))
             .cloned()
             .collect();
         if !self.persist(next) {
             return false;
+        }
+        let mut forget_error = None;
+        for c in &removed {
+            if let Err(e) = self.forget_saved_password(c) {
+                forget_error = Some(e);
+            }
+        }
+        if let Some(e) = forget_error {
+            self.error = Some(format!(
+                "Removed the connection, but could not clear the saved password: {e}"
+            ));
         }
         if last_match {
             self.query.clear();
@@ -1071,6 +1086,18 @@ impl App {
         }
         self.marked.retain(|id| !ids.contains(id));
         true
+    }
+
+    /// Removes a remembered password for `c`: Windows Credential Manager for Windows RDP,
+    /// otherwise Relay's entry in the system credential store.
+    fn forget_saved_password(&self, c: &Connection) -> Result<bool, String> {
+        #[cfg(windows)]
+        if c.protocol == Protocol::Rdp {
+            return rdp::forget_credentials(&c.host);
+        }
+        let had = secret::load_connection_login(c.id).is_some();
+        secret::forget_connection_password(c.id)?;
+        Ok(had)
     }
 
     /// Applies `change` to each saved connection in `ids`, saving them all at once.

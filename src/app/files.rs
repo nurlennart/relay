@@ -374,6 +374,13 @@ fn prompt_card(ui: &mut egui::Ui, files: &mut Browser, index: usize) {
                         }
                         let enter =
                             field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if prompt.can_remember {
+                            ui.add_space(4.);
+                            ui.checkbox(
+                                &mut prompt.remember,
+                                "Remember on this computer (in your system credential store)",
+                            );
+                        }
                         ui.horizontal(|ui| {
                             if accent_button(ui, "Continue", 96.).clicked() || enter {
                                 answer = Some(Some(std::mem::take(&mut prompt.answer)));
