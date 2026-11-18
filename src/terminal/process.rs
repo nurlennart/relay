@@ -166,10 +166,14 @@ impl Process {
                                     ctx.request_repaint();
                                 }
                             }
-                            if let Some(ctx) = &ctx
-                                && (copied || visible.load(Ordering::Relaxed))
-                            {
-                                ctx.request_repaint();
+                            if let Some(ctx) = &ctx {
+                                if copied {
+                                    // Clipboard OSC 52 should surface immediately from any tab.
+                                    ctx.request_repaint();
+                                } else if visible.load(Ordering::Relaxed) {
+                                    // Ordinary output coalesces to about one frame.
+                                    ctx.request_repaint_after(Duration::from_millis(16));
+                                }
                             }
                         } else {
                             break;
