@@ -16,7 +16,7 @@ use process::shell;
 use crate::model::Connection;
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use portable_pty::CommandBuilder;
-use std::{sync::atomic::Ordering, time::Duration};
+use std::{ops::ControlFlow, sync::atomic::Ordering, time::Duration};
 
 /// The font size terminals start with, and the sizes zooming moves between.
 pub const FONT_SIZE: f32 = 14.;
@@ -1111,8 +1111,8 @@ fn read_rows(
     cols: u16,
     top: usize,
     line: &mut search::Line,
-    done: &mut impl FnMut(&search::Line),
-) {
+    done: &mut impl FnMut(&search::Line) -> ControlFlow<()>,
+) -> ControlFlow<()> {
     for row in rows {
         for col in 0..cols {
             let Some(c) = screen.cell(row, col) else {
@@ -1125,18 +1125,21 @@ fn read_rows(
             line.cells.push((top + row as usize, col));
         }
         if !screen.row_wrapped(row) {
-            done(line);
+            let flow = done(line);
             line.text.clear();
             line.cells.clear();
+            flow?;
         }
     }
+    ControlFlow::Continue(())
 }
 
 /// The lines in view, numbered from the top of the view.
 fn visible_lines(screen: &vt100::Screen, rows: u16, cols: u16) -> Vec<search::Line> {
     let (mut lines, mut line) = (vec![], search::Line::default());
-    read_rows(screen, 0..rows, cols, 0, &mut line, &mut |l| {
-        lines.push(l.clone())
+    let _ = read_rows(screen, 0..rows, cols, 0, &mut line, &mut |l| {
+        lines.push(l.clone());
+        ControlFlow::Continue(())
     });
     if !line.text.is_empty() {
         lines.push(line);
@@ -1144,15 +1147,14 @@ fn visible_lines(screen: &vt100::Screen, rows: u16, cols: u16) -> Vec<search::Li
     lines
 }
 
-/// Hands `done` every line, from the oldest in the `history` to the bottom of the screen, one
-/// at a time, so the whole history is never copied. The view is moved through the history to
-/// read it, and put back.
+/// Hands `done` lines from the oldest in the `history` to the bottom of the screen, one at a
+/// time, until it breaks. The view is moved through the history to read it, and put back.
 fn each_line(
     screen: &mut vt100::Screen,
     rows: u16,
     cols: u16,
     history: usize,
-    mut done: impl FnMut(&search::Line),
+    mut done: impl FnMut(&search::Line) -> ControlFlow<()>,
 ) {
     let offset = screen.scrollback();
     let total = history + rows as usize;
@@ -1162,11 +1164,13 @@ fn each_line(
         screen.set_scrollback(scrollback);
         let top = history - scrollback;
         let first = (read - top) as u16;
-        read_rows(screen, first..rows, cols, top, &mut line, &mut done);
+        if read_rows(screen, first..rows, cols, top, &mut line, &mut done).is_break() {
+            break;
+        }
         read = top + rows as usize;
     }
     if !line.text.is_empty() {
-        done(&line);
+        let _ = done(&line);
     }
     screen.set_scrollback(offset);
 }
@@ -1656,6 +1660,30 @@ mod tests {
             repeat: false,
             modifiers,
         }
+    }
+
+    #[test]
+    fn capped_search_skips_remaining_history_and_restores_the_view() {
+        let (rows, cols) = (7, 100);
+        let mut parser = vt100::Parser::new(rows, cols, 200);
+        let row = format!("{}\r\n", "a".repeat(usize::from(cols)));
+        parser.process(row.repeat(120).as_bytes());
+        let screen = parser.screen_mut();
+        screen.set_scrollback(usize::MAX);
+        let history = screen.scrollback();
+        screen.set_scrollback(17);
+
+        let mut finder = search::Finder::new("a");
+        let mut visited = 0;
+        each_line(screen, rows, cols, history, |line| {
+            visited += 1;
+            finder.line(line)
+        });
+        assert_eq!(finder.found.len(), search::MAX_MATCHES);
+        assert!(finder.found.truncated);
+        assert_eq!(visited, search::MAX_MATCHES / usize::from(cols));
+        assert!(visited < history);
+        assert_eq!(screen.scrollback(), 17);
     }
 
     #[test]

@@ -1,5 +1,12 @@
 //! Finding text in the terminal's output, including the history scrolled out of view.
-use std::time::{Duration, Instant};
+use std::{
+    ops::ControlFlow,
+    time::{Duration, Instant},
+};
+
+/// Stop collecting more occurrences once this many are stored, so a short query over a long
+/// scrollback cannot grow without bound.
+pub const MAX_MATCHES: usize = 10_000;
 
 /// A line of text as the terminal shows it, with rows that wrapped joined, and the cell each
 /// character is in: a row of the whole output, counted from the oldest, and a column.
@@ -19,6 +26,8 @@ pub struct Matches {
     cells: Vec<Cell>,
     /// Where each occurrence's cells start; each runs to the next one's start.
     starts: Vec<u32>,
+    /// Whether finding stopped early because [`MAX_MATCHES`] was reached.
+    pub truncated: bool,
 }
 
 impl Matches {
@@ -92,6 +101,7 @@ impl Finder {
     pub fn reusing(query: &str, mut found: Matches) -> Self {
         found.cells.clear();
         found.starts.clear();
+        found.truncated = false;
         Self {
             query: query.chars().map(fold).collect(),
             folded: vec![],
@@ -99,10 +109,10 @@ impl Finder {
         }
     }
 
-    pub fn line(&mut self, line: &Line) {
+    pub fn line(&mut self, line: &Line) -> ControlFlow<()> {
         let n = self.query.len();
         if n == 0 || line.text.len() < n {
-            return;
+            return ControlFlow::Continue(());
         }
         self.folded.clear();
         self.folded.extend(line.text.iter().copied().map(fold));
@@ -110,11 +120,16 @@ impl Finder {
         while i + n <= self.folded.len() {
             if self.folded[i..i + n] == self.query[..] {
                 self.found.push(&line.cells[i..i + n]);
+                if self.found.len() == MAX_MATCHES {
+                    self.found.truncated = true;
+                    return ControlFlow::Break(());
+                }
                 i += n;
             } else {
                 i += 1;
             }
         }
+        ControlFlow::Continue(())
     }
 }
 
@@ -122,7 +137,7 @@ impl Finder {
 #[cfg(test)]
 pub fn find(lines: &[Line], query: &str) -> Matches {
     let mut finder = Finder::new(query);
-    lines.iter().for_each(|line| finder.line(line));
+    let _ = lines.iter().try_for_each(|line| finder.line(line));
     finder.found
 }
 
@@ -226,11 +241,18 @@ impl Search {
         });
     }
 
-    /// "3 of 12", or "No results".
+    /// "3 of 12", "3 of 10000+" when capped, or "No results".
     pub fn summary(&self) -> String {
         match self.current {
             _ if self.query.is_empty() => String::new(),
-            Some(i) if !self.matches.is_empty() => format!("{} of {}", i + 1, self.matches.len()),
+            Some(i) if !self.matches.is_empty() => {
+                let n = self.matches.len();
+                if self.matches.truncated {
+                    format!("{} of {n}+", i + 1)
+                } else {
+                    format!("{} of {n}", i + 1)
+                }
+            }
             _ => "No results".into(),
         }
     }
@@ -258,6 +280,7 @@ mod tests {
         let starts: Vec<_> = found.iter().map(|m| m[0]).collect();
         assert_eq!(starts, [(0, 0), (2, 0), (2, 13)]);
         assert_eq!(found[0].len(), 5);
+        assert!(!found.truncated);
         assert!(find(&lines, "").is_empty());
         // A line that wrapped is one line, so matches cross the break.
         let mut wrapped = line(5, "connection re");
@@ -268,19 +291,45 @@ mod tests {
             find(&[wrapped], "refused")[0],
             [(5, 11), (5, 12), (6, 0), (6, 1), (6, 2), (6, 3), (6, 4)]
         );
-        // A one-letter query in a full history matches in every cell, which takes a few
-        // bytes each, and finding again reuses the memory.
+    }
+
+    #[test]
+    fn many_matches_stop_at_the_cap() {
+        // A one-letter query in a full history would match in every cell; the cap keeps memory
+        // bounded, and finding again reuses the buffer.
         let history: Vec<_> = (0..5000).map(|row| line(row, &"a".repeat(500))).collect();
         let mut finder = Finder::new("a");
-        history.iter().for_each(|line| finder.line(line));
+        assert!(
+            history
+                .iter()
+                .try_for_each(|line| finder.line(line))
+                .is_break()
+        );
         let found = finder.found;
-        assert_eq!(found.len(), 2_500_000);
+        assert_eq!(found.len(), MAX_MATCHES);
+        assert!(found.truncated);
         let bytes = |m: &Matches| m.cells.capacity() * 8 + m.starts.capacity() * 4;
-        assert!(bytes(&found) <= 2_500_000 * 24, "{} bytes", bytes(&found));
+        assert!(
+            bytes(&found) <= MAX_MATCHES * 24 + 4096,
+            "{} bytes",
+            bytes(&found)
+        );
         let memory = found.cells.as_ptr();
         let mut finder = Finder::reusing("a", found);
-        history.iter().for_each(|line| finder.line(line));
+        assert!(
+            history
+                .iter()
+                .try_for_each(|line| finder.line(line))
+                .is_break()
+        );
         assert_eq!(finder.found.cells.as_ptr(), memory);
+        assert!(finder.found.truncated);
+        let mut search = Search {
+            query: "a".into(),
+            ..Search::default()
+        };
+        search.update(finder.found, 0, 0);
+        assert!(search.summary().ends_with(&format!("{MAX_MATCHES}+")));
     }
 
     #[test]
