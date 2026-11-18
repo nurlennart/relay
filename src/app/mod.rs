@@ -222,6 +222,8 @@ struct App {
     /// A snippet being added (no index) or edited in Settings.
     snippet_draft: Option<(Option<usize>, state::Snippet)>,
     pending_save: bool,
+    /// When set, workspace zoom changed and `save_state` should run once this instant is reached.
+    zoom_save_at: Option<Instant>,
     /// A connection to open at the start of the next frame, outside any dialog or list.
     connect_request: Option<Connection>,
     /// Opens `connect_request` as an administrative remote desktop session.
@@ -362,6 +364,7 @@ impl App {
             quick_open: None,
             snippet_draft: None,
             pending_save: false,
+            zoom_save_at: None,
             connect_request: None,
             connect_admin: false,
             browse_request: None,
@@ -1392,11 +1395,21 @@ impl eframe::App for App {
         if let Some(connection) = self.browse_request.take() {
             self.open_session(connection, true, false, state::Library::of(&self.location));
         }
-        // Remember the zoom, whether set in Settings or with the keys.
+        // Remember the zoom, whether set in Settings or with the keys. Debounce the disk write
+        // so Ctrl+scroll / zoom keys do not sync_all on every frame.
+        const ZOOM_SAVE: Duration = Duration::from_millis(400);
         let zoom = ctx.zoom_factor();
         if self.state.zoom.unwrap_or(1.) != zoom {
             self.state.zoom = (zoom != 1.).then_some(zoom);
-            self.save_state();
+            self.zoom_save_at = Some(Instant::now() + ZOOM_SAVE);
+        }
+        if let Some(at) = self.zoom_save_at {
+            if Instant::now() >= at {
+                self.zoom_save_at = None;
+                self.save_state();
+            } else {
+                ctx.request_repaint_after(at.saturating_duration_since(Instant::now()));
+            }
         }
         let viewport = ctx.input(|i| i.viewport().clone());
         let full_screen = self.full_window.is_some() || viewport.fullscreen == Some(true);
