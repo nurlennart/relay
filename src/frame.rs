@@ -111,7 +111,12 @@ impl Frame {
             if self.width == 0 || self.height == 0 {
                 return None;
             }
-            let image = ColorImage::new([self.width, self.height], self.pixels.clone());
+            // Move the buffer into the upload image rather than cloning a full frame (8 MiB+ at
+            // 1080p). Replace with a fresh black buffer so later `copy` / resize paths still have
+            // storage; partial updates only need the regions they write.
+            let pixels = std::mem::take(&mut self.pixels);
+            let image = ColorImage::new([self.width, self.height], pixels);
+            self.pixels = vec![Color32::BLACK; self.width * self.height];
             return Some(Update::Full(image));
         }
         let region = self.dirty.take()?;
@@ -286,11 +291,17 @@ mod tests {
         let mut frame = Frame::default();
         assert_eq!(frame.take(), None, "nothing before the first picture");
         frame.resize(4, 3);
+        frame.pixels[0] = Color32::from_rgb(1, 2, 3);
         let Some(Update::Full(image)) = frame.take() else {
             panic!("expected a full picture");
         };
         assert_eq!(image.size, [4, 3]);
-        assert!(image.pixels.iter().all(|p| *p == Color32::BLACK));
+        assert_eq!(image.pixels[0], Color32::from_rgb(1, 2, 3));
+        assert!(
+            frame.pixels.iter().all(|p| *p == Color32::BLACK),
+            "working buffer is replaced, not left empty"
+        );
+        assert_eq!(frame.pixels.len(), 12);
         assert_eq!(frame.take(), None, "taken");
     }
 
