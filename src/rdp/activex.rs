@@ -226,6 +226,8 @@ pub struct RdpClient {
     resized: Instant,
     /// Overlay rectangles currently cut out of the viewport.
     holes: Vec<[i32; 4]>,
+    /// Last rect passed to `place` while shown, to skip unchanged Win32 work.
+    placed: Option<[i32; 4]>,
     display_warning: Option<String>,
     /// Whether the control was in full screen when last placed, to notice it leaving.
     full_screen: bool,
@@ -335,6 +337,7 @@ impl RdpClient {
             retry_at: Instant::now(),
             resized: Instant::now(),
             holes: vec![],
+            placed: None,
             display_warning: None,
             full_screen: false,
             focus_requested: false,
@@ -462,6 +465,7 @@ impl RdpClient {
             // hole stays open over the remote desktop.
             let _ = platform::windows::clip(self.window.0, [0, 0], &[]);
             self.holes.clear();
+            self.placed = None;
         }
     }
     /// The control draws itself and wakes the window only for its own events, such as signing
@@ -569,11 +573,27 @@ impl RdpClient {
             // Typing goes to Relay, such as a dialog that covers the desktop, not the hidden control.
             platform::windows::release_focus(self.window.0, self.parent);
             self.focus_requested = false;
+            self.placed = None;
             unsafe {
                 ShowWindow(self.window.0, SW_HIDE);
             }
             return Ok(());
         };
+        let state = self.state.lock().unwrap();
+        let (connected, generation, full_screen) =
+            (state.connected, state.generation, state.full_screen);
+        drop(state);
+        let unchanged = self.placed == Some(rect)
+            && holes == self.holes.as_slice()
+            && self.started
+            && !self.focus_requested
+            && self.full_screen == full_screen;
+        if unchanged {
+            // Rect, holes, focus, and full-screen are steady; still drive display sync.
+            let scale = scale_for(self.parent);
+            self.sync_display(scale, connected, generation, full_screen);
+            return Ok(());
+        }
         let resized = platform::windows::bounds(self.window.0, self.parent)? != rect;
         self.layout(rect)?;
         if holes != self.holes || (resized && !holes.is_empty()) {
@@ -599,10 +619,6 @@ impl RdpClient {
             self.started = true;
             self.initial = self.size.map(|size| (size, initial_scale));
         }
-        let state = self.state.lock().unwrap();
-        let (connected, generation, full_screen) =
-            (state.connected, state.generation, state.full_screen);
-        drop(state);
         // Leaving full screen closes the control's own window, which was the active one, and
         // Windows activates none in its place: the desktop then refuses clicks with a beep
         // until Relay's window is clicked. Activate the window it is back in.
@@ -610,6 +626,7 @@ impl RdpClient {
             platform::windows::activate(self.parent);
         }
         self.full_screen = full_screen;
+        self.placed = Some(rect);
         self.sync_display(scale, connected, generation, full_screen);
         Ok(())
     }
@@ -1061,6 +1078,32 @@ mod tests {
                 .unwrap();
             assert_eq!(u32::try_from(&value).unwrap(), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn unchanged_place_keeps_the_last_rect_and_stays_quiet() {
+        let _turn = one_control_at_a_time();
+        let parent = parent();
+        let mut connection = Connection::new();
+        connection.host = "localhost".into();
+        let mut client = RdpClient::new(
+            NativeWindow::from_hwnd(parent.0),
+            &connection,
+            false,
+            egui::Context::default(),
+        )
+        .unwrap();
+        client.started = true;
+        let rect = [10, 20, 400, 300];
+        client.place(Some(rect), &[]).unwrap();
+        assert_eq!(client.placed, Some(rect));
+        // Same rect and holes: early path, no Win32 bounds / ShowWindow churn.
+        client.place(Some(rect), &[]).unwrap();
+        assert_eq!(client.placed, Some(rect));
+        client.place(Some([10, 20, 401, 300]), &[]).unwrap();
+        assert_eq!(client.placed, Some([10, 20, 401, 300]));
+        client.place(None, &[]).unwrap();
+        assert_eq!(client.placed, None);
     }
 
     #[test]
