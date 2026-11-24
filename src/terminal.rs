@@ -16,7 +16,7 @@ use process::shell;
 use crate::model::Connection;
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use portable_pty::CommandBuilder;
-use std::{ops::ControlFlow, sync::atomic::Ordering, time::Duration};
+use std::{num::NonZeroU16, ops::ControlFlow, sync::atomic::Ordering, time::Duration};
 
 /// The font size terminals start with, and the sizes zooming moves between.
 pub const FONT_SIZE: f32 = 14.;
@@ -156,7 +156,10 @@ impl Terminal {
     fn spawn(command: CommandBuilder, ctx: Option<egui::Context>) -> Result<Self, String> {
         Ok(Self {
             process: Process::spawn(command, ctx)?,
-            size: (24, 80),
+            size: (
+                vt100::Parser::DEFAULT_ROWS.get(),
+                vt100::Parser::DEFAULT_COLS.get(),
+            ),
             ended: false,
             focused: false,
             error: None,
@@ -331,13 +334,11 @@ impl Terminal {
             match self.process.resize(rows, cols) {
                 Ok(()) => {
                     self.size = (rows, cols);
-                    self.process
-                        .parser
-                        .lock()
-                        .unwrap()
-                        .screen_mut()
-                        .set_size(rows, cols);
-                    // Resizing drops rows and columns without any output.
+                    self.process.parser.lock().unwrap().set_size(
+                        NonZeroU16::new(rows).unwrap(),
+                        NonZeroU16::new(cols).unwrap(),
+                    );
+                    // Resizing changes the screen without any output.
                     if let Some(search) = &mut self.search {
                         search.invalidate();
                     }
@@ -910,7 +911,7 @@ fn accessible_screen(
     {
         return;
     }
-    let (_, cols) = screen.size();
+    let cols = screen.size().1.get();
     let lines: Vec<_> = screen.rows(0, cols).collect();
     let index = |(row, col): (u16, u16)| {
         let row = usize::from(row).min(lines.len().saturating_sub(1));
@@ -1323,7 +1324,11 @@ mod tests {
         for (select, history) in [(true, false), (false, false), (false, true)] {
             let ctx = egui::Context::default();
             ctx.enable_accesskit();
-            let mut parser = vt100::Parser::new(4, 32, 10);
+            let mut parser = vt100::Parser::new(
+                NonZeroU16::new(4).unwrap(),
+                NonZeroU16::new(32).unwrap(),
+                10,
+            );
             parser.process("prompt café 界\r\nnext".as_bytes());
             if history {
                 parser.process(b"\r\n1\r\n2\r\n3\r\n4");
@@ -1438,7 +1443,11 @@ mod tests {
     }
     #[test]
     fn output_keeps_its_colors_on_screen() {
-        let mut parser = vt100::Parser::new(24, 80, 100);
+        let mut parser = vt100::Parser::new(
+            vt100::Parser::DEFAULT_ROWS,
+            vt100::Parser::DEFAULT_COLS,
+            100,
+        );
         parser.process(b"\x1b[31mred\x1b[0m\r\nnext");
         assert!(parser.screen().contents().contains("red\nnext"));
         assert_eq!(
@@ -1710,7 +1719,11 @@ mod tests {
     #[test]
     fn capped_search_skips_remaining_history_and_restores_the_view() {
         let (rows, cols) = (7, 100);
-        let mut parser = vt100::Parser::new(rows, cols, 200);
+        let mut parser = vt100::Parser::new(
+            NonZeroU16::new(rows).unwrap(),
+            NonZeroU16::new(cols).unwrap(),
+            200,
+        );
         let row = format!("{}\r\n", "a".repeat(usize::from(cols)));
         parser.process(row.repeat(120).as_bytes());
         let screen = parser.screen_mut();
@@ -2126,7 +2139,17 @@ mod tests {
     fn ctrl_click_opens_a_link_that_wraps_from_its_second_row() {
         let (mut terminal, _parser, ctx) = harness();
         show_frame(&ctx, &mut terminal, vec![], egui::Modifiers::NONE);
-        let cols = terminal.process.parser.lock().unwrap().screen().size().1 as usize;
+        let cols = usize::from(
+            terminal
+                .process
+                .parser
+                .lock()
+                .unwrap()
+                .screen()
+                .size()
+                .1
+                .get(),
+        );
         // The address starts ten columns before the end of the first row and goes on below,
         // with another link further down.
         let text = format!(
