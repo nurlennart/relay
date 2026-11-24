@@ -55,6 +55,8 @@ tiberius = { version = "0.13", default-features = false, features = ["tds73", "n
 wgpu = { version = "27", default-features = false, features = ["dx12", "wgsl"] }
 windows = { version = "0.61.3", features = ["Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant"] }
 windows-core = "0.61.2"
+# The pinned winauth revision uses the SSPI credential bindings without enabling them.
+winauth-windows-sys = { package = "windows-sys", version = "0.52", features = ["Win32_Security_Credentials"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Security_Credentials", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Pipes", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_Storage_FileSystem"] }
 
 # Elsewhere remote desktops are drawn by IronRDP. Its crates require Rust 1.94.
@@ -88,6 +90,10 @@ wgpu = { version = "27", default-features = false, features = ["vulkan", "gles",
 
 [build-dependencies]
 winresource = "0.1.34"
+
+[patch.crates-io]
+# Remove this once winauth publishes its rand 0.8 update.
+winauth = { git = "https://github.com/steffengy/winauth-rs", rev = "a1284daa5d45c45dcd45ced10e8235da9e9351b4" }
 
 [profile.release]
 strip = true
