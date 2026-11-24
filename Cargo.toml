@@ -32,7 +32,7 @@ notify = "8.2.0"
 num-bigint = "0.4"
 portable-pty = "0.9"
 raw-window-handle = "0.6.2"
-rfd = { version = "0.17", default-features = false }
+rfd = { version = "0.18", default-features = false }
 rusqlite = { version = "0.38", features = ["bundled"] }
 russh-sftp = "3.0.1"
 serde = { version = "1", features = ["derive"] }
@@ -82,7 +82,7 @@ wgpu = { version = "27", default-features = false, features = ["metal", "wgsl"] 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 mysql = { version = "28", default-features = false, features = ["minimal-rust", "rustls-tls"] }
 eframe = { version = "0.33.3", default-features = false, features = ["wayland", "x11"] }
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal", "wayland"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls", "sql-browser-tokio"] }
 wgpu = { version = "27", default-features = false, features = ["vulkan", "gles", "wgsl"] }
 
