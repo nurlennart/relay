@@ -137,7 +137,7 @@ pub(super) fn group_input(
             .on_hover_text("Choose an existing group");
         choose.widget_info(|| {
             egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
+                egui::Role::Button,
                 choose.enabled(),
                 "Choose an existing group",
             )
@@ -169,7 +169,7 @@ pub(super) fn dialog_width(ctx: &egui::Context, preferred: f32) -> f32 {
 
 pub(super) fn dialog(id: &'static str, ctx: &egui::Context) -> egui::Modal {
     let colors = theme::palette(ctx);
-    egui::Modal::new(egui::Id::new(id)).frame(
+    egui::Modal::new(egui::Id::unique(id)).frame(
         egui::Frame::new()
             .fill(colors.panel)
             .inner_margin(20.)
@@ -229,7 +229,7 @@ pub(super) fn input<'a>(value: &'a mut String, hint: &str) -> egui::TextEdit<'a>
         // Weak text takes the placeholder color, which the theme's text color would override.
         .hint_text(RichText::new(hint).weak())
         .margin(egui::Margin::symmetric(10, 6))
-        .vertical_align(egui::Align::Center)
+        .align(egui::Align2::LEFT_CENTER)
 }
 
 /// A label with a control close below it; groups are spaced further apart.
@@ -383,7 +383,7 @@ pub(super) fn search_field(
                 top: 6,
                 bottom: 6,
             })
-            .vertical_align(egui::Align::Center)
+            .align(egui::Align2::LEFT_CENTER)
             .id(id),
     );
     let rect = response.rect;
@@ -416,7 +416,7 @@ pub(super) fn search_field(
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text("Clear");
-        clear.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Clear"));
+        clear.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Clear"));
         if clear.hovered() || clear.has_focus() {
             ui.painter().circle_filled(center, 10., colors.hover);
         }

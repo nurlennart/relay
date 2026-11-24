@@ -138,7 +138,7 @@ fn import_review_aligns_columns_and_keeps_errors_and_actions_visible() {
                     );
                 }
                 let modal = ctx
-                    .memory(|m| m.area_rect(egui::Id::new("import")))
+                    .memory(|m| m.area_rect(egui::Id::unique("import")))
                     .unwrap();
                 assert!(
                     screen.contains_rect(modal),
@@ -422,7 +422,7 @@ fn enter_in_notes_adds_a_line_and_notes_are_searchable() {
     };
     app.modal = Modal::Editor(app.connections[0].clone());
     frame(&mut app, vec![]);
-    ctx.memory_mut(|m| m.request_focus(egui::Id::new(editor::NOTES_ID)));
+    ctx.memory_mut(|m| m.request_focus(egui::Id::unique(editor::NOTES_ID)));
     frame(&mut app, vec![egui::Event::Text("Rack 4".into())]);
     frame(&mut app, vec![press(egui::Key::Enter)]);
     frame(&mut app, vec![egui::Event::Text("UPS".into())]);
@@ -430,7 +430,7 @@ fn enter_in_notes_adds_a_line_and_notes_are_searchable() {
         matches!(&app.modal, Modal::Editor(c) if c.notes == "Rack 4\nUPS"),
         "Enter in the notes saved or lost the line break"
     );
-    ctx.memory_mut(|m| m.surrender_focus(egui::Id::new(editor::NOTES_ID)));
+    ctx.memory_mut(|m| m.surrender_focus(egui::Id::unique(editor::NOTES_ID)));
     frame(&mut app, vec![press(egui::Key::Enter)]);
     assert!(matches!(app.modal, Modal::None));
     while app.pending.is_some() {
@@ -692,7 +692,7 @@ fn arrows_move_selection_and_escape_clears_search() {
     for expected in [2, 3, 3] {
         library_frame(&mut app, &ctx, vec![press(egui::Key::ArrowDown)]);
         assert_eq!(app.selected, Some(expected));
-        assert!(ctx.memory(|m| m.has_focus(egui::Id::new("library-search"))));
+        assert!(ctx.memory(|m| m.has_focus(egui::Id::unique("library-search"))));
     }
     library_frame(&mut app, &ctx, vec![press(egui::Key::ArrowUp)]);
     assert_eq!(app.selected, Some(2));
@@ -736,7 +736,7 @@ fn connection_rows_never_show_a_text_cursor() {
             );
             // The search field is the one place where typing is expected.
             let search = ctx
-                .read_response(egui::Id::new("library-search"))
+                .read_response(egui::Id::unique("library-search"))
                 .is_some_and(|r| r.rect.expand(8.).contains(pos));
             assert!(
                 output.platform_output.cursor_icon != egui::CursorIcon::Text || search,
@@ -1700,7 +1700,7 @@ fn settings_tabs_switch_on_click_including_the_gap_after_a_name() {
         tab
     };
     let rect = |tab| {
-        ctx.read_response(egui::Id::new(("settings-tab", tab)))
+        ctx.read_response(egui::Id::unique(("settings-tab", tab)))
             .unwrap()
             .rect
     };
@@ -2856,7 +2856,7 @@ fn search_clear_button_empties_the_search() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);
     library_frame(&mut app, &ctx, vec![]);
-    let clear_id = egui::Id::new("library-search").with("clear");
+    let clear_id = egui::Id::unique("library-search").with("clear");
     assert!(
         ctx.read_response(clear_id).is_none(),
         "clear shown while empty"
@@ -2880,7 +2880,7 @@ fn search_clear_button_empties_the_search() {
     library_frame(&mut app, &ctx, vec![]);
     assert!(app.query.is_empty());
     assert_eq!(app.filtered().len(), 3);
-    assert!(ctx.memory(|m| m.has_focus(egui::Id::new("library-search"))));
+    assert!(ctx.memory(|m| m.has_focus(egui::Id::unique("library-search"))));
 }
 
 #[test]
@@ -3041,6 +3041,7 @@ fn tabs_beyond_the_window_width_stay_reachable() {
     let _ = frame(&mut app, vec![egui::Event::PointerMoved(over)]);
     let wheel = egui::Event::MouseWheel {
         phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Unknown,
         unit: egui::MouseWheelUnit::Point,
         delta: Vec2::new(0., 5000.),
         modifiers: egui::Modifiers::NONE,
@@ -3401,7 +3402,7 @@ fn settings_fit_small_viewports_across_workspace_themes() {
                     }
                 }
                 let rect = ctx
-                    .memory(|memory| memory.area_rect(egui::Id::new("settings")))
+                    .memory(|memory| memory.area_rect(egui::Id::unique("settings")))
                     .unwrap();
                 assert!(
                     rect.width() <= size.x && rect.height() <= size.y,
@@ -3436,6 +3437,7 @@ fn settings_scroll_to_the_last_section() {
                             egui::Event::PointerMoved(egui::pos2(320., 240.)),
                             egui::Event::MouseWheel {
                                 phase: egui::TouchPhase::Move,
+                                source: egui::MouseWheelSource::Unknown,
                                 unit: egui::MouseWheelUnit::Point,
                                 delta: Vec2::new(0., -1000.),
                                 modifiers: egui::Modifiers::NONE,
@@ -3654,6 +3656,7 @@ fn connection_editor_keeps_header_and_actions_visible_across_themes_and_sizes() 
                                 egui::Event::PointerMoved(egui::pos2(size.x / 2., size.y / 2.)),
                                 egui::Event::MouseWheel {
                                     phase: egui::TouchPhase::Move,
+                                    source: egui::MouseWheelSource::Unknown,
                                     unit: egui::MouseWheelUnit::Point,
                                     delta: Vec2::new(0., -32.),
                                     modifiers: egui::Modifiers::NONE,
@@ -3691,7 +3694,7 @@ fn connection_editor_keeps_header_and_actions_visible_across_themes_and_sizes() 
                         );
                     }
                     let rect = ctx
-                        .memory(|m| m.area_rect(egui::Id::new("edit-connection")))
+                        .memory(|m| m.area_rect(egui::Id::unique("edit-connection")))
                         .unwrap();
                     assert!(
                         rect.width() <= size.x && rect.height() <= size.y,
@@ -3761,7 +3764,7 @@ fn connection_editor_preserves_protocol_options_ports_and_cancelled_changes() {
             (&draft.rdp, &draft.ssh, &draft.vnc)
         );
     }
-    ctx.memory_mut(|m| m.request_focus(egui::Id::new("connection-port")));
+    ctx.memory_mut(|m| m.request_focus(egui::Id::unique("connection-port")));
     frame(
         &mut app,
         vec![

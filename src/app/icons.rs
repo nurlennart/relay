@@ -232,9 +232,8 @@ pub(super) fn icon_button(
 ) -> egui::Response {
     let colors = theme::palette(ui.ctx());
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tooltip)
-    });
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), tooltip));
     let hovered = response.hovered() || response.has_focus();
     // An outline keeps the hover visible on rows that are already highlighted.
     if hovered || response.is_pointer_button_down_on() {

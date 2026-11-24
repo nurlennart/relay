@@ -171,7 +171,7 @@ impl App {
     pub(super) fn workspace(&mut self, ui: &mut egui::Ui) {
         let colors = theme::palette(ui.ctx());
         let total = self.connections.len();
-        let search_id = egui::Id::new("library-search");
+        let search_id = egui::Id::unique("library-search");
         let focused = ui.memory(|m| m.focused());
         // One toolbar: the view's title and count, search, then actions.
         let mut search = None;
@@ -628,7 +628,7 @@ impl App {
                             egui::pos2(x, header.top()),
                             Vec2::new(*w, header.height()),
                         ),
-                        ui.id().with(("column-title", index)),
+                        ui.scope_id().with(("column-title", index)),
                         Sense::hover(),
                     )
                     .on_hover_text(column.title());
@@ -643,7 +643,7 @@ impl App {
                         let response = ui
                             .interact(
                                 handle,
-                                ui.id().with(("column", slot)),
+                                ui.scope_id().with(("column", slot)),
                                 Sense::click_and_drag(),
                             )
                             .on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
@@ -712,7 +712,7 @@ impl App {
                         self.connection_row(ui, &c, &columns, divider, &shown);
                     }
                 });
-                self.list_view = (output.state.offset.y, output.inner_rect.height());
+                self.list_view = (output.state.clamped_offset().y, output.inner_rect.height());
             });
     }
 
@@ -742,7 +742,7 @@ impl App {
         };
         response.widget_info(|| {
             egui::WidgetInfo::selected(
-                egui::WidgetType::SelectableLabel,
+                egui::Role::Button,
                 ui.is_enabled(),
                 selected,
                 format!("{}, {}, {}", c.name, c.protocol.label(), target_label(c)),
@@ -812,7 +812,7 @@ impl App {
                     let (star, response) = ui.allocate_exact_size(Vec2::splat(24.), Sense::click());
                     response.widget_info(|| {
                         egui::WidgetInfo::selected(
-                            egui::WidgetType::Checkbox,
+                            egui::Role::CheckBox,
                             true,
                             c.favorite,
                             format!("Favorite {}", c.name),

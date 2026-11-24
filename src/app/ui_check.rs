@@ -524,11 +524,7 @@ pub fn capture(ctx: &egui::Context) {
         _ => 5,
     };
     if FRAMES.fetch_add(1, Ordering::Relaxed) == frame {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
-    }
-    let events = ctx.input(|input| input.events.clone());
-    for event in &events {
-        if let egui::Event::Screenshot { image, .. } = event {
+        ctx.request_screenshot(move |image| {
             let pixels: Vec<_> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
             image::save_buffer(
                 &path,
@@ -540,7 +536,7 @@ pub fn capture(ctx: &egui::Context) {
             .expect("save UI check image");
             // Exit directly: a normal close would stop at the open-sessions confirmation.
             std::process::exit(0);
-        }
+        });
     }
     ctx.request_repaint();
 }

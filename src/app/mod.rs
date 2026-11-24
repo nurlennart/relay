@@ -873,7 +873,7 @@ impl App {
             return;
         }
         let mut leave = false;
-        let bar = egui::Area::new(egui::Id::new("full screen bar"))
+        let bar = egui::Area::new(egui::Id::unique("full screen bar"))
             .anchor(egui::Align2::CENTER_TOP, Vec2::ZERO)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
@@ -1164,7 +1164,7 @@ impl App {
         self.editor_port = None;
         self.editor_forwards_touched = false;
         self.ctx
-            .data_mut(|data| data.remove::<bool>(egui::Id::new("editor-reveal-error")));
+            .data_mut(|data| data.remove::<bool>(egui::Id::unique("editor-reveal-error")));
         self.ctx
             .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
     }
@@ -1182,7 +1182,7 @@ impl App {
         ctx.request_repaint_after(remaining);
         let colors = theme::palette(ctx);
         let mut dismiss = false;
-        egui::Area::new(egui::Id::new("notice"))
+        egui::Area::new(egui::Id::unique("notice"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::RIGHT_BOTTOM, Vec2::new(-24., -24.))
             .show(ctx, |ui| {
@@ -1639,7 +1639,7 @@ fn split_divider(ui: &mut egui::Ui, area: egui::Rect, fraction: &mut f32) -> egu
     let handle = ui
         .interact(
             divider,
-            egui::Id::new("split-divider"),
+            egui::Id::unique("split-divider"),
             egui::Sense::click_and_drag(),
         )
         .on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
