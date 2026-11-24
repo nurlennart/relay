@@ -426,6 +426,7 @@ mod tests {
         let mut t = Translator::default();
         let wheel = egui::Event::MouseWheel {
             phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
             unit: egui::MouseWheelUnit::Line,
             delta: vec2(0., 1.),
             modifiers: Modifiers::SHIFT,
@@ -452,6 +453,7 @@ mod tests {
     fn wheel_notches_and_touchpad_scrolling() {
         let wheel = |unit, delta| egui::Event::MouseWheel {
             phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
             unit,
             delta,
             modifiers: Modifiers::NONE,

@@ -607,7 +607,7 @@ impl Terminal {
             .map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
         response.widget_info(|| {
             egui::WidgetInfo::labeled(
-                egui::WidgetType::Other,
+                egui::Role::Terminal,
                 ui.is_enabled(),
                 format!(
                     "{} terminal{}",
@@ -908,7 +908,7 @@ fn accessible_screen(
 ) {
     if ui
         .ctx()
-        .accesskit_node_builder(response.id, |_| ())
+        .accesskit_node_builder(response.id, |node| node.set_role(egui::Role::Terminal))
         .is_none()
     {
         return;
@@ -947,7 +947,6 @@ fn accessible_screen(
         ui.ctx(),
         response.id,
         range,
-        egui::accesskit::Role::Terminal,
         egui::emath::TSTransform::from_translation(origin.to_vec2()),
         &galley,
     );
@@ -1041,9 +1040,8 @@ fn search_bar(
     // Drawn with lines, as the interface font has no arrows.
     let button = |ui: &mut egui::Ui, points: &[[f32; 2]], hint: &str| {
         let (rect, response) = ui.allocate_exact_size(Vec2::splat(22.), Sense::click());
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), hint)
-        });
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), hint));
         if response.hovered() || response.has_focus() {
             ui.painter().rect_filled(rect, 4., pal.border);
         }
@@ -1908,6 +1906,7 @@ mod tests {
             .process(b"\x1b[?1000l\x1b[?1049h");
         let wheel = egui::Event::MouseWheel {
             phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
             unit: egui::MouseWheelUnit::Line,
             delta: Vec2::new(0., -2.),
             modifiers: none,
@@ -2026,6 +2025,7 @@ mod tests {
         let pos = Pos2::new(400., 200.);
         let wheel = |lines: f32| egui::Event::MouseWheel {
             phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
             unit: egui::MouseWheelUnit::Line,
             delta: Vec2::new(0., lines),
             modifiers: command,

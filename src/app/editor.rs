@@ -95,7 +95,7 @@ impl App {
                                 .add_sized(
                                     [port_width, CONTROL_HEIGHT],
                                     input(&mut port, "1–65535")
-                                        .id(egui::Id::new("connection-port")),
+                                        .id(egui::Id::unique("connection-port")),
                                 )
                                 .labelled_by(label);
                             if response.changed() {
@@ -118,7 +118,7 @@ impl App {
                     });
                     labeled(ui, "Notes (optional)", |ui, label| {
                         let notes = egui::TextEdit::multiline(&mut c.notes)
-                            .id(NOTES_ID.into())
+                            .id(egui::Id::unique(NOTES_ID))
                             .hint_text(
                                 RichText::new("Searchable, e.g. who to ask before rebooting")
                                     .weak(),
@@ -217,7 +217,7 @@ impl App {
         }
         if save && let Err(e) = c.validate() {
             self.editor_error = e;
-            ctx.data_mut(|data| data.insert_temp(egui::Id::new("editor-reveal-error"), true));
+            ctx.data_mut(|data| data.insert_temp(egui::Id::unique("editor-reveal-error"), true));
             save = false;
         }
         self.modal = Modal::Editor(c.clone());
@@ -503,7 +503,7 @@ fn validation(ui: &mut egui::Ui, error: &str, field: &str) {
             )
             .on_hover_text(error);
         if ui
-            .data_mut(|data| data.remove_temp::<bool>(egui::Id::new("editor-reveal-error")))
+            .data_mut(|data| data.remove_temp::<bool>(egui::Id::unique("editor-reveal-error")))
             .unwrap_or(false)
         {
             response.scroll_to_me(Some(egui::Align::Center));

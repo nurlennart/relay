@@ -607,8 +607,8 @@ impl App {
         let mut chosen = None;
         let mut manage = false;
         let width = dialog_width(ctx, 540.);
-        let search_id = egui::Id::new("snippet-search");
-        let area = egui::Area::new(egui::Id::new("snippet-palette"))
+        let search_id = egui::Id::unique("snippet-search");
+        let area = egui::Area::new(egui::Id::unique("snippet-palette"))
             .order(egui::Order::Foreground)
             .anchor(Align2::CENTER_TOP, Vec2::new(0., 110.))
             .show(ctx, |ui| {
@@ -679,7 +679,7 @@ impl App {
                             }
                             response.widget_info(|| {
                                 egui::WidgetInfo::selected(
-                                    egui::WidgetType::SelectableLabel,
+                                    egui::Role::Button,
                                     ui.is_enabled(),
                                     row == palette.selected,
                                     format!(
@@ -821,10 +821,14 @@ pub(super) fn tab_bar(ui: &mut egui::Ui, current: &mut SettingsTab) {
         );
         // The gap between names belongs to the name before it, so it still takes the click.
         let rect = Rect::from_x_y_ranges(left..=text.right() + 20., bar.y_range());
-        let response = ui.interact(rect, egui::Id::new(("settings-tab", tab)), Sense::click());
+        let response = ui.interact(
+            rect,
+            egui::Id::unique(("settings-tab", tab)),
+            Sense::click(),
+        );
         let open = *current == tab;
         response.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, open, tab.label())
+            egui::WidgetInfo::selected(egui::Role::Button, true, open, tab.label())
         });
         if response.clicked() {
             *current = tab;
@@ -1049,7 +1053,7 @@ fn choice_button(ui: &mut egui::Ui, name: &str, selected: bool) -> egui::Respons
         egui::Button::new("").selected(selected),
     );
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, name)
+        egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, name)
     });
     if response.has_focus() {
         ui.painter().rect_stroke(

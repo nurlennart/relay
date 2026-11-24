@@ -498,6 +498,7 @@ mod tests {
         );
         let wheel = egui::Event::MouseWheel {
             phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
             unit: egui::MouseWheelUnit::Line,
             delta: vec2(0., 1.),
             modifiers: Modifiers::CTRL,
@@ -575,6 +576,7 @@ mod tests {
         );
         let wheel = |unit, delta| egui::Event::MouseWheel {
             phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
             unit,
             delta,
             modifiers: Modifiers::NONE,

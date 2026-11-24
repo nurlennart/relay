@@ -89,8 +89,8 @@ impl App {
         let mut browses = false;
         let mut chosen = None;
         let width = dialog_width(ctx, 540.);
-        let search_id = egui::Id::new("quick-open-search");
-        let area = egui::Area::new(egui::Id::new("quick-open"))
+        let search_id = egui::Id::unique("quick-open-search");
+        let area = egui::Area::new(egui::Id::unique("quick-open"))
             .order(egui::Order::Foreground)
             .anchor(Align2::CENTER_TOP, Vec2::new(0., BAR_HEIGHT + 24.))
             .show(ctx, |ui| {
@@ -190,7 +190,7 @@ impl App {
                             };
                             response.widget_info(|| {
                                 egui::WidgetInfo::selected(
-                                    egui::WidgetType::SelectableLabel,
+                                    egui::Role::Button,
                                     ui.is_enabled(),
                                     row == open.selected,
                                     format!("{title}, {}, {address}", c.protocol.label()),

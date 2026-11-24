@@ -177,7 +177,7 @@ impl Theme {
         v.window_shadow = shadow(12, 32, 120);
         v.popup_shadow = shadow(4, 14, 90);
         ctx.set_visuals(v);
-        ctx.data_mut(|data| data.insert_temp(egui::Id::new("relay-theme"), self));
+        ctx.data_mut(|data| data.insert_temp(egui::Id::unique("relay-theme"), self));
         ctx.request_repaint();
     }
 
@@ -196,7 +196,7 @@ pub fn load(path: &Path) -> Theme {
         .unwrap_or_default()
 }
 pub fn current(ctx: &egui::Context) -> Theme {
-    ctx.data(|data| data.get_temp(egui::Id::new("relay-theme")))
+    ctx.data(|data| data.get_temp(egui::Id::unique("relay-theme")))
         .unwrap_or_default()
 }
 pub fn palette(ctx: &egui::Context) -> Palette {

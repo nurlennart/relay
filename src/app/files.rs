@@ -245,7 +245,7 @@ fn browser(
     // The status line and transfer queue sit at the bottom, at the height they took last
     // frame; the listing fills the rest.
     let full = ui.available_rect_before_wrap();
-    let measured = ui.id().with(("files-bottom", key));
+    let measured = ui.scope_id().with(("files-bottom", key));
     let bottom = ui.data(|d| d.get_temp::<f32>(measured)).unwrap_or(30.);
     let split = (full.bottom() - bottom).max(full.top() + FILE_ROW * 4.);
     let listing = Rect::from_min_max(full.min, egui::pos2(full.right(), split - 6.));
@@ -367,7 +367,7 @@ fn prompt_card(ui: &mut egui::Ui, files: &mut Browser, index: usize) {
                             [ui.available_width(), CONTROL_HEIGHT],
                             input(&mut prompt.answer, "")
                                 .password(!prompt.reveal)
-                                .id(egui::Id::new(("askpass", id))),
+                                .id(egui::Id::unique(("askpass", id))),
                         );
                         if !field.has_focus() && !field.lost_focus() {
                             field.request_focus();
@@ -468,7 +468,7 @@ fn toolbar(ui: &mut egui::Ui, files: &mut Browser, key: u64, actions: &mut Vec<A
             if new_folder.clicked() {
                 start_new_folder(files);
             }
-            let filter_id = egui::Id::new(("files-filter", key));
+            let filter_id = egui::Id::unique(("files-filter", key));
             // The other fields that open with the keyboard take it themselves.
             let others = files.view.path_edit.is_some()
                 || files.view.rename.is_some()
@@ -533,7 +533,7 @@ fn path_bar(ui: &mut egui::Ui, files: &mut Browser, key: u64) {
     let width = ui.available_width().max(80.);
     let (rect, background) =
         ui.allocate_exact_size(Vec2::new(width, CONTROL_HEIGHT), Sense::click());
-    let id = egui::Id::new(("files-path", key));
+    let id = egui::Id::unique(("files-path", key));
     if let Some(text) = &mut files.view.path_edit {
         let field = ui.put(rect, input(text, "Folder path, ~ for home").id(id));
         if std::mem::take(&mut files.view.focus_field) {
@@ -896,14 +896,19 @@ fn table(
                 }
             });
             let id = ui.make_persistent_id(("files-list", key)).with("scroll");
-            ui.data_mut(|d| d.insert_temp(id, (output.state.offset.y, output.inner_rect.height())));
+            ui.data_mut(|d| {
+                d.insert_temp(
+                    id,
+                    (output.state.clamped_offset().y, output.inner_rect.height()),
+                )
+            });
             band(
                 ui,
                 files,
                 key,
                 names,
                 output.inner_rect,
-                output.state.offset.y,
+                output.state.unclamped_offset().y,
             );
         });
     // Show what is being dragged beside the pointer.
@@ -915,7 +920,7 @@ fn table(
             [name] => format!("Move “{name}”"),
             names => format!("Move {} items", names.len()),
         };
-        egui::Area::new(egui::Id::new(("files-drag", key)))
+        egui::Area::new(egui::Id::unique(("files-drag", key)))
             .order(egui::Order::Tooltip)
             .fixed_pos(pos + Vec2::new(14., 10.))
             .interactable(false)
@@ -940,7 +945,7 @@ fn header(ui: &mut egui::Ui, files: &mut Browser, columns: &Columns, width: f32)
         let active = sort.is_some_and(|s| s == files.view.sort);
         let response = ui.interact(
             cell,
-            ui.id().with(("files-sort", title)),
+            ui.scope_id().with(("files-sort", title)),
             if sort.is_some() {
                 Sense::click()
             } else {
@@ -950,7 +955,7 @@ fn header(ui: &mut egui::Ui, files: &mut Browser, columns: &Columns, width: f32)
         if sort.is_some() {
             response.widget_info(|| {
                 egui::WidgetInfo::labeled(
-                    egui::WidgetType::Button,
+                    egui::Role::Button,
                     ui.is_enabled(),
                     format!("Sort by {title}"),
                 )
@@ -1059,7 +1064,7 @@ fn row(
     let selected = files.view.selected.contains(name);
     response.widget_info(|| {
         egui::WidgetInfo::selected(
-            egui::WidgetType::SelectableLabel,
+            egui::Role::Button,
             ui.is_enabled(),
             selected,
             format!("{}, {}", name, if entry.dir { "Folder" } else { "File" }),
@@ -1131,9 +1136,9 @@ fn row(
         let field = ui.put(
             cell,
             egui::TextEdit::singleline(text)
-                .id(egui::Id::new(("files-rename", key)))
+                .id(egui::Id::unique(("files-rename", key)))
                 .margin(Margin::symmetric(6, 3))
-                .vertical_align(Align::Center),
+                .align(egui::Align2::LEFT_CENTER),
         );
         if std::mem::take(&mut files.view.focus_field) {
             field.request_focus();
@@ -1403,7 +1408,7 @@ fn band(
         );
         let response = ui.interact(
             rect,
-            ui.id().with(("files-below", key)),
+            ui.scope_id().with(("files-below", key)),
             Sense::click_and_drag(),
         );
         if response.clicked() {
@@ -2169,7 +2174,7 @@ fn os_drops(
     if hovering {
         let painter = ui.ctx().layer_painter(egui::LayerId::new(
             egui::Order::Foreground,
-            egui::Id::new("files-drop"),
+            egui::Id::unique("files-drop"),
         ));
         painter.rect(
             area,

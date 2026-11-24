@@ -25,7 +25,7 @@ impl App {
                 );
                 toggle.widget_info(|| {
                     egui::WidgetInfo::labeled(
-                        egui::WidgetType::Button,
+                        egui::Role::Button,
                         ui.is_enabled(),
                         if collapsed {
                             "Expand sidebar"
@@ -182,12 +182,12 @@ impl App {
                     let idle = self.pending.is_none();
                     let library = ui.interact(
                         library_rect,
-                        ui.id().with("library"),
+                        ui.scope_id().with("library"),
                         if idle { Sense::click() } else { Sense::hover() },
                     );
                     library.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
+                            egui::Role::Button,
                             idle,
                             format!("Manage {} library", self.location.label()),
                         )
@@ -258,12 +258,7 @@ pub(super) fn nav_row(
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.), Sense::click());
     response.widget_info(|| {
-        egui::WidgetInfo::selected(
-            egui::WidgetType::SelectableLabel,
-            ui.is_enabled(),
-            selected,
-            label,
-        )
+        egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, label)
     });
     if selected || response.hovered() {
         ui.painter().rect_filled(
@@ -331,12 +326,7 @@ pub(super) fn rail_row(ui: &mut egui::Ui, icon: Icon, tooltip: &str, selected: b
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.), Sense::click());
     response.widget_info(|| {
-        egui::WidgetInfo::selected(
-            egui::WidgetType::SelectableLabel,
-            ui.is_enabled(),
-            selected,
-            tooltip,
-        )
+        egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, tooltip)
     });
     if selected || response.hovered() {
         let fill = if selected {

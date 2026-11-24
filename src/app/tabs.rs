@@ -71,7 +71,7 @@ impl App {
                 // The tab in front scrolls into view when it changes.
                 let front = (self.front, self.tabs.len());
                 let reveal = ui.ctx().data_mut(|d| {
-                    let last = d.get_temp_mut_or_default::<(Option<u64>, usize)>(egui::Id::new(
+                    let last = d.get_temp_mut_or_default::<(Option<u64>, usize)>(egui::Id::unique(
                         "tabs-front",
                     ));
                     std::mem::replace(last, front) != front
@@ -392,9 +392,8 @@ pub(super) fn library_tab(ui: &mut egui::Ui, selected: bool) -> egui::Response {
     );
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(galley.size().x + 40., 28.), Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, "Library")
-    });
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, "Library"));
     tab_background(ui, rect, selected, response.hovered());
     if response.has_focus() {
         ui.painter().rect_stroke(
@@ -515,9 +514,7 @@ pub(super) fn session_tab(
         .on_hover_ui(|ui| {
             ui.label(details(connection, kind, state));
         });
-    select.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label)
-    });
+    select.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, label));
     if select.has_focus() {
         ui.painter().rect_stroke(
             select_rect,
@@ -533,7 +530,7 @@ pub(super) fn session_tab(
     );
     let close = ui.interact(close_rect, response.id.with("close"), Sense::click());
     close.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Close {label}"))
+        egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Close {label}"))
     });
     // The close button shows on the selected tab and under the pointer, as in browsers.
     if selected || hovered || close.has_focus() {
