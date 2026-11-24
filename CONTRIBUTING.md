@@ -2,7 +2,7 @@
 
 ## Building
 
-Relay builds with stable Rust (1.94 or newer, which IronRDP requires) on Windows, macOS, and Linux:
+Relay builds with stable Rust 1.95 or newer on Windows, macOS, and Linux:
 
 ```sh
 cargo run --release
