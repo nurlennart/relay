@@ -32,7 +32,7 @@ notify = "8.2.0"
 num-bigint = "0.4"
 portable-pty = "0.9"
 raw-window-handle = "0.6.2"
-rfd = { version = "0.17", default-features = false }
+rfd = { version = "0.18", default-features = false }
 rusqlite = { version = "0.38", features = ["bundled"] }
 russh-sftp = "3.0.1"
 serde = { version = "1", features = ["derive"] }
