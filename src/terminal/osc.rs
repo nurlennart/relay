@@ -59,7 +59,7 @@ impl Osc {
 
     /// Remembers the link written from `start` to `end`, one entry for each row it is on.
     fn record(&mut self, screen: &vt100::Screen, url: &str, start: (u16, u16), end: (u16, u16)) {
-        let (_, cols) = screen.size();
+        let cols = screen.size().1.get();
         if end < start {
             return;
         }

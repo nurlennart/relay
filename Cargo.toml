@@ -40,7 +40,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros", "process", "io-util", "fs"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 ttf-parser = "0.25"
-vt100 = "0.16"
+vt100 = "0.18"
 
 # Each platform gets its native GPU backend and TLS stack. Windows also hosts the
 # Microsoft RDP ActiveX control and supports integrated MSSQL authentication.

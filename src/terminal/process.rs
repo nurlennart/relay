@@ -61,8 +61,8 @@ impl Process {
         command.env("TERM", "xterm-256color");
         let pair = portable_pty::native_pty_system()
             .openpty(PtySize {
-                rows: 24,
-                cols: 80,
+                rows: vt100::Parser::DEFAULT_ROWS.get(),
+                cols: vt100::Parser::DEFAULT_COLS.get(),
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -92,8 +92,8 @@ impl Process {
             }
         });
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            24,
-            80,
+            vt100::Parser::DEFAULT_ROWS,
+            vt100::Parser::DEFAULT_COLS,
             5000,
             Replies::default(),
         )));
