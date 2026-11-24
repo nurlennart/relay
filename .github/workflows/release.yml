@@ -95,7 +95,7 @@ jobs:
           cp assets/icon.png "build/$name/relay.png"
           tar -C build -czf "dist/$name.tar.gz" "$name"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: dist/*
