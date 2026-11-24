@@ -3374,45 +3374,47 @@ fn settings_fit_small_viewports_across_workspace_themes() {
 }
 
 #[test]
-fn terminal_settings_scroll_to_the_last_section() {
-    let ctx = egui::Context::default();
-    apply_style(&ctx);
-    let mut app = test_app(&ctx);
-    app.state_path = None;
-    app.modal = Modal::Settings;
-    app.settings_tab = settings::SettingsTab::Terminal;
-    let mut last_visible = false;
-    for frame in 0..12 {
-        let output = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(640., 480.))),
-                time: Some(frame as f64 * 0.1),
-                events: if frame >= 3 {
-                    vec![
-                        egui::Event::PointerMoved(egui::pos2(320., 240.)),
-                        egui::Event::MouseWheel {
-                            unit: egui::MouseWheelUnit::Point,
-                            delta: Vec2::new(0., -1000.),
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ]
-                } else {
-                    vec![]
+fn settings_scroll_to_the_last_section() {
+    for (tab, label) in [
+        (settings::SettingsTab::Appearance, "Reopen tabs at startup"),
+        (settings::SettingsTab::Terminal, "External editor"),
+    ] {
+        let ctx = egui::Context::default();
+        apply_style(&ctx);
+        let mut app = test_app(&ctx);
+        app.state_path = None;
+        app.modal = Modal::Settings;
+        app.settings_tab = tab;
+        let mut last_visible = false;
+        for frame in 0..12 {
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(640., 480.))),
+                    time: Some(frame as f64 * 0.1),
+                    events: if frame >= 3 {
+                        vec![
+                            egui::Event::PointerMoved(egui::pos2(320., 240.)),
+                            egui::Event::MouseWheel {
+                                unit: egui::MouseWheelUnit::Point,
+                                delta: Vec2::new(0., -1000.),
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ]
+                    } else {
+                        vec![]
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            },
-            |ctx| app.settings(ctx),
-        );
-        last_visible |= output.shapes.iter().any(|clipped| {
-            matches!(&clipped.shape, egui::Shape::Text(text)
-                if text.galley.text() == "Reopen tabs at startup"
+                |ctx| app.settings(ctx),
+            );
+            last_visible |= output.shapes.iter().any(|clipped| {
+                matches!(&clipped.shape, egui::Shape::Text(text)
+                if text.galley.text() == label
                 && clipped.clip_rect.contains_rect(text.visual_bounding_rect()))
-        });
+            });
+        }
+        assert!(last_visible, "{label} in {tab:?} is reachable by scrolling");
     }
-    assert!(
-        last_visible,
-        "the last terminal setting is reachable by scrolling"
-    );
 }
 
 #[test]

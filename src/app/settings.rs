@@ -108,6 +108,18 @@ impl App {
                         SettingsTab::Appearance => {
                             theme_picker(ui, &mut choice);
                             zoom_picker(ui);
+                            section_break(ui, "STARTUP");
+                            let mut reopen = !self.state.forget_tabs;
+                            if ui.checkbox(&mut reopen, "Reopen tabs at startup").changed() {
+                                self.state.forget_tabs = !reopen;
+                                self.remember_tabs();
+                            }
+                            help(
+                                ui,
+                                "Tabs open when Relay closes come back, and each connects when you first select \
+                                 it. Turned off, Relay starts with only the library and keeps no list of your \
+                                 tabs.",
+                            );
                         }
                         SettingsTab::Terminal => self.terminal_settings(ui),
                         SettingsTab::Library => action = self.library_settings(ui),
@@ -465,21 +477,6 @@ impl App {
             self.state.editor = editor;
             self.save_state();
         }
-        section_break(ui, "SESSIONS");
-        let mut reopen = !self.state.forget_tabs;
-        if ui.checkbox(&mut reopen, "Reopen tabs at startup").changed() {
-            self.state.forget_tabs = !reopen;
-            self.remember_tabs();
-        }
-        ui.label(
-            RichText::new(
-                "Tabs open when Relay closes come back, and each connects when you first select \
-                 it. Turned off, Relay starts with only the library and keeps no list of your \
-                 tabs.",
-            )
-            .size(12.)
-            .color(colors.muted),
-        );
     }
 
     /// Lists, adds, edits, and deletes snippets inside Settings.
