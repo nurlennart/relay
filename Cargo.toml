@@ -19,7 +19,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 cipher = "0.5"
 csv = "1.3"
 des = "0.9"
-dirs = "6"
+dirs = "7"
 eframe = { version = "0.33.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 encoding_rs = "0.8"
 flate2 = "1.1"
