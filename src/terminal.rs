@@ -908,7 +908,7 @@ fn accessible_screen(
 ) {
     if ui
         .ctx()
-        .accesskit_node_builder(response.id, |_| ())
+        .accesskit_node_builder(response.id, |node| node.set_role(egui::Role::Terminal))
         .is_none()
     {
         return;
