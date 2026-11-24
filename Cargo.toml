@@ -24,7 +24,7 @@ eframe = { version = "0.33.3", default-features = false, features = ["accesskit"
 encoding_rs = "0.8"
 flate2 = "1.1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-getrandom = "0.3"
+getrandom = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 keyring = "4.2"
 md-5 = "0.11"
