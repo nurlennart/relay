@@ -944,6 +944,7 @@ fn connection_recovery_edits_current_settings_only_in_the_sessions_own_library()
         let output = session_pane_frame(&mut app, &ctx, Pane::Main, size, vec![]);
         let update = output.platform_output.accesskit_update.unwrap();
         let mut edit_at = egui::Pos2::ZERO;
+        let mut reconnect_left = 0.;
         for label in ["Reconnect", "Edit connection"] {
             let (_, node) = update
                 .nodes
@@ -956,10 +957,16 @@ fn connection_recovery_edits_current_settings_only_in_the_sessions_own_library()
                 "{mode}: {label} outside pane: {bounds:?}"
             );
             if label == "Edit connection" {
+                assert!(
+                    (reconnect_left + bounds.x1 - f64::from(size.x)).abs() <= 1.,
+                    "{mode}: recovery buttons should be centered as a group"
+                );
                 edit_at = egui::pos2(
                     ((bounds.x0 + bounds.x1) / 2.) as f32,
                     ((bounds.y0 + bounds.y1) / 2.) as f32,
                 );
+            } else {
+                reconnect_left = bounds.x0;
             }
         }
         let _ = session_pane_frame(

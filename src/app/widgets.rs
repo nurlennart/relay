@@ -278,10 +278,23 @@ pub(super) fn connection_recovery(ui: &mut egui::Ui, detail: &str, can_edit: boo
     }).wrap());
     ui.add_space(8.);
     let (mut reconnect, mut edit) = (false, false);
-    ui.horizontal_wrapped(|ui| {
-        reconnect = accent_button(ui, "Reconnect", 120.).clicked();
-        if can_edit {
-            edit = outline_button(ui, "Edit connection", 0.).clicked();
+    ui.vertical_centered(|ui| {
+        let button_width = 120_f32.min(ui.available_width());
+        let row_width = 2. * button_width + ui.spacing().item_spacing.x;
+        let mut buttons = |ui: &mut egui::Ui| {
+            reconnect = accent_button(ui, "Reconnect", button_width).clicked();
+            if can_edit {
+                edit = outline_button(ui, "Edit connection", button_width).clicked();
+            }
+        };
+        if can_edit && row_width <= ui.available_width() {
+            ui.allocate_ui_with_layout(
+                Vec2::new(row_width, CONTROL_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                buttons,
+            );
+        } else {
+            buttons(ui);
         }
     });
     egui::ScrollArea::vertical()
