@@ -2924,9 +2924,9 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-mstsgu"
-version = "0.0.2"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb3c82ad2642ab4116e9a105f5bb6613ef5e9ffd6ffe4aa6a62dbcabbb87f71c"
+checksum = "ef854d5418746c5d131ed98b4a59c17f3ceed10c8be4d7c182388b4413e0b6ae"
 dependencies = [
  "base64 0.22.1",
  "bitflags 2.13.2",
