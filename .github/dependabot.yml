@@ -12,6 +12,13 @@ updates:
         update-types:
           - "minor"
           - "major"
+      windows-com:
+        patterns:
+          - "windows"
+          - "windows-core"
+        update-types:
+          - "minor"
+          - "major"
       cargo-patches:
         patterns:
           - "*"
