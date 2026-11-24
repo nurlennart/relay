@@ -28,7 +28,7 @@ getrandom = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 keyring = "4.2"
 md-5 = "0.11"
-notify = "8.2.0"
+notify = "9.0.0"
 num-bigint = "0.5"
 portable-pty = "0.9"
 raw-window-handle = "0.6.2"
