@@ -96,17 +96,17 @@ impl App {
                 .with_icon(app_icon());
             let colors = theme::palette(ctx);
             let mut close = false;
-            let shown = ctx.show_viewport_immediate(session_viewport(key), builder, |ctx, _| {
-                close = ctx.input(|i| i.viewport().close_requested());
+            let shown = ctx.show_viewport_immediate(session_viewport(key), builder, |ui, _| {
+                close = ui.input(|i| i.viewport().close_requested());
                 let mut rect = None;
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(colors.bg).inner_margin(16.))
-                    .show(ctx, |ui| {
+                    .show(ui, |ui| {
                         if self.is_detached(index) {
                             rect = self.session_pane(ui, index, Pane::Window);
                         }
                     });
-                rect.map(|rect| (rect, ctx.pixels_per_point(), overlays(ctx)))
+                rect.map(|rect| (rect, ui.ctx().pixels_per_point(), overlays(ui.ctx())))
             });
             if close {
                 self.attach(key);

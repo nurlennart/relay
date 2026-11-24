@@ -1109,7 +1109,8 @@ mod tests {
             let mut id = None;
             let mut clicked = false;
             for frame in 0..3 {
-                let output = ctx.run(
+                let output = crate::test_frame(
+                    &ctx,
                     egui::RawInput {
                         events: if frame == 2 {
                             vec![egui::Event::Key {
@@ -1124,8 +1125,8 @@ mod tests {
                         },
                         ..Default::default()
                     },
-                    |ctx| {
-                        egui::CentralPanel::default().show(ctx, |ui| {
+                    |ui| {
+                        egui::CentralPanel::default().show(ui, |ui| {
                             ui.set_width(220.);
                             let response = theme_option(ui, theme, true);
                             id = Some(response.id);

@@ -13,7 +13,7 @@ pub(super) fn accent_button(ui: &mut egui::Ui, text: &str, width: f32) -> egui::
 
 /// Spacing and text styles shared by every screen: compact, at desktop text sizes.
 pub(super) fn apply_style(ctx: &egui::Context) {
-    let mut style = (*ctx.style()).clone();
+    let mut style = (*ctx.style_of(ctx.theme())).clone();
     style.spacing.window_margin = egui::Margin::same(20);
     style.spacing.menu_margin = egui::Margin::same(6);
     style.spacing.item_spacing = Vec2::new(8., 8.);
@@ -35,7 +35,7 @@ pub(super) fn apply_style(ctx: &egui::Context) {
         egui::TextStyle::Heading,
         egui::FontId::proportional(TITLE_SIZE),
     );
-    ctx.set_style(style);
+    ctx.set_style_of(ctx.theme(), style);
 }
 
 /// Corner radii: badges and small inline buttons, controls and rows, cards and menus, dialogs.
@@ -175,7 +175,7 @@ pub(super) fn dialog(id: &'static str, ctx: &egui::Context) -> egui::Modal {
             .inner_margin(20.)
             .corner_radius(RADIUS_DIALOG)
             .stroke(Stroke::new(1_f32, colors.line))
-            .shadow(ctx.style().visuals.window_shadow),
+            .shadow(ctx.style_of(ctx.theme()).visuals.window_shadow),
     )
 }
 

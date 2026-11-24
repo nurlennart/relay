@@ -3,12 +3,12 @@ use super::*;
 use egui::{Align, Align2, FontId, Layout, Margin, Rect, Sense, UiBuilder};
 
 impl App {
-    pub(super) fn sidebar(&mut self, ctx: &egui::Context) {
-        let colors = theme::palette(ctx);
-        let collapsed = self.sidebar_collapsed(ctx);
+    pub(super) fn sidebar(&mut self, ui: &mut egui::Ui) {
+        let colors = theme::palette(ui.ctx());
+        let collapsed = self.sidebar_collapsed(ui.ctx());
         let margin = if collapsed { 8 } else { 10 };
-        egui::SidePanel::left("sidebar")
-            .exact_width(if collapsed { 52. } else { 224. })
+        egui::Panel::left("sidebar")
+            .exact_size(if collapsed { 52. } else { 224. })
             .resizable(false)
             .frame(egui::Frame::new().fill(colors.panel).inner_margin(Margin {
                 left: margin,
@@ -16,7 +16,7 @@ impl App {
                 top: 0,
                 bottom: 8,
             }))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 2.;
                 // The header is as tall as the tab bar, so the two bottom edges form one line.
                 let (header, toggle) = ui.allocate_exact_size(

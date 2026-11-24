@@ -613,9 +613,9 @@ mod tests {
         }
         // Once egui's own first frames are past, the countdown asks to be woken within a second.
         for _ in 0..3 {
-            let _ = ctx.run(Default::default(), |_| {});
+            let _ = crate::test_frame(&ctx, Default::default(), |_| {});
         }
-        let output = ctx.run(Default::default(), |_| session.poll(None));
+        let output = crate::test_frame(&ctx, Default::default(), |_| session.poll(None));
         let delay = output.viewport_output[&eframe::egui::ViewportId::ROOT].repaint_delay;
         assert!(
             delay > Duration::ZERO && delay <= Duration::from_secs(1),

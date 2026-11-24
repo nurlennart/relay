@@ -2,7 +2,7 @@
 name = "relay"
 version = "0.6.2"
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.95"
 description = "A remote connection workspace for RDP, SSH and VNC on Windows, macOS, and Linux"
 repository = "https://github.com/nurlennart/relay"
 license = "MIT"
@@ -20,7 +20,7 @@ cipher = "0.5"
 csv = "1.3"
 des = "0.9"
 dirs = "7"
-eframe = { version = "0.33.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "links", "wgpu_no_default_features"] }
 encoding_rs = "0.8"
 flate2 = "1.1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
@@ -52,7 +52,7 @@ rustix = { version = "1.1.5", features = ["fs"] }
 [target.'cfg(windows)'.dependencies]
 mysql = { version = "28", default-features = false, features = ["minimal-rust", "native-tls"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "native-tls", "winauth", "sql-browser-tokio"] }
-wgpu = { version = "27", default-features = false, features = ["dx12", "wgsl"] }
+wgpu = { version = "30", default-features = false, features = ["dx12", "wgsl"] }
 windows = { version = "0.62.2", features = ["Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant"] }
 windows-core = "0.62.2"
 # The pinned winauth revision uses the SSPI credential bindings without enabling them.
@@ -79,14 +79,14 @@ sha2 = "0.11"
 [target.'cfg(target_os = "macos")'.dependencies]
 mysql = { version = "28", default-features = false, features = ["minimal-rust", "native-tls"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "native-tls", "sql-browser-tokio"] }
-wgpu = { version = "27", default-features = false, features = ["metal", "wgsl"] }
+wgpu = { version = "30", default-features = false, features = ["metal", "wgsl"] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 mysql = { version = "28", default-features = false, features = ["minimal-rust", "rustls-tls"] }
-eframe = { version = "0.33.3", default-features = false, features = ["wayland", "x11"] }
+eframe = { version = "0.36.2", default-features = false, features = ["wayland", "x11"] }
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal", "wayland"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls", "sql-browser-tokio"] }
-wgpu = { version = "27", default-features = false, features = ["vulkan", "gles", "wgsl"] }
+wgpu = { version = "30", default-features = false, features = ["vulkan", "gles", "wgsl"] }
 
 [build-dependencies]
 winresource = "0.1.34"

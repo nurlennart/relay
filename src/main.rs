@@ -21,6 +21,18 @@ mod terminal;
 mod theme;
 mod vnc;
 
+#[cfg(test)]
+fn test_frame(
+    ctx: &eframe::egui::Context,
+    input: eframe::egui::RawInput,
+    draw: impl FnMut(&mut eframe::egui::Ui),
+) -> eframe::egui::FullOutput {
+    let mut output = ctx.run_ui(input, draw);
+    // These tests inspect the shapes and platform output without a GPU renderer.
+    output.textures_delta.clear();
+    output
+}
+
 fn main() -> eframe::Result {
     // ssh starts Relay again to ask for passwords for the file browser; see `askpass`.
     if let Some(code) = askpass::helper() {

@@ -76,7 +76,8 @@ fn large_import_preview_work_is_bounded() {
     std::fs::remove_file(&path).unwrap();
     assert!(matches!(&app.modal, Modal::Import(import) if import.connections.len() == 10_000));
     let started = Instant::now();
-    let output = ctx.run(
+    let output = crate::test_frame(
+        &ctx,
         egui::RawInput {
             screen_rect: Some(Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -84,7 +85,7 @@ fn large_import_preview_work_is_bounded() {
             )),
             ..Default::default()
         },
-        |ctx| app.library_dialogs(ctx),
+        |ui| app.library_dialogs(ui.ctx()),
     );
     eprintln!(
         "10,000 connections: UI scheduling {scheduled:?}; background read/parse {read:?}; preview frame {:?}; {} shapes",
@@ -127,12 +128,13 @@ fn import_review_aligns_columns_and_keeps_errors_and_actions_visible() {
                 let screen = Rect::from_min_size(egui::Pos2::ZERO, viewport / zoom);
                 let mut output = egui::FullOutput::default();
                 for _ in 0..3 {
-                    output = ctx.run(
+                    output = crate::test_frame(
+                        &ctx,
                         egui::RawInput {
                             screen_rect: Some(screen),
                             ..Default::default()
                         },
-                        |ctx| app.library_dialogs(ctx),
+                        |ui| app.library_dialogs(ui.ctx()),
                     );
                 }
                 let modal = ctx
@@ -201,17 +203,20 @@ fn a_slow_import_renders_and_cancel_discards_its_late_result() {
     );
     app.poll_import();
     assert!(matches!(app.modal, Modal::Importing(_)));
-    let output = ctx.run(egui::RawInput::default(), |ctx| app.library_dialogs(ctx));
+    let output = crate::test_frame(&ctx, egui::RawInput::default(), |ui| {
+        app.library_dialogs(ui.ctx())
+    });
     assert!(
         !output.shapes.is_empty(),
         "UI paints while the read is blocked"
     );
-    let _ = ctx.run(
+    let _ = crate::test_frame(
+        &ctx,
         egui::RawInput {
             events: vec![press(egui::Key::Escape)],
             ..Default::default()
         },
-        |ctx| app.library_dialogs(ctx),
+        |ui| app.library_dialogs(ui.ctx()),
     );
     assert!(matches!(app.modal, Modal::None));
     app.start_import(|_| Err("new import error".into()));
@@ -319,7 +324,8 @@ fn an_existing_personal_library_can_save_after_startup() {
 }
 
 fn library_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
-    let _ = ctx.run(
+    let _ = crate::test_frame(
+        ctx,
         egui::RawInput {
             screen_rect: Some(Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -328,8 +334,8 @@ fn library_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
             events,
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.workspace(ui));
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| app.workspace(ui));
         },
     );
 }
@@ -350,7 +356,8 @@ fn shortcut_help_respects_session_focus_and_open_editors() {
     let mut app = test_app(&ctx);
     let frame = |app: &mut App, key, session_focused| {
         let mut key_remaining = false;
-        let _ = ctx.run(
+        let _ = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -359,9 +366,9 @@ fn shortcut_help_respects_session_focus_and_open_editors() {
                 events: vec![press(key)],
                 ..Default::default()
             },
-            |ctx| {
-                app.keyboard_shortcuts(ctx, session_focused);
-                key_remaining = ctx.input(|i| i.key_pressed(key));
+            |ui| {
+                app.keyboard_shortcuts(ui.ctx(), session_focused);
+                key_remaining = ui.input(|i| i.key_pressed(key));
             },
         );
         key_remaining
@@ -400,7 +407,8 @@ fn enter_in_notes_adds_a_line_and_notes_are_searchable() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);
     let frame = |app: &mut App, events| {
-        let _ = ctx.run(
+        let _ = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -409,7 +417,7 @@ fn enter_in_notes_adds_a_line_and_notes_are_searchable() {
                 events,
                 ..Default::default()
             },
-            |ctx| app.editor(ctx),
+            |ui| app.editor(ui.ctx()),
         );
     };
     app.modal = Modal::Editor(app.connections[0].clone());
@@ -502,7 +510,8 @@ fn enter_quick_connects_when_nothing_matches() {
 
 /// A frame with quick open in front of the library, as Relay draws them.
 fn quick_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
-    let _ = ctx.run(
+    let _ = crate::test_frame(
+        ctx,
         egui::RawInput {
             screen_rect: Some(Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -511,9 +520,9 @@ fn quick_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
             events,
             ..Default::default()
         },
-        |ctx| {
+        |ui| {
             app.quick_open(ctx);
-            egui::CentralPanel::default().show(ctx, |ui| app.workspace(ui));
+            egui::CentralPanel::default().show(ui, |ui| app.workspace(ui));
         },
     );
 }
@@ -643,12 +652,13 @@ fn snippets_send_what_text_typed_in_the_same_frame_as_enter_selects() {
     app.activate_session(0);
     app.palette = Some(Palette::default());
     let frame = |app: &mut App, events| {
-        let _ = ctx.run(
+        let _ = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 events,
                 ..Default::default()
             },
-            |ctx| app.snippet_palette(ctx),
+            |ui| app.snippet_palette(ui.ctx()),
         );
     };
     frame(&mut app, vec![]);
@@ -710,7 +720,8 @@ fn connection_rows_never_show_a_text_cursor() {
     for y in (100..300).step_by(8) {
         for x in (20..1180).step_by(20) {
             let pos = egui::pos2(x as f32, y as f32);
-            let output = ctx.run(
+            let output = crate::test_frame(
+                &ctx,
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -719,8 +730,8 @@ fn connection_rows_never_show_a_text_cursor() {
                     events: vec![egui::Event::PointerMoved(pos)],
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| app.workspace(ui));
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| app.workspace(ui));
                 },
             );
             // The search field is the one place where typing is expected.
@@ -802,14 +813,15 @@ fn session_pane_frame(
     size: Vec2,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    ctx.run(
+    crate::test_frame(
+        ctx,
         egui::RawInput {
             screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
             events,
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 app.session_pane(ui, 0, pane);
             });
         },
@@ -890,7 +902,8 @@ fn single_session_identity_uses_the_existing_tab_bar() {
         ));
         app.sync_tabs();
         app.select_tab(1);
-        let output = ctx.run(
+        let output = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -898,7 +911,7 @@ fn single_session_identity_uses_the_existing_tab_bar() {
                 )),
                 ..Default::default()
             },
-            |ctx| app.tabs(ctx),
+            |ui| app.tabs(ui),
         );
         let update = output.platform_output.accesskit_update.unwrap();
         let identity = update.nodes.iter().find(|(_, n)| {
@@ -1303,7 +1316,8 @@ fn split_divider_drags_and_returns_to_the_middle_on_double_click() {
     let mut time = 0.;
     let mut frame = |fraction: &mut f32, events: Vec<egui::Event>| {
         time += 0.05;
-        let _ = ctx.run(
+        let _ = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -1313,10 +1327,10 @@ fn split_divider_drags_and_returns_to_the_middle_on_double_click() {
                 events,
                 ..Default::default()
             },
-            |ctx| {
+            |ui| {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
-                    .show(ctx, |ui| split_divider(ui, ui.max_rect(), fraction));
+                    .show(ui, |ui| split_divider(ui, ui.max_rect(), fraction));
             },
         );
     };
@@ -1501,14 +1515,15 @@ fn tab_close_is_inside_tab_and_does_not_select_it() {
         let ctx = egui::Context::default();
         let frame = |events| {
             let mut result = None;
-            let _ = ctx.run(
+            let _ = crate::test_frame(
+                &ctx,
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(500., 100.))),
                     events,
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let mut first = Connection::new();
                             first.name = "Design workstation".into();
@@ -1581,7 +1596,8 @@ fn inactive_tab_close_is_visible_and_outlined_on_keyboard_focus() {
             ctx.memory_mut(|m| m.request_focus(close_id));
         }
         let mut closed = false;
-        let output = ctx.run(
+        let output = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 events: if step == 2 {
                     vec![press(egui::Key::Enter)]
@@ -1590,8 +1606,8 @@ fn inactive_tab_close_is_visible_and_outlined_on_keyboard_focus() {
                 },
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     let tab = session_tab(
                         ui,
                         &Connection::new(),
@@ -1626,14 +1642,15 @@ fn navigation_and_theme_clicks_include_label_and_both_edges() {
         let ctx = egui::Context::default();
         let frame = |events| {
             let mut clicked = false;
-            let output = ctx.run(
+            let output = crate::test_frame(
+                &ctx,
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(260., 80.))),
                     events,
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         clicked = if theme_row {
                             theme_option(ui, theme::Theme::Midnight, false).clicked()
                         } else {
@@ -1669,14 +1686,15 @@ fn settings_tabs_switch_on_click_including_the_gap_after_a_name() {
     let ctx = egui::Context::default();
     let mut tab = settings::SettingsTab::Appearance;
     let mut frame = |events| {
-        let _ = ctx.run(
+        let _ = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(500., 80.))),
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| settings::tab_bar(ui, &mut tab));
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| settings::tab_bar(ui, &mut tab));
             },
         );
         tab
@@ -1717,13 +1735,14 @@ fn library_rows_never_draw_over_the_table_header() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);
     let order: Vec<usize> = (0..app.connections.len()).collect();
-    let output = ctx.run(
+    let output = crate::test_frame(
+        &ctx,
         egui::RawInput {
             screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(900., 600.))),
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.connection_table(ui, &order));
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| app.connection_table(ui, &order));
         },
     );
     let line = theme::palette(&ctx).line;
@@ -1781,7 +1800,8 @@ fn files_app(ctx: &egui::Context) -> App {
 }
 
 fn files_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
-    let _ = ctx.run(
+    let _ = crate::test_frame(
+        ctx,
         egui::RawInput {
             screen_rect: Some(Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -1790,8 +1810,8 @@ fn files_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
             events,
             ..Default::default()
         },
-        |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.files_pane(ui, 0));
+        |ui| {
+            egui::CentralPanel::default().show(ui, |ui| app.files_pane(ui, 0));
         },
     );
 }
@@ -1858,7 +1878,8 @@ fn favorite_controls_name_the_machine_and_show_keyboard_focus() {
     apply_style(&ctx);
     let mut app = test_app(&ctx);
     for step in 0..24 {
-        let output = ctx.run(
+        let output = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -1871,8 +1892,8 @@ fn favorite_controls_name_the_machine_and_show_keyboard_focus() {
                 },
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| app.workspace(ui));
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| app.workspace(ui));
             },
         );
         let update = output.platform_output.accesskit_update.unwrap();
@@ -2174,7 +2195,8 @@ fn middle_clicking_a_tab_closes_it() {
         .push(session::Session::restored(c, false, ctx.clone()));
     app.sync_tabs();
     let frame = |app: &mut App, events| {
-        let _ = ctx.run(
+        let _ = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -2183,7 +2205,7 @@ fn middle_clicking_a_tab_closes_it() {
                 events,
                 ..Default::default()
             },
-            |ctx| app.tabs(ctx),
+            |ui| app.tabs(ui),
         );
     };
     frame(&mut app, vec![]);
@@ -2221,7 +2243,8 @@ fn the_settings_commit_opens_its_github_page() {
     let mut app = test_app(&ctx);
     app.modal = Modal::Settings;
     let mut frame = |events| {
-        ctx.run(
+        crate::test_frame(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -2230,7 +2253,7 @@ fn the_settings_commit_opens_its_github_page() {
                 events,
                 ..Default::default()
             },
-            |ctx| app.settings(ctx),
+            |ui| app.settings(ui.ctx()),
         )
     };
     for _ in 0..3 {
@@ -2468,7 +2491,7 @@ fn local_shells_offer_snippets_but_not_files() {
         .push(session::Session::local(ctx.clone()).unwrap());
     app.sync_tabs();
     app.select_tab(1);
-    let output = ctx.run(egui::RawInput::default(), |ctx| app.tabs(ctx));
+    let output = crate::test_frame(&ctx, egui::RawInput::default(), |ui| app.tabs(ui));
     let update = output.platform_output.accesskit_update.unwrap();
     let shown = |label| (update.nodes.iter()).any(|(_, node)| node.label() == Some(label));
     assert!(shown("Snippets"));
@@ -2483,13 +2506,14 @@ fn navigation_exposes_names_selection_and_keyboard_activation() {
         let mut id = egui::Id::NULL;
         let mut activated = false;
         let mut frame = |events| {
-            ctx.run(
+            crate::test_frame(
+                &ctx,
                 egui::RawInput {
                     events,
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         id = ui.next_auto_id();
                         activated = if compact {
                             sidebar::rail_row(ui, Icon::Star, "Favorites (2)", true)
@@ -2515,13 +2539,14 @@ fn navigation_exposes_names_selection_and_keyboard_activation() {
         assert_eq!(node.toggled(), Some(egui::accesskit::Toggled::True));
         drop(frame);
         ctx.memory_mut(|m| m.request_focus(id));
-        let _ = ctx.run(
+        let _ = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 events: vec![press(egui::Key::Enter)],
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     activated = if compact {
                         sidebar::rail_row(ui, Icon::Star, "Favorites (2)", true)
                     } else {
@@ -2577,14 +2602,16 @@ fn palettes_expose_named_choices_and_keyboard_selection() {
         }
         let mut first_result = None;
         for step in 0..6 {
-            let output = ctx.run(
+            let output = crate::test_frame(
+                &ctx,
                 egui::RawInput {
                     events: match step {
                         2 | 4 => vec![press(egui::Key::ArrowDown)],
                         3 => vec![egui::Event::AccessKitActionRequest(
                             egui::accesskit::ActionRequest {
                                 action: egui::accesskit::Action::Focus,
-                                target: first_result.unwrap(),
+                                target_tree: egui::accesskit::TreeId::ROOT,
+                                target_node: first_result.unwrap(),
                                 data: None,
                             },
                         )],
@@ -2593,11 +2620,11 @@ fn palettes_expose_named_choices_and_keyboard_selection() {
                     },
                     ..Default::default()
                 },
-                |ctx| {
+                |ui| {
                     if snippets {
-                        app.snippet_palette(ctx);
+                        app.snippet_palette(ui.ctx());
                     } else {
-                        app.quick_open(ctx);
+                        app.quick_open(ui.ctx());
                     }
                 },
             );
@@ -2643,7 +2670,8 @@ fn file_sort_headers_expose_names_direction_and_keyboard_activation() {
     let mut app = files_app(&ctx);
     let mut sort_id = None;
     for step in 0..4 {
-        let output = ctx.run(
+        let output = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -2653,7 +2681,8 @@ fn file_sort_headers_expose_names_direction_and_keyboard_activation() {
                     1 => vec![egui::Event::AccessKitActionRequest(
                         egui::accesskit::ActionRequest {
                             action: egui::accesskit::Action::Focus,
-                            target: sort_id.unwrap(),
+                            target_tree: egui::accesskit::TreeId::ROOT,
+                            target_node: sort_id.unwrap(),
                             data: None,
                         },
                     )],
@@ -2662,8 +2691,8 @@ fn file_sort_headers_expose_names_direction_and_keyboard_activation() {
                 },
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| app.files_pane(ui, 0));
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| app.files_pane(ui, 0));
             },
         );
         let update = output.platform_output.accesskit_update.unwrap();
@@ -2698,8 +2727,8 @@ fn connection_and_file_rows_expose_identity_and_multiple_selection() {
     ctx.enable_accesskit();
     let mut app = test_app(&ctx);
     app.marked = [1, 3].into_iter().collect();
-    let output = ctx.run(egui::RawInput::default(), |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| app.workspace(ui));
+    let output = crate::test_frame(&ctx, egui::RawInput::default(), |ui| {
+        egui::CentralPanel::default().show(ui, |ui| app.workspace(ui));
     });
     let update = output.platform_output.accesskit_update.unwrap();
     for (name, selected) in [("Alpha", true), ("Bravo", false), ("Charlie", true)] {
@@ -2726,8 +2755,8 @@ fn connection_and_file_rows_expose_identity_and_multiple_selection() {
     let mut app = files_app(&ctx);
     let browser = app.sessions[0].files.as_mut().unwrap();
     browser.view.selected = ["app".into(), "c.txt".into()].into_iter().collect();
-    let output = ctx.run(Default::default(), |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| app.files_pane(ui, 0));
+    let output = crate::test_frame(&ctx, Default::default(), |ui| {
+        egui::CentralPanel::default().show(ui, |ui| app.files_pane(ui, 0));
     });
     let update = output.platform_output.accesskit_update.unwrap();
     for (label, selected) in [
@@ -2860,20 +2889,23 @@ fn number_shortcuts_switch_tabs_from_the_library() {
     let (mut app, _) = app_with_tabs(&ctx);
     app.sync_tabs();
     let frame = |app: &mut App, key| {
-        let _ = ctx.run(
+        let _ = crate::test_frame(
+            &ctx,
             egui::RawInput {
-                events: vec![egui::Event::Key {
-                    key,
-                    physical_key: Some(key),
-                    pressed: true,
-                    repeat: false,
-                    modifiers: egui::Modifiers::COMMAND,
-                }],
-                modifiers: egui::Modifiers::COMMAND,
+                events: vec![
+                    egui::Event::ModifiersChanged(egui::Modifiers::COMMAND),
+                    egui::Event::Key {
+                        key,
+                        physical_key: Some(key),
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::COMMAND,
+                    },
+                ],
                 ..Default::default()
             },
-            |ctx| {
-                app.workspace_shortcuts(ctx);
+            |ui| {
+                app.workspace_shortcuts(ui.ctx());
             },
         );
     };
@@ -2902,7 +2934,8 @@ fn connected_tabs_offer_reconnect_from_their_menu() {
         .push(session::Session::restored(c, false, ctx.clone()));
     app.sync_tabs();
     let frame = |app: &mut App, events| {
-        let output = ctx.run(
+        let output = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -2911,13 +2944,13 @@ fn connected_tabs_offer_reconnect_from_their_menu() {
                 events,
                 ..Default::default()
             },
-            |ctx| app.tabs(ctx),
+            |ui| app.tabs(ui),
         );
         let update = output.platform_output.accesskit_update.unwrap();
         (update.nodes.iter()).any(|(_, node)| node.label() == Some("Reconnect"))
     };
     let tab_center = |app: &mut App, name: &str| {
-        let output = ctx.run(Default::default(), |ctx| app.tabs(ctx));
+        let output = crate::test_frame(&ctx, Default::default(), |ui| app.tabs(ui));
         let update = output.platform_output.accesskit_update.unwrap();
         let (_, node) = (update.nodes.iter())
             .find(|(_, node)| node.label() == Some(name))
@@ -2963,7 +2996,8 @@ fn tabs_beyond_the_window_width_stay_reachable() {
     // Where each labelled button in the bar lies, left to right edges.
     let mut frame = |app: &mut App, events| {
         time += 1. / 60.;
-        let output = ctx.run(
+        let output = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -2974,7 +3008,7 @@ fn tabs_beyond_the_window_width_stay_reachable() {
                 events,
                 ..Default::default()
             },
-            |ctx| app.tabs(ctx),
+            |ui| app.tabs(ui),
         );
         let update = output.platform_output.accesskit_update.unwrap();
         move |label: &str| {
@@ -3006,6 +3040,7 @@ fn tabs_beyond_the_window_width_stay_reachable() {
     let over = egui::pos2(200., 20.);
     let _ = frame(&mut app, vec![egui::Event::PointerMoved(over)]);
     let wheel = egui::Event::MouseWheel {
+        phase: egui::TouchPhase::Move,
         unit: egui::MouseWheelUnit::Point,
         delta: Vec2::new(0., 5000.),
         modifiers: egui::Modifiers::NONE,
@@ -3027,12 +3062,13 @@ fn saving_an_edit_keeps_changes_made_meanwhile() {
     let ctx = egui::Context::default();
     let mut app = test_app(&ctx);
     let save = |app: &mut App| {
-        let _ = ctx.run(
+        let _ = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 events: vec![press(egui::Key::Enter)],
                 ..Default::default()
             },
-            |ctx| app.editor(ctx),
+            |ui| app.editor(ui.ctx()),
         );
         while app.pending.is_some() {
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -3149,12 +3185,13 @@ fn several_connections_are_chosen_and_changed_together() {
         "all were favorites"
     );
     app.modal = Modal::MoveToGroup(vec![1, 3], "Datacenter".into());
-    let _ = ctx.run(
+    let _ = crate::test_frame(
+        &ctx,
         egui::RawInput {
             events: vec![press(egui::Key::Enter)],
             ..Default::default()
         },
-        |ctx| app.confirmations(ctx),
+        |ui| app.confirmations(ui.ctx()),
     );
     finish_saving(&mut app);
     assert!(matches!(app.modal, Modal::None));
@@ -3166,7 +3203,7 @@ fn several_connections_are_chosen_and_changed_together() {
             events,
             ..Default::default()
         };
-        let _ = ctx.run(input, |ctx| app.confirmations(ctx));
+        let _ = crate::test_frame(&ctx, input, |ui| app.confirmations(ui.ctx()));
     };
     for ids in [vec![1], vec![1, 3]] {
         app.modal = Modal::Delete(ids);
@@ -3205,7 +3242,8 @@ fn a_chosen_side_keeps_the_keyboard_and_a_click_moves_it() {
     let mut time = 0.;
     let mut frame = |app: &mut App, events: Vec<egui::Event>| {
         time += 0.05;
-        let _ = ctx.run(
+        let _ = crate::test_frame(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -3215,9 +3253,9 @@ fn a_chosen_side_keeps_the_keyboard_and_a_click_moves_it() {
                 events,
                 ..Default::default()
             },
-            |ctx| {
+            |ui| {
                 app.follow_focus();
-                egui::CentralPanel::default().show(ctx, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     let (place, pair) = app.active_pair().unwrap();
                     let sides = [pair.left, pair.right].map(|k| app.session_index(k).unwrap());
                     app.pair_panes(ui, place, pair.fraction, sides, &mut vec![]);
@@ -3329,12 +3367,13 @@ fn settings_fit_small_viewports_across_workspace_themes() {
                 app.settings_tab = tab;
                 let mut header_text = vec![];
                 for _ in 0..3 {
-                    let output = ctx.run(
+                    let output = crate::test_frame(
+                        &ctx,
                         egui::RawInput {
                             screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
                             ..Default::default()
                         },
-                        |ctx| app.settings(ctx),
+                        |ui| app.settings(ui.ctx()),
                     );
                     header_text = output
                         .shapes
@@ -3387,7 +3426,8 @@ fn settings_scroll_to_the_last_section() {
         app.settings_tab = tab;
         let mut last_visible = false;
         for frame in 0..12 {
-            let output = ctx.run(
+            let output = crate::test_frame(
+                &ctx,
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(640., 480.))),
                     time: Some(frame as f64 * 0.1),
@@ -3395,6 +3435,7 @@ fn settings_scroll_to_the_last_section() {
                         vec![
                             egui::Event::PointerMoved(egui::pos2(320., 240.)),
                             egui::Event::MouseWheel {
+                                phase: egui::TouchPhase::Move,
                                 unit: egui::MouseWheelUnit::Point,
                                 delta: Vec2::new(0., -1000.),
                                 modifiers: egui::Modifiers::NONE,
@@ -3405,7 +3446,7 @@ fn settings_scroll_to_the_last_section() {
                     },
                     ..Default::default()
                 },
-                |ctx| app.settings(ctx),
+                |ui| app.settings(ui.ctx()),
             );
             last_visible |= output.shapes.iter().any(|clipped| {
                 matches!(&clipped.shape, egui::Shape::Text(text)
@@ -3458,7 +3499,8 @@ fn dragging_and_resetting_library_columns_save_their_widths_for_restart() {
         .join(model::temp_name("column-state.json"));
     app.state_path = Some(path.clone());
     let frame = |app: &mut App, events| {
-        ctx.run(
+        crate::test_frame(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -3467,8 +3509,8 @@ fn dragging_and_resetting_library_columns_save_their_widths_for_restart() {
                 events,
                 ..Default::default()
             },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| app.connection_table(ui, &[0, 1, 2]));
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| app.connection_table(ui, &[0, 1, 2]));
             },
         )
     };
@@ -3553,14 +3595,15 @@ fn connection_editor_frame(
     size: Vec2,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
-    ctx.run(
+    crate::test_frame(
+        ctx,
         egui::RawInput {
             screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
             time: Some(ctx.input(|input| input.time) + 0.1),
             events,
             ..Default::default()
         },
-        |ctx| app.editor(ctx),
+        |ui| app.editor(ui.ctx()),
     )
 }
 
@@ -3610,6 +3653,7 @@ fn connection_editor_keeps_header_and_actions_visible_across_themes_and_sizes() 
                             vec![
                                 egui::Event::PointerMoved(egui::pos2(size.x / 2., size.y / 2.)),
                                 egui::Event::MouseWheel {
+                                    phase: egui::TouchPhase::Move,
                                     unit: egui::MouseWheelUnit::Point,
                                     delta: Vec2::new(0., -32.),
                                     modifiers: egui::Modifiers::NONE,
@@ -3667,7 +3711,7 @@ fn connection_editor_keeps_header_and_actions_visible_across_themes_and_sizes() 
 fn connection_editor_preserves_protocol_options_ports_and_cancelled_changes() {
     let ctx = egui::Context::default();
     apply_style(&ctx);
-    ctx.style_mut(|style| style.animation_time = 0.);
+    ctx.style_mut_of(ctx.theme(), |style| style.animation_time = 0.);
     let mut app = test_app(&ctx);
     let original = app.connections.clone();
     let mut c = Connection::new();

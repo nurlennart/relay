@@ -856,16 +856,13 @@ fn table(
                 );
                 return;
             }
-            // Rows scrolled under the header stop at its line; egui otherwise draws them a few
-            // points past the list's edge.
-            ui.visuals_mut().clip_rect_margin = 0.;
             let mut area = egui::ScrollArea::vertical()
                 .id_salt(("files-list", key))
                 .max_height(rows)
                 .auto_shrink([false, false])
                 // A drag selects or moves items rather than scrolling.
                 .scroll_source(egui::scroll_area::ScrollSource {
-                    drag: false,
+                    drag: egui::scroll_area::DragScroll::Never,
                     ..Default::default()
                 });
             if let Some(offset) = (files.view.band.as_mut()).and_then(|b| b.scroll_to.take()) {
@@ -2154,7 +2151,7 @@ fn os_drops(
             i.raw
                 .dropped_files
                 .iter()
-                .filter_map(|f| f.path.clone())
+                .map(|f| f.path().to_path_buf())
                 .collect::<Vec<_>>(),
             i.pointer.latest_pos(),
         )

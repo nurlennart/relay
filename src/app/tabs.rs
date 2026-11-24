@@ -3,16 +3,16 @@ use super::*;
 use egui::{Margin, Rect, Sense};
 
 impl App {
-    pub(super) fn tabs(&mut self, ctx: &egui::Context) {
-        let colors = theme::palette(ctx);
-        egui::TopBottomPanel::top("tabs")
-            .exact_height(BAR_HEIGHT)
+    pub(super) fn tabs(&mut self, ui: &mut egui::Ui) {
+        let colors = theme::palette(ui.ctx());
+        egui::Panel::top("tabs")
+            .exact_size(BAR_HEIGHT)
             .frame(
                 egui::Frame::new()
                     .fill(colors.panel)
                     .inner_margin(Margin::symmetric(8, 6)),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 // The tab in front shows its session's actions at the right, where they stay
                 // put; the tabs shrink or scroll in the room left of them.
                 let bar = ui.max_rect();
