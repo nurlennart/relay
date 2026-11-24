@@ -506,6 +506,11 @@ pub fn config(settings: &Settings) -> ConnectorResult<ironrdp_connector::Config>
         },
         monitor_layout: None,
         desktop_scale_factor: settings.scale,
+        desktop_physical_size: None,
+        desktop_orientation: None,
+        device_scale_factor: None,
+        monitor_extended_layout: None,
+        relative_mouse_input: false,
         // NLA is preferred; servers without it, such as many xrdp hosts, still work over TLS.
         enable_tls: true,
         enable_credssp: true,

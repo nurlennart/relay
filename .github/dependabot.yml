@@ -6,6 +6,12 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 2
     groups:
+      ironrdp:
+        patterns:
+          - "ironrdp-*"
+        update-types:
+          - "minor"
+          - "major"
       cargo-patches:
         patterns:
           - "*"
