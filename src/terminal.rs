@@ -513,6 +513,7 @@ impl Terminal {
                         unit,
                         delta,
                         modifiers,
+                        ..
                     } if over && !modifiers.command => {
                         self.wheel += wheel_lines(*unit, delta.y, cell.y, rows);
                         let at = pointer.map_or((0, 0), cell_at);
@@ -554,7 +555,6 @@ impl Terminal {
             }
             // Ctrl with the wheel zooms instead.
             if response.hovered() && !modifiers.command {
-                let delta = ui.input(|i| i.raw_scroll_delta.y);
                 if parser.screen().alternate_screen() {
                     // Full-screen programs such as less have no history here; the wheel moves
                     // through their text with the arrow keys instead, as in other terminals.
@@ -565,6 +565,7 @@ impl Terminal {
                                     unit,
                                     delta,
                                     modifiers,
+                                    ..
                                 } if !modifiers.command => {
                                     wheel_lines(*unit, delta.y, cell.y, rows)
                                 }
@@ -582,7 +583,8 @@ impl Terminal {
                         self.wheel -= self.wheel.signum();
                         input.extend(key_bytes(key, egui::Modifiers::NONE, application_cursor));
                     }
-                } else if delta.abs() > 0. {
+                } else {
+                    let delta = scrollback_delta(ui);
                     let offset = parser.screen().scrollback();
                     let lines = (delta / cell.y).round() as isize;
                     let next = (offset as isize + lines).clamp(0, history as isize) as usize;
@@ -989,6 +991,7 @@ impl Terminal {
                             unit,
                             delta,
                             modifiers,
+                            ..
                         } if modifiers.command => wheel_lines(*unit, delta.y, 50., 1),
                         _ => 0.,
                     })
@@ -1127,6 +1130,40 @@ fn wheel_lines(unit: egui::MouseWheelUnit, delta: f32, height: f32, rows: u16) -
         egui::MouseWheelUnit::Point => delta / height,
         egui::MouseWheelUnit::Page => delta * rows as f32,
     }
+}
+
+/// Scrollback uses the wheel's event delta so each notch is counted once.
+fn scrollback_delta(ui: &egui::Ui) -> f32 {
+    let options = ui.ctx().options(|options| options.input_options);
+    ui.input(|input| {
+        input
+            .events
+            .iter()
+            .filter_map(|event| {
+                let egui::Event::MouseWheel {
+                    unit,
+                    delta,
+                    modifiers,
+                    ..
+                } = event
+                else {
+                    return None;
+                };
+                let horizontal = modifiers.matches_any(options.horizontal_scroll_modifier);
+                let vertical = modifiers.matches_any(options.vertical_scroll_modifier);
+                let y = match (horizontal, vertical) {
+                    (true, false) => 0.,
+                    (false, true) => delta.x + delta.y,
+                    _ => delta.y,
+                };
+                Some(match unit {
+                    egui::MouseWheelUnit::Point => y,
+                    egui::MouseWheelUnit::Line => y * options.line_scroll_speed,
+                    egui::MouseWheelUnit::Page => y * input.viewport_rect().height(),
+                })
+            })
+            .sum()
+    })
 }
 
 /// Reads the visible `rows` of `screen` into `line`, numbering the first visible row `top`,
@@ -1334,8 +1371,8 @@ mod tests {
                 parser.process(b"\r\n1\r\n2\r\n3\r\n4");
                 parser.screen_mut().set_scrollback(1);
             }
-            let output = ctx.run(Default::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            let output = crate::test_frame(&ctx, Default::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     let (rect, response) =
                         ui.allocate_exact_size(Vec2::new(500., 200.), Sense::click());
                     response.request_focus();
@@ -1398,7 +1435,7 @@ mod tests {
         // between, as they do in Relay.
         let frames = || {
             for _ in 0..3 {
-                let _ = ctx.run(egui::RawInput::default(), |_| {});
+                let _ = crate::test_frame(&ctx, egui::RawInput::default(), |_| {});
             }
             wakes.lock().unwrap().clear();
         };
@@ -1470,13 +1507,14 @@ mod tests {
                 .into_iter()
                 .collect();
             let mut focused = false;
-            let _ = ctx.run(
+            let _ = crate::test_frame(
+                &ctx,
                 egui::RawInput {
                     events,
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         let (_, response) =
                             ui.allocate_exact_size(Vec2::splat(100.), Sense::click());
                         if focus {
@@ -1565,18 +1603,19 @@ mod tests {
         let mut terminal = Terminal::spawn(shell(quiet), None).unwrap();
         let parser = terminal.process.parser.clone();
         let ctx = egui::Context::default();
-        let mut frame = |events: Vec<egui::Event>, modifiers| {
-            ctx.run(
+        let mut frame = |mut events: Vec<egui::Event>, modifiers| {
+            events.insert(0, egui::Event::ModifiersChanged(modifiers));
+            crate::test_frame(
+                &ctx,
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800., 400.))),
                     events,
-                    modifiers,
                     ..Default::default()
                 },
-                |ctx| {
+                |ui| {
                     egui::CentralPanel::default()
                         .frame(egui::Frame::NONE)
-                        .show(ctx, |ui| terminal.show(ui, &mut Look::default()));
+                        .show(ui, |ui| terminal.show(ui, &mut Look::default()));
                 },
             )
         };
@@ -1670,20 +1709,21 @@ mod tests {
         ctx: &egui::Context,
         terminal: &mut Terminal,
         size: Vec2,
-        events: Vec<egui::Event>,
+        mut events: Vec<egui::Event>,
         modifiers: egui::Modifiers,
     ) -> egui::FullOutput {
-        ctx.run(
+        events.insert(0, egui::Event::ModifiersChanged(modifiers));
+        crate::test_frame(
+            ctx,
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
                 events,
-                modifiers,
                 ..Default::default()
             },
-            |ctx| {
+            |ui| {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
-                    .show(ctx, |ui| terminal.show(ui, &mut Look::default()));
+                    .show(ui, |ui| terminal.show(ui, &mut Look::default()));
             },
         )
     }
@@ -1867,6 +1907,7 @@ mod tests {
             .unwrap()
             .process(b"\x1b[?1000l\x1b[?1049h");
         let wheel = egui::Event::MouseWheel {
+            phase: egui::TouchPhase::Move,
             unit: egui::MouseWheelUnit::Line,
             delta: Vec2::new(0., -2.),
             modifiers: none,
@@ -1942,18 +1983,19 @@ mod tests {
         settle(&ctx, &mut terminal, lines.as_bytes());
         let command = egui::Modifiers::COMMAND;
         let mut look = Look::default();
-        let frame = |terminal: &mut Terminal, look: &mut Look, events, modifiers| {
-            let _ = ctx.run(
+        let frame = |terminal: &mut Terminal, look: &mut Look, mut events: Vec<_>, modifiers| {
+            events.insert(0, egui::Event::ModifiersChanged(modifiers));
+            let _ = crate::test_frame(
+                &ctx,
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800., 400.))),
                     events,
-                    modifiers,
                     ..Default::default()
                 },
-                |ctx| {
+                |ui| {
                     egui::CentralPanel::default()
                         .frame(egui::Frame::NONE)
-                        .show(ctx, |ui| terminal.show(ui, look));
+                        .show(ui, |ui| terminal.show(ui, look));
                 },
             );
         };
@@ -1983,6 +2025,7 @@ mod tests {
         // Ctrl with the wheel zooms by a size a notch, and leaves the history where it is.
         let pos = Pos2::new(400., 200.);
         let wheel = |lines: f32| egui::Event::MouseWheel {
+            phase: egui::TouchPhase::Move,
             unit: egui::MouseWheelUnit::Line,
             delta: Vec2::new(0., lines),
             modifiers: command,

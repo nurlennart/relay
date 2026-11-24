@@ -801,15 +801,11 @@ impl App {
 
     /// The library or the sessions in front, below the tab bar, noting in `session_rects`
     /// the area each remote desktop covers.
-    fn workspace_panel(
-        &mut self,
-        ctx: &egui::Context,
-        session_rects: &mut Vec<(usize, egui::Rect)>,
-    ) {
-        let colors = theme::palette(ctx);
+    fn workspace_panel(&mut self, ui: &mut egui::Ui, session_rects: &mut Vec<(usize, egui::Rect)>) {
+        let colors = theme::palette(ui.ctx());
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(colors.bg).inner_margin(16.))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 if let Some(error) = self.error.clone() {
                     egui::Frame::new()
                         .fill(colors.error_bg)
@@ -861,12 +857,13 @@ impl App {
 
     /// Session `index`'s remote desktop alone in the window, with a bar to leave full screen
     /// while the pointer is at the top edge, as in Remote Desktop Connection.
-    fn full_screen_desktop(&mut self, ctx: &egui::Context, index: usize) {
+    fn full_screen_desktop(&mut self, ui: &mut egui::Ui, index: usize) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(egui::Color32::BLACK))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 self.sessions[index].show_desktop(ui);
             });
+        let ctx = ui.ctx();
         let pointer = ctx.input(|i| i.pointer.hover_pos());
         let at_edge = |p: egui::Pos2| p.y <= 2.;
         if pointer.is_some_and(at_edge) {
@@ -1387,7 +1384,8 @@ impl eframe::App for App {
         ui_check::hover(raw_input);
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
         self.poll_storage();
         self.poll_import();
         self.sync_library(ctx);
@@ -1475,11 +1473,11 @@ impl eframe::App for App {
         // Sessions on screen, with the area each remote desktop should cover.
         let mut session_rects: Vec<(usize, egui::Rect)> = vec![];
         if let Some(index) = full_screen {
-            self.full_screen_desktop(ctx, index);
+            self.full_screen_desktop(ui, index);
         } else {
-            self.sidebar(ctx);
-            self.tabs(ctx);
-            self.workspace_panel(ctx, &mut session_rects);
+            self.sidebar(ui);
+            self.tabs(ui);
+            self.workspace_panel(ui, &mut session_rects);
         }
         self.editor(ctx);
         self.confirmations(ctx);
@@ -1668,7 +1666,7 @@ fn split_divider(ui: &mut egui::Ui, area: egui::Rect, fraction: &mut f32) -> egu
 /// most laptops', that memory comes out of the computer's RAM.
 fn gpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
     use eframe::{egui_wgpu, wgpu};
-    let mut setup = egui_wgpu::WgpuSetupCreateNew::default();
+    let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
     let device = setup.device_descriptor.clone();
     setup.device_descriptor = std::sync::Arc::new(move |adapter| wgpu::DeviceDescriptor {
         memory_hints: wgpu::MemoryHints::MemoryUsage,

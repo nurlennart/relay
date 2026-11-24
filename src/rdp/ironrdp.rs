@@ -628,7 +628,8 @@ mod tests {
     fn desktop_cursor_is_rehidden_on_activation_and_restored_outside() {
         let ctx = egui::Context::default();
         let draw = |events| {
-            ctx.run(
+            crate::test_frame(
+                &ctx,
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -637,8 +638,8 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         let (_, response) = ui.allocate_exact_size(
                             egui::vec2(200., 150.),
                             egui::Sense::click_and_drag(),

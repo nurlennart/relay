@@ -2890,7 +2890,7 @@ mod tests {
         // egui reports a wake only when sooner than one already due, so frames pass first.
         let woke = |event| {
             for _ in 0..3 {
-                let _ = ctx.run(egui::RawInput::default(), |_| {});
+                let _ = crate::test_frame(&ctx, egui::RawInput::default(), |_| {});
             }
             *wakes.lock().unwrap() = 0;
             events.send(event);

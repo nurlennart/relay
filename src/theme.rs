@@ -229,8 +229,11 @@ mod tests {
             theme.save(&path).unwrap();
             assert_eq!(load(&path), theme);
             let c = palette(&ctx);
-            assert_eq!(ctx.style().visuals.panel_fill, c.bg);
-            assert_eq!(ctx.style().visuals.dark_mode, !theme.is_light());
+            assert_eq!(ctx.style_of(ctx.theme()).visuals.panel_fill, c.bg);
+            assert_eq!(
+                ctx.style_of(ctx.theme()).visuals.dark_mode,
+                !theme.is_light()
+            );
             // SSH and RDP badges are told apart by color.
             let distance = |a: Color32, b: Color32| {
                 [(a.r(), b.r()), (a.g(), b.g()), (a.b(), b.b())]
@@ -247,11 +250,11 @@ mod tests {
                 for foreground in [
                     c.text,
                     c.muted,
-                    ctx.style().visuals.weak_text_color.unwrap(),
+                    ctx.style_of(ctx.theme()).visuals.weak_text_color.unwrap(),
                     c.accent,
                     c.rdp,
-                    ctx.style().visuals.error_fg_color,
-                    ctx.style().visuals.warn_fg_color,
+                    ctx.style_of(ctx.theme()).visuals.error_fg_color,
+                    ctx.style_of(ctx.theme()).visuals.warn_fg_color,
                 ] {
                     let a = luminance(foreground);
                     let b = luminance(background);

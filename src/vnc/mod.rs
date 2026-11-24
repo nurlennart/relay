@@ -375,8 +375,10 @@ impl VncClient {
             let cursor_rect = egui::Rect::from_min_size(at, egui::vec2(1., 16.));
             ui.ctx().output_mut(|o| {
                 o.ime = Some(egui::output::IMEOutput {
+                    purpose: egui::IMEPurpose::Normal,
                     rect: view.rect,
                     cursor_rect,
+                    should_interrupt_composition: false,
                 })
             });
         }

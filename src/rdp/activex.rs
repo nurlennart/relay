@@ -1141,7 +1141,7 @@ mod tests {
         // pass first, as they do in Relay, and clear what is due.
         let frames = || {
             for _ in 0..3 {
-                let _ = ctx.run(egui::RawInput::default(), |_| {});
+                let _ = crate::test_frame(&ctx, egui::RawInput::default(), |_| {});
             }
             wakes.lock().unwrap().clear();
         };
