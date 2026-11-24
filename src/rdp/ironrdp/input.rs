@@ -425,6 +425,7 @@ mod tests {
     fn modified_scrolling_without_the_keyboard_lets_go_of_its_modifiers() {
         let mut t = Translator::default();
         let wheel = egui::Event::MouseWheel {
+            phase: egui::TouchPhase::Move,
             unit: egui::MouseWheelUnit::Line,
             delta: vec2(0., 1.),
             modifiers: Modifiers::SHIFT,
@@ -450,6 +451,7 @@ mod tests {
     #[test]
     fn wheel_notches_and_touchpad_scrolling() {
         let wheel = |unit, delta| egui::Event::MouseWheel {
+            phase: egui::TouchPhase::Move,
             unit,
             delta,
             modifiers: Modifiers::NONE,
