@@ -1,6 +1,6 @@
 //! Settings, themes, and SSH snippets.
 use super::*;
-use egui::{Align, Align2, FontId, Layout, Margin, Rect, Sense, UiBuilder};
+use egui::{Align, Align2, AtomExt as _, FontId, Layout, Margin, Rect, Sense, UiBuilder};
 
 // Settings use the shared palette, radii and control height; only layout lives here.
 const SECTION_GAP: f32 = 12.;
@@ -110,7 +110,14 @@ impl App {
                             zoom_picker(ui);
                             section_break(ui, "STARTUP");
                             let mut reopen = !self.state.forget_tabs;
-                            if ui.checkbox(&mut reopen, "Reopen tabs at startup").changed() {
+                            let label = ui.painter().layout_no_wrap(
+                                "Reopen tabs at startup".into(),
+                                egui::TextStyle::Body.resolve(ui.style()),
+                                Color32::PLACEHOLDER,
+                            );
+                            // Center the visible glyphs beside the box instead of the font line.
+                            let label_size = Vec2::new(label.size().x, 2. * label.mesh_bounds.center().y);
+                            if ui.checkbox(&mut reopen, label.atom_size(label_size)).changed() {
                                 self.state.forget_tabs = !reopen;
                                 self.remember_tabs();
                             }
